@@ -8,6 +8,7 @@
   import { ArrowRight, ShieldCheck } from "@lucide/svelte";
   import Logo from "$lib/components/Logo.svelte";
   import { EN } from "$lib/i18n-en";
+  import { installErrorLog } from "$lib/errlog";
 
   type Info = { current: string; available: string | null; notes: string };
   let info = $state<Info | null>(null);
@@ -35,6 +36,7 @@
   });
 
   onMount(() => {
+    installErrorLog();
     const demo = (window as any).__REWIND_MOCK__;
     (async () => {
       const s: any = demo ? null : await invoke("get_settings").catch(() => null);
@@ -108,7 +110,7 @@
         {:else}
           <p class="safe">
             {#if error}<span class="err">{t("Mise à jour impossible")} : {error}</span>
-            {:else}<ShieldCheck size={14} />{t("Signée et vérifiée avant l'installation")}{/if}
+            {:else}<ShieldCheck size={14} />{t("Signée et vérifiée")}{/if}
           </p>
           <div class="actions">
             <button class="btn ghost" onclick={later}>{t("Plus tard")}</button>
@@ -172,7 +174,7 @@
   li::before { content: ""; position: absolute; left: 2px; top: 0.62em; width: 4px; height: 1px; background: var(--text-3); }
 
   footer { margin-top: 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; }
-  .safe { margin: 0; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); min-width: 0; }
+  .safe { margin: 0; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); min-width: 0; }
   .err { color: var(--rec); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .actions { display: flex; gap: 8px; flex: none; }
   .actions .btn { height: 36px; padding: 0 16px; }

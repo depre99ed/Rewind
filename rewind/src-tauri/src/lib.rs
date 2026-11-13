@@ -2,6 +2,7 @@
 
 mod audio;
 mod cs2;
+mod rapport;
 mod editor;
 mod ffmpeg;
 mod inputs;
@@ -48,6 +49,9 @@ pub struct AppState {
     last_status: Mutex<recorder::Status>,
     /// Mise à jour trouvée au lancement, montrée dans la fenêtre « update »
     pending_update: Mutex<Option<update::UpdateInfo>>,
+    /// La fenêtre de mise à jour est ouverte au lancement (« Plus tard » ouvre alors Rewind) ou
+    /// pendant l'utilisation (« Plus tard » la ferme simplement)
+    update_at_launch: std::sync::atomic::AtomicBool,
 }
 
 /// Enregistrement « long » en cours : heure de début et repères accumulés (kills CS2, repères).
@@ -60,8 +64,12 @@ struct Hold {
 
 type Res<T> = Result<T, String>;
 
+/// Toute erreur renvoyée à l'interface passe par ici : on la garde aussi dans le journal,
+/// pour que le rapport de diagnostic contienne ce que l'utilisateur a vu.
 fn err<E: std::fmt::Display>(e: E) -> String {
-    format!("{e:#}")
+    let text = format!("{e:#}");
+    log::warn!("commande en échec : {text}");
+    text
 }
 
 #[derive(Clone, Serialize)]
@@ -1018,6 +1026,108 @@ fn engine_log() -> String {
     recorder::last_log()
 }
 
+/// Erreurs vues par l'interface (JavaScript, commandes en échec, messages d'erreur affichés) :
+/// elles vont dans le journal pour apparaître dans le rapport de diagnostic.
+#[tauri::command(async)]
+fn log_front(level: String, message: String) {
+    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    if COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 400 {
+        return; // garde-fou : une boucle d'erreurs ne doit pas remplir le journal
+    }
+    let text: String = message.chars().take(900).collect();
+    if level == "error" {
+        log::error!("[interface] {text}");
+    } else {
+        log::warn!("[interface] {text}");
+    }
+}
+
+#[derive(Serialize)]
+struct DiagnosticOut {
+    text: String,
+    problems: u32,
+    /// Chemin du fichier si le rapport a été enregistré
+    path: Option<String>,
+    copied: bool,
+}
+
+/// Rapport de diagnostic complet. `save` : l'enregistre aussi dans un fichier et l'affiche dans l'Explorateur.
+#[tauri::command(async)]
+async fn diagnostic_report(app: AppHandle, state: State<'_, AppState>, copy: bool, save: bool) -> Res<DiagnosticOut> {
+    let settings = state.settings.lock().clone();
+    let status = state
+        .recorder
+        .try_lock_for(Duration::from_millis(300))
+        .map(|r| r.status())
+        .unwrap_or_else(|| state.last_status.lock().clone());
+    let status_text = serde_json::to_string_pretty(&status).unwrap_or_default();
+    let cs2_text = serde_json::to_string_pretty(&cs2_info(state.clone())).unwrap_or_default();
+    let library = {
+        let lib = state.library.lock();
+        let total: u64 = lib.clips.iter().map(|c| c.size).sum();
+        let missing = lib.clips.iter().filter(|c| !std::path::Path::new(&c.path).is_file()).count();
+        let empty = lib.clips.iter().filter(|c| c.size == 0).count();
+        let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for c in &lib.clips {
+            *kinds.entry(c.kind.clone()).or_default() += 1;
+        }
+        format!(
+            "{} éléments, {:.1} Go ; fichiers introuvables : {missing} ; fichiers vides : {empty} ; par type : {kinds:?}",
+            lib.clips.len(),
+            total as f64 / 1e9
+        )
+    };
+    let update = {
+        let pending = state.pending_update.lock().as_ref().map(|u| u.available.clone());
+        let live = match update::check_within(&app, Duration::from_secs(4)).await {
+            Ok(u) => format!("canal joignable ; version installée {} ; {}", u.current, u.available.map(|v| format!("version {v} disponible")).unwrap_or_else(|| "à jour".into())),
+            Err(e) => format!("canal NON joignable ou refusé : {e}"),
+        };
+        format!(
+            "Version installée : {}\nRecherche automatique : {}\nCanal : {}\nTest du canal à l'instant : {live}\nMise à jour proposée au lancement : {pending:?}",
+            app.package_info().version,
+            settings.auto_update,
+            update::ENDPOINT
+        )
+    };
+    let live = rapport::Live {
+        settings,
+        status: status_text,
+        status_error: status.error.clone(),
+        cs2: cs2_text,
+        update,
+        library,
+        webview: tauri::webview_version().unwrap_or_else(|e| format!("illisible ({e})")),
+    };
+    let report = tauri::async_runtime::spawn_blocking(move || rapport::build(live)).await.map_err(err)?;
+    let mut path = None;
+    if save {
+        let dir = util::data_dir();
+        let file = dir.join(format!("rapport-diagnostic-{}.txt", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+        std::fs::write(&file, &report.text).map_err(err)?;
+        // on garde les 5 derniers rapports
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            let mut old: Vec<PathBuf> = rd
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rapport-diagnostic-")))
+                .collect();
+            old.sort();
+            for p in old.iter().take(old.len().saturating_sub(5)) {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+        let _ = share::reveal(&file);
+        path = Some(file.to_string_lossy().to_string());
+    }
+    let mut copied = false;
+    if copy {
+        share::copy_text_to_clipboard(&report.text).map_err(err)?;
+        copied = true;
+    }
+    Ok(DiagnosticOut { text: report.text, problems: report.problems, path, copied })
+}
+
 #[tauri::command(async)]
 fn refresh_library(state: State<AppState>) -> Vec<Clip> {
     let folder = PathBuf::from(&state.settings.lock().clip_folder);
@@ -1039,11 +1149,58 @@ fn pending_update(state: State<AppState>) -> Option<update::UpdateInfo> {
 #[tauri::command(async)]
 fn update_later(app: AppHandle) {
     log::info!("mise à jour remise à plus tard");
-    // La fenêtre principale d'abord : sans aucune fenêtre ouverte, l'appli pourrait se fermer
-    show_main(&app);
+    // Au lancement : la fenêtre principale d'abord (sans aucune fenêtre ouverte, l'appli pourrait
+    // se fermer). Pendant l'utilisation : on ferme seulement la petite fenêtre, sans rien ouvrir.
+    if app.state::<AppState>().update_at_launch.load(std::sync::atomic::Ordering::Relaxed) {
+        show_main(&app);
+    }
     if let Some(w) = app.get_webview_window("update") {
         let _ = w.close();
     }
+}
+
+/// Version déjà proposée dans la fenêtre (une seule proposition par version).
+fn last_proposed_update() -> String {
+    std::fs::read_to_string(util::data_dir().join("update-proposed.txt")).unwrap_or_default().trim().to_string()
+}
+
+fn mark_proposed_update(version: &str) {
+    let _ = std::fs::write(util::data_dir().join("update-proposed.txt"), version);
+}
+
+/// Propose la fenêtre de mise à jour pendant l'utilisation, une seule fois par version, au premier
+/// moment calme : aucun jeu ni plein écran au premier plan, aucun clip sur mesure ni session en cours.
+/// Sinon on réessaie toutes les 20 s pendant 6 h ; le bouton de la barre de titre reste disponible.
+fn propose_update_when_idle(app: AppHandle, info: update::UpdateInfo) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WAITING: AtomicBool = AtomicBool::new(false);
+    let Some(version) = info.available.clone() else { return };
+    if last_proposed_update() == version || WAITING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..(6 * 60 * 3) {
+            tokio_sleep(20).await;
+            let state = app.state::<AppState>();
+            if !state.settings.lock().auto_update || last_proposed_update() == version {
+                break;
+            }
+            let busy = util::foreground().is_some_and(|f| f.fullscreen || util::is_game(&f.exe, f.fullscreen))
+                || state.custom.lock().is_some()
+                || state.session.lock().is_some()
+                || app.get_webview_window("update").is_some();
+            if busy {
+                continue;
+            }
+            *state.pending_update.lock() = Some(info.clone());
+            state.update_at_launch.store(false, Ordering::Relaxed);
+            mark_proposed_update(&version);
+            log::info!("mise à jour proposée pendant l'utilisation : {version}");
+            show_update_window(&app);
+            break;
+        }
+        WAITING.store(false, Ordering::SeqCst);
+    });
 }
 
 /// Petite fenêtre centrée, dans le style de l'appli. Renvoie false si elle n'a pas pu s'ouvrir.
@@ -1928,6 +2085,7 @@ pub fn run() {
         session: Mutex::new(None),
         last_status: Mutex::new(recorder::Status::default()),
         pending_update: Mutex::new(None),
+        update_at_launch: std::sync::atomic::AtomicBool::new(false),
     };
     let from_autostart = std::env::args().any(|a| a == "--tray");
     #[allow(unused_mut)]
@@ -1982,6 +2140,10 @@ pub fn run() {
                     match found {
                         Some(info) => {
                             log::info!("mise à jour proposée au lancement : {:?}", info.available);
+                            if let Some(v) = &info.available {
+                                mark_proposed_update(v);
+                            }
+                            h.state::<AppState>().update_at_launch.store(true, std::sync::atomic::Ordering::Relaxed);
                             *h.state::<AppState>().pending_update.lock() = Some(info);
                             if !show_update_window(&h) {
                                 show_main(&h);
@@ -2027,7 +2189,10 @@ pub fn run() {
                                     if info.available.is_some() {
                                         log::info!("mise à jour disponible : {:?}", info.available);
                                     }
-                                    let _ = hu.emit("update-available", info);
+                                    let _ = hu.emit("update-available", info.clone());
+                                    if info.available.is_some() {
+                                        propose_update_when_idle(hu.clone(), info);
+                                    }
                                 }
                                 Err(e) => log::warn!("{e}"),
                             }
@@ -2227,6 +2392,8 @@ pub fn run() {
             cs2_info,
             cs2_install,
             engine_log,
+            diagnostic_report,
+            log_front,
             refresh_library,
             quit_app,
             pending_update,

@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
-import { api, type Clip, type Settings, type Status, type Cs2Event, type Moment, type Marker, type UpdateInfo } from "./api";
+import { api, logFront, type Clip, type Settings, type Status, type Cs2Event, type Moment, type Marker, type UpdateInfo } from "./api";
+import { installErrorLog } from "./errlog";
 import { t } from "./i18n.svelte";
 
 export type Transition = "none" | "fade" | "black" | "white" | "zoom" | "slide" | "wipe";
@@ -91,6 +92,7 @@ class AppState {
   private toastId = 0;
 
   async init() {
+    installErrorLog();
     this.settings = await api.getSettings();
     this.applyLook();
     this.clips = await api.clips();
@@ -155,7 +157,8 @@ class AppState {
 
   toast(kind: Toast["kind"], title: string, text?: string, clip?: Clip) {
     const id = ++this.toastId;
-    this.toasts = [...this.toasts, { id, kind, title, text, clip }].slice(-4);
+    if (kind === "err") logFront("warn", `message d'erreur affiché : ${title}${text ? " — " + text : ""}`);
+    this.toasts =[...this.toasts, { id, kind, title, text, clip }].slice(-4);
     setTimeout(() => (this.toasts = this.toasts.filter((t) => t.id !== id)), kind === "err" ? 7000 : 4200);
   }
 

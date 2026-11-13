@@ -121,6 +121,7 @@ if (typeof window !== "undefined" && !inTauri) {
           return { ...c };
         }
         case "engine_log": return "";
+        case "diagnostic_report": return new Promise((r) => setTimeout(() => r({ text: "REWIND · RAPPORT DE DIAGNOSTIC (démo)", problems: 3, path: null, copied: true }), 700));
         case "copy_for_discord": return new Promise((r) => setTimeout(() => r({ compressed: true, size_mb: 17.9, height: 1080, max_mb: 20 }), 900));
         case "clip_inputs": {
           // Exemple : avance (W), strafe (A/D), tirs (clic gauche), saut (espace)

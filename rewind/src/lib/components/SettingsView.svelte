@@ -69,6 +69,19 @@
     try { app.update = await api.checkUpdate(); } catch (e) { app.toast("err", t("Mise à jour"), String(e)); }
     checking = false;
   }
+  // Rapport de diagnostic
+  let reporting = $state<"" | "copy" | "save">("");
+  async function makeReport(copy: boolean) {
+    reporting = copy ? "copy" : "save";
+    try {
+      const r = await api.diagnosticReport(copy, !copy);
+      const info = t("{n} Ko · {p} points à regarder", { n: Math.max(1, Math.round(r.text.length / 1000)), p: r.problems });
+      app.toast("ok", t(copy ? "Rapport copié" : "Rapport enregistré"), copy ? `${info} · ${t("Colle-le avec Ctrl+V")}` : info);
+    } catch (e) {
+      app.toast("err", t("Rapport impossible"), String(e));
+    }
+    reporting = "";
+  }
   async function installUpdate() {
     installing = true;
     try { await api.installUpdate(); } catch (e) { app.toast("err", t("Mise à jour impossible"), String(e)); installing = false; }
@@ -371,6 +384,18 @@
             <button class="btn danger" onclick={() => api.quit()}><Power size={15} />{t("Quitter Rewind")}</button>
           {:else if section === "diag"}
             <h2>{t("Diagnostic")}</h2>
+            <div class="group">
+              <div class="item">
+                <div class="lbl">
+                  <strong>{t("Rapport de diagnostic")}</strong>
+                  <span>{t("Version, système, matériel, réglages, erreurs, plantages et journaux en un seul texte. Sans mot de passe ni adresse de webhook. À envoyer quand tu demandes de l'aide.")}</span>
+                </div>
+                <div class="inline">
+                  <button class="btn primary" onclick={() => makeReport(true)} disabled={reporting !== ""}>{reporting === "copy" ? t("Préparation…") : t("Copier le rapport")}</button>
+                  <button class="btn" onclick={() => makeReport(false)} disabled={reporting !== ""}>{reporting === "save" ? t("Préparation…") : t("Enregistrer en fichier")}</button>
+                </div>
+              </div>
+            </div>
             <div class="group">
               <div class="item"><div class="lbl"><strong>{t("Encodeurs disponibles")}</strong></div><span class="mono">{hw?.encoders.join(", ") ?? "…"}</span></div>
               <div class="item"><div class="lbl"><strong>{t("Moteur")}</strong></div><span class="mono path">{hw?.ffmpeg || t("introuvable")}</span></div>

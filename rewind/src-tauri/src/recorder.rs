@@ -189,6 +189,8 @@ fn buffer_root() -> PathBuf {
 
 /// Nettoie les restes d'une session précédente (à appeler avant de démarrer le moteur).
 pub fn clean_buffer() {
+    // Les journaux FFmpeg de la session précédente servent au diagnostic : on les garde avant de vider.
+    crate::rapport::archive_previous_ffmpeg_logs(&buffer_root());
     let _ = fs::remove_dir_all(buffer_root());
     let _ = fs::create_dir_all(buffer_root());
 }

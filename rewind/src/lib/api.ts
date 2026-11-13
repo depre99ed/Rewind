@@ -1,5 +1,24 @@
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { invoke as rawInvoke, convertFileSrc } from "@tauri-apps/api/core";
 import { t, locale } from "./i18n.svelte";
+
+/** Envoie une erreur de l'interface au journal (elle apparaîtra dans le rapport de diagnostic). */
+const recent = new Map<string, number>();
+export function logFront(level: "error" | "warn", message: string) {
+  const now = Date.now();
+  const last = recent.get(message);
+  if (last && now - last < 60_000) return; // même message : une fois par minute
+  if (recent.size > 200) recent.clear();
+  recent.set(message, now);
+  rawInvoke("log_front", { level, message }).catch(() => {});
+}
+
+/** Comme `invoke`, mais une commande en échec est aussi notée dans le journal. */
+function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  return rawInvoke<T>(cmd, args).catch((e) => {
+    if (cmd !== "get_status" && cmd !== "log_front") logFront("warn", `commande ${cmd} : ${String(e)}`);
+    throw e;
+  });
+}
 
 export type Marker = { time: number; kind: string; label: string };
 
@@ -135,7 +154,9 @@ export type Cs2Info = {
   live: { messages: number; map: string; mode: string; map_phase: string; round_phase: string; spectating: boolean; token_mismatch: boolean; kills: number };
 };
 
-export type UpdateInfo = { configured: boolean; current: string; available: string | null; notes: string };
+export type DiagnosticOut = { text: string; problems: number; path: string | null; copied: boolean };
+
+export type UpdateInfo ={ configured: boolean; current: string; available: string | null; notes: string };
 
 /** Touche clavier/souris : `key` = code virtuel Windows (1 clic gauche, 2 clic droit, 0x57 W…), `t` en secondes dans le clip. */
 export type InputEvent = { t: number; key: number; down: boolean };
@@ -209,6 +230,8 @@ export const api = {
   cs2Info: () => invoke<Cs2Info>("cs2_info"),
   cs2Install: () => invoke<string[]>("cs2_install"),
   engineLog: () => invoke<string>("engine_log"),
+  /** Rapport de diagnostic complet ; `copy` = dans le presse-papiers, `save` = dans un fichier (affiché dans l'Explorateur). */
+  diagnosticReport: (copy: boolean, save: boolean) => invoke<DiagnosticOut>("diagnostic_report", { copy, save }),
   quit: () => invoke<void>("quit_app"),
 };
 

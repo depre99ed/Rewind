@@ -97,6 +97,53 @@ pub fn copy_file_to_clipboard(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Met du texte dans le presse-papiers (Ctrl+V colle le texte, quelle que soit sa taille).
+pub fn copy_text_to_clipboard(text: &str) -> Result<()> {
+    use windows_sys::Win32::{
+        Foundation::GlobalFree,
+        System::{
+            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+            Memory::{GHND, GlobalAlloc, GlobalLock, GlobalUnlock},
+        },
+    };
+    const CF_UNICODETEXT: u32 = 13;
+    let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    let size = wide.len() * 2;
+    unsafe {
+        let mem = GlobalAlloc(GHND, size);
+        if mem.is_null() {
+            bail!("Mémoire insuffisante");
+        }
+        let ptr = GlobalLock(mem) as *mut u8;
+        if ptr.is_null() {
+            GlobalFree(mem);
+            bail!("Mémoire verrouillée");
+        }
+        std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, ptr, size);
+        GlobalUnlock(mem);
+        let mut opened = false;
+        for _ in 0..10 {
+            if OpenClipboard(std::ptr::null_mut()) != 0 {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        if !opened {
+            GlobalFree(mem);
+            bail!("Presse-papiers occupé, réessaie.");
+        }
+        EmptyClipboard();
+        if SetClipboardData(CF_UNICODETEXT, mem as _).is_null() {
+            CloseClipboard();
+            GlobalFree(mem);
+            bail!("Copie impossible");
+        }
+        CloseClipboard();
+    }
+    Ok(())
+}
+
 pub fn reveal(path: &Path) -> Result<()> {
     util::command(Path::new("explorer.exe")).arg(format!("/select,{}", path.to_string_lossy())).spawn()?;
     Ok(())

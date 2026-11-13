@@ -1,0 +1,220 @@
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+/* ------------------------------------------------------------------
+   Jetons de design — « noir instrument »
+   Fond noir, gris neutres, une seule police (Geist). La couleur ne sert qu'à signaler :
+   --rec (enregistrement, suppression), --accent (en direct / connecté, timeline du Studio).
+   Les états actifs et le bouton principal sont blancs (--hi).
+   ------------------------------------------------------------------ */
+:root {
+  --accent: #c8f031;
+  --accent-ink: #0b0c0f;
+  --rec: #ff453a;
+  --font: "Geist Variable", "Segoe UI", system-ui, sans-serif;
+  --mono: "Geist Mono Variable", ui-monospace, monospace;
+  --display: "Geist Variable", "Segoe UI", sans-serif;
+  --radius-s: 8px;
+  --radius: 10px;
+  --radius-l: 14px;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --spring: cubic-bezier(0.3, 1.25, 0.5, 1);
+  --dur: 180ms;
+}
+
+:root[data-theme="dark"] {
+  --bg: #000000;
+  --bg-2: #0a0a0b;
+  --panel: #0f0f10;
+  --panel-2: #161617;
+  --panel-3: #1e1e20;
+  --line: #1c1c1e;
+  --line-2: #2a2a2d;
+  --text: #ededef;
+  --text-2: #a0a0a6;
+  --text-3: #6b6b71;
+  --hi: #f2f2f3;
+  --hi-ink: #09090a;
+  --shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.9);
+  --shadow-s: 0 8px 20px -10px rgba(0, 0, 0, 0.8);
+  --overlay: rgba(0, 0, 0, 0.78);
+  /* Verre */
+  --glass-fill: linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.025));
+  --glass-fill-strong: linear-gradient(180deg, rgba(28, 28, 30, 0.72), rgba(16, 16, 17, 0.66));
+  --glass-rim: linear-gradient(160deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.1) 26%, rgba(255, 255, 255, 0.02) 52%, rgba(255, 255, 255, 0.06) 78%, rgba(255, 255, 255, 0.2));
+  --glass-inner: inset 0 1px 1px rgba(255, 255, 255, 0.1), inset 0 -10px 20px -14px rgba(255, 255, 255, 0.1), inset 0 0 0 0.5px rgba(255, 255, 255, 0.04);
+  --glass-drop: 0 12px 32px -14px rgba(0, 0, 0, 0.95), 0 2px 6px -2px rgba(0, 0, 0, 0.7);
+  --glass-glint: rgba(255, 255, 255, 0.09);
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg: #f4f4f5;
+  --bg-2: #fafafa;
+  --panel: #ffffff;
+  --panel-2: #f4f4f5;
+  --panel-3: #e9e9eb;
+  --line: #e4e4e7;
+  --line-2: #d4d4d8;
+  --text: #111113;
+  --text-2: #55555c;
+  --text-3: #8b8b93;
+  --hi: #111113;
+  --hi-ink: #ffffff;
+  --shadow: 0 24px 60px -24px rgba(20, 20, 25, 0.25);
+  --shadow-s: 0 8px 20px -12px rgba(20, 20, 25, 0.2);
+  --overlay: rgba(244, 244, 245, 0.8);
+  --glass-fill: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.6));
+  --glass-fill-strong: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(250, 250, 250, 0.72));
+  --glass-rim: linear-gradient(160deg, rgba(255, 255, 255, 1), rgba(0, 0, 0, 0.06) 40%, rgba(0, 0, 0, 0.1));
+  --glass-inner: inset 0 1px 1px rgba(255, 255, 255, 1), inset 0 -8px 16px -12px rgba(0, 0, 0, 0.06);
+  --glass-drop: 0 10px 28px -14px rgba(20, 20, 25, 0.3), 0 1px 3px rgba(20, 20, 25, 0.08);
+  --glass-glint: rgba(255, 255, 255, 0.8);
+  color-scheme: light;
+}
+
+:root[data-motion="off"] {
+  --dur: 0ms;
+}
+:root[data-motion="off"] *,
+:root[data-motion="off"] *::before,
+:root[data-motion="off"] *::after {
+  animation-duration: 0ms !important;
+  transition-duration: 0ms !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0ms !important;
+    transition-duration: 0ms !important;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13.5px;
+  line-height: 1.45;
+  letter-spacing: -0.006em;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
+
+/* Pas de barres de défilement visibles */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { display: none; }
+
+button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; padding: 0; letter-spacing: inherit; }
+input, select, textarea { font: inherit; color: inherit; letter-spacing: inherit; }
+img, video { display: block; }
+:focus-visible { outline: 1.5px solid color-mix(in srgb, var(--text) 70%, transparent); outline-offset: 2px; border-radius: 6px; }
+
+/* ---------- Éléments communs ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  height: 32px; padding: 0 12px; border-radius: var(--radius-s);
+  background: var(--panel-2); border: 1px solid var(--line-2);
+  color: var(--text); font-weight: 500; font-size: 13px; white-space: nowrap;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease), transform 120ms var(--ease);
+}
+.btn:hover { background: var(--panel-3); }
+.btn:active { transform: scale(0.97); }
+.btn.primary { background: var(--hi); color: var(--hi-ink); border-color: transparent; font-weight: 600; }
+.btn.primary:hover { background: color-mix(in srgb, var(--hi) 88%, var(--bg)); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--text-2); }
+.btn.ghost:hover { background: var(--panel-2); color: var(--text); }
+.btn.danger:hover { background: color-mix(in srgb, var(--rec) 14%, transparent); border-color: color-mix(in srgb, var(--rec) 35%, transparent); color: var(--rec); }
+.btn.small { height: 28px; padding: 0 10px; font-size: 12.5px; }
+.btn.icon { width: 32px; padding: 0; }
+.btn.small.icon { width: 28px; }
+.btn:disabled { opacity: 0.4; pointer-events: none; }
+
+.field {
+  height: 32px; padding: 0 10px; border-radius: var(--radius-s);
+  background: var(--bg-2); border: 1px solid var(--line-2); outline: none;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+  user-select: text;
+}
+.field:hover { border-color: color-mix(in srgb, var(--text-3) 50%, var(--line-2)); }
+.field:focus { border-color: var(--text-3); background: var(--panel); }
+select.field { padding-right: 28px; appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--text-3) 50%), linear-gradient(135deg, var(--text-3) 50%, transparent 50%); background-position: calc(100% - 15px) 14px, calc(100% - 10px) 14px; background-size: 5px 5px; background-repeat: no-repeat; }
+
+.kbd {
+  font-family: var(--mono); font-size: 11px; padding: 1px 5px; border-radius: 5px;
+  background: var(--panel-2); border: 1px solid var(--line-2); border-bottom-width: 2px; color: var(--text-2);
+}
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px;
+  border-radius: 999px; border: 1px solid var(--line-2); background: transparent; color: var(--text-2);
+  font-weight: 500; font-size: 12.5px; transition: all var(--dur) var(--ease);
+}
+.chip:hover { color: var(--text); background: var(--panel-2); }
+.chip.on { background: var(--hi); color: var(--hi-ink); border-color: var(--hi); }
+
+/* Étiquette : neutre ; rouge seulement quand c'est important */
+.tag {
+  display: inline-flex; align-items: center; gap: 4px; height: 19px; padding: 0 6px; border-radius: 5px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text-2);
+}
+.tag.neutral { background: var(--panel-3); color: var(--text-2); }
+.tag.hot { background: color-mix(in srgb, var(--rec) 16%, transparent); color: var(--rec); }
+
+/* Interrupteur : blanc quand il est activé */
+.switch { position: relative; width: 36px; height: 21px; flex: none; }
+.switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.switch span { position: absolute; inset: 0; border-radius: 99px; background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--line-2); transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease); pointer-events: none; }
+.switch span::after { content: ""; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 99px; background: var(--text-2); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4); transition: transform 260ms var(--spring), width 160ms var(--ease), background var(--dur) var(--ease); }
+.switch input:checked + span { background: var(--hi); box-shadow: none; }
+.switch input:checked + span::after { transform: translateX(15px); background: var(--hi-ink); }
+/* Le rond s'étire un peu quand on appuie */
+.switch input:active + span::after { width: 21px; }
+.switch input:checked:active + span::after { transform: translateX(11px); }
+.switch input:focus-visible + span { outline: 1.5px solid color-mix(in srgb, var(--text) 70%, transparent); outline-offset: 2px; }
+
+/* Curseur (range) */
+input[type="range"] { appearance: none; height: 4px; border-radius: 4px; background: var(--panel-3); outline: none; }
+input[type="range"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--hi); box-shadow: 0 0 0 3px var(--bg), 0 1px 3px rgba(0, 0, 0, 0.5); cursor: pointer; }
+
+.muted { color: var(--text-2); }
+.faint { color: var(--text-3); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: 0; }
+
+/* ---------- Verre liquide ----------
+   .glass : surface de verre (remplissage translucide, liseré de lumière, ombre portée).
+   La réfraction du fond est ajoutée par l'action `liquid` (lib/glass.ts) quand il y a un fond à courber.
+   Le reflet suit la souris si l'élément a l'action `glint`. */
+.glass {
+  position: relative;
+  isolation: isolate;
+  background: var(--glass-fill);
+  box-shadow: var(--glass-inner), var(--glass-drop);
+}
+.glass.strong { background: var(--glass-fill-strong); }
+.glass::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none; z-index: 1;
+  background: var(--glass-rim);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+.glass::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 1;
+  background: radial-gradient(140px circle at var(--mx, 50%) var(--my, -60px), var(--glass-glint), transparent 70%);
+  opacity: 0; transition: opacity 320ms var(--ease);
+}
+.glass:hover::after { opacity: 1; }
+
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes view-in { from { opacity: 0; } to { opacity: 1; } }
+.appear { animation: fade-in 240ms var(--ease) both; }

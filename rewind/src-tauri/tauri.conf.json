@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Rewind",
+  "version": "0.2.1",
+  "identifier": "com.rewind.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Rewind",
+        "width": 1320,
+        "height": 840,
+        "minWidth": 980,
+        "minHeight": 640,
+        "center": true,
+        "visible": false,
+        "decorations": false,
+        "shadow": true,
+        "backgroundColor": "#0b0b10"
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": ["nsis"],
+    "resources": {
+      "bin/ffmpeg.exe": "bin/ffmpeg.exe",
+      "bin/ffprobe.exe": "bin/ffprobe.exe",
+      "bin/FFMPEG-LICENSE.txt": "bin/FFMPEG-LICENSE.txt"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "languages": ["French"]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgxNjZDNjI2RjI4QTQzN0IKUldSN1E0cnlKc1ptZ2RiL21KUEJLaEpzTk16ajNEeVNLNThVQzArbHpYemdBYktBTWs3UTNLd1MK"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+﻿node_modules/
+rewind/build/
+rewind/.svelte-kit/
+rewind/src-tauri/target/
+rewind/src-tauri/gen/
+rewind/src-tauri/bin/*.exe
+*.partial.mp4
+rewind/static/mock/
+
+design/_tests/
+.release/
+design/captures/
+.env
+.env.*
+*.key
+*.pem

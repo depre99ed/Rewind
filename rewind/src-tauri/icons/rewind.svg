@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Logo Rewind « A3 » : carré vert acide, double retour noir -->
+  <rect x="32" y="32" width="960" height="960" rx="236" fill="#c8f031"/>
+  <g transform="translate(32 32) scale(15)">
+    <path d="M30 20 15 32l15 12Z" fill="#0b0c0f" stroke="#0b0c0f" stroke-width="6" stroke-linejoin="round"/>
+    <g opacity="0.55"><path d="M49 20 34 32l15 12Z" fill="#0b0c0f" stroke="#0b0c0f" stroke-width="6" stroke-linejoin="round"/></g>
+  </g>
+</svg>

@@ -1,0 +1,261 @@
+//! Bibliothèque : index des clips et captures (`%LOCALAPPDATA%\Rewind\library.json`).
+
+use crate::{ffmpeg, util};
+use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Marker {
+    /// Position dans le clip (secondes)
+    pub time: f64,
+    /// kill, headshot, onetap, ace, manual…
+    pub kind: String,
+    pub label: String,
+}
+
+impl Default for Marker {
+    fn default() -> Self {
+        Self { time: 0.0, kind: "manual".into(), label: String::new() }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct Clip {
+    pub id: String,
+    pub path: String,
+    pub thumb: String,
+    pub title: String,
+    pub game: String,
+    pub created: f64,
+    pub duration: f64,
+    pub size: u64,
+    /// manual, auto, edit, screenshot
+    pub kind: String,
+    pub markers: Vec<Marker>,
+    pub favorite: bool,
+    pub tags: Vec<String>,
+}
+
+pub struct Library {
+    pub clips: Vec<Clip>,
+}
+
+fn index_path() -> PathBuf {
+    util::data_dir().join("library.json")
+}
+
+pub fn thumbs_dir() -> PathBuf {
+    let dir = util::data_dir().join("thumbs");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+pub fn new_id() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    format!("{:x}{:03x}", (util::now() * 1000.0) as u64, COUNTER.fetch_add(1, Ordering::Relaxed) % 4096)
+}
+
+impl Library {
+    pub fn load(clip_folder: &Path) -> Self {
+        let text = std::fs::read_to_string(index_path()).ok();
+        let mut clips: Vec<Clip> = match text.as_deref().map(serde_json::from_str::<Vec<Clip>>) {
+            Some(Ok(c)) => c,
+            Some(Err(_)) => {
+                // Index abîmé : on le garde de côté et on reconstruit à partir du dossier des clips
+                let _ = std::fs::rename(index_path(), index_path().with_extension(format!("abime-{}.json", chrono::Local::now().format("%Y%m%d-%H%M%S"))));
+                log::warn!("index de la bibliothèque illisible : reconstruit depuis le dossier");
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        clips.retain(|c| Path::new(&c.path).is_file());
+        let mut lib = Self { clips };
+        lib.scan(clip_folder);
+        lib.sort();
+        let _ = lib.save();
+        lib
+    }
+
+    /// Ajoute les vidéos/images du dossier qui ne sont pas encore dans l'index (ex. copiées à la main).
+    pub fn scan(&mut self, folder: &Path) {
+        let mut stack = vec![folder.to_path_buf()];
+        let mut depth = 0;
+        while let Some(dir) = stack.pop() {
+            depth += 1;
+            if depth > 200 {
+                break;
+            }
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|n| n != ".rewind-tmp") {
+                        stack.push(path);
+                    }
+                    continue;
+                }
+                let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+                let is_video = matches!(ext.as_str(), "mp4" | "mkv" | "mov" | "webm");
+                let is_image = matches!(ext.as_str(), "png" | "jpg" | "jpeg");
+                if !(is_video || is_image) || path.to_string_lossy().contains(".partial.") {
+                    continue;
+                }
+                let p = path.to_string_lossy().to_string();
+                if self.clips.iter().any(|c| c.path == p) {
+                    continue;
+                }
+                let meta = entry.metadata().ok();
+                // Fichier vide = nom réservé par un export en cours : il sera ajouté une fois fini
+                if meta.as_ref().is_some_and(|m| m.len() == 0) {
+                    continue;
+                }
+                let created = meta
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or_else(util::now);
+                let game = path
+                    .parent()
+                    .filter(|p| p != &folder)
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                self.clips.push(Clip {
+                    id: new_id(),
+                    title: path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+                    path: p,
+                    game,
+                    created,
+                    size: meta.map(|m| m.len()).unwrap_or(0),
+                    // Durée lue tout de suite (sinon le clip s'affichait « 0:00 » jusqu'au prochain démarrage)
+                    duration: if is_video { ffmpeg::duration(&path).unwrap_or(0.0) } else { 0.0 },
+                    kind: if is_image { "screenshot".into() } else { "manual".into() },
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    pub fn sort(&mut self) {
+        self.clips.sort_by(|a, b| b.created.total_cmp(&a.created));
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let tmp = index_path().with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string(&self.clips)?)?;
+        std::fs::rename(tmp, index_path())?;
+        Ok(())
+    }
+
+    pub fn add(&mut self, clip: Clip) -> Result<()> {
+        self.clips.retain(|c| c.id != clip.id);
+        self.clips.push(clip);
+        self.sort();
+        self.save()
+    }
+
+    pub fn get(&self, id: &str) -> Option<&Clip> {
+        self.clips.iter().find(|c| c.id == id)
+    }
+
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut Clip> {
+        self.clips.iter_mut().find(|c| c.id == id)
+    }
+
+    /// Envoie le fichier à la Corbeille (récupérable) et le retire de l'index.
+    pub fn remove(&mut self, id: &str) -> Result<()> {
+        let Some(clip) = self.get(id).cloned() else { bail!("Clip introuvable") };
+        if Path::new(&clip.path).exists() {
+            recycle(Path::new(&clip.path))?;
+        }
+        if !clip.thumb.is_empty() {
+            let _ = std::fs::remove_file(&clip.thumb);
+        }
+        self.clips.retain(|c| c.id != id);
+        self.save()
+    }
+
+    /// Renomme le fichier sur le disque en même temps que le titre.
+    pub fn rename(&mut self, id: &str, title: &str) -> Result<()> {
+        let clip = self.get_mut(id).ok_or_else(|| anyhow::anyhow!("Clip introuvable"))?;
+        let old = PathBuf::from(&clip.path);
+        let ext = old.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "mp4".into());
+        let mut new = old.with_file_name(format!("{}.{ext}", util::safe_name(title)));
+        let mut n = 2;
+        while new.exists() && new != old {
+            new = old.with_file_name(format!("{} ({n}).{ext}", util::safe_name(title)));
+            n += 1;
+        }
+        if new != old {
+            std::fs::rename(&old, &new)?;
+        }
+        clip.path = new.to_string_lossy().to_string();
+        clip.title = title.to_string();
+        self.save()
+    }
+
+    /// Calcule durée et miniature des clips importés qui n'en ont pas.
+    pub fn fill_missing(&mut self) -> bool {
+        let mut changed = false;
+        for clip in self.clips.iter_mut().take(400) {
+            let path = PathBuf::from(&clip.path);
+            if clip.kind == "screenshot" {
+                if clip.thumb.is_empty() {
+                    clip.thumb = clip.path.clone();
+                    changed = true;
+                }
+                continue;
+            }
+            if clip.duration <= 0.0 {
+                clip.duration = ffmpeg::duration(&path).unwrap_or(0.0);
+                changed = true;
+            }
+            if clip.thumb.is_empty() || !Path::new(&clip.thumb).is_file() {
+                let out = thumbs_dir().join(format!("{}.jpg", clip.id));
+                if ffmpeg::thumbnail(&path, (clip.duration * 0.5).min(3.0), &out).is_ok() {
+                    clip.thumb = out.to_string_lossy().to_string();
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let _ = self.save();
+        }
+        changed
+    }
+}
+
+/// Corbeille Windows (annulable), jamais de suppression définitive.
+pub fn recycle(path: &Path) -> Result<()> {
+    use windows_sys::Win32::UI::Shell::{
+        FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, SHFILEOPSTRUCTW, SHFileOperationW,
+    };
+    let mut from: Vec<u16> = path.as_os_str().encode_wide_vec();
+    from.push(0);
+    from.push(0);
+    let mut op: SHFILEOPSTRUCTW = unsafe { std::mem::zeroed() };
+    op.wFunc = FO_DELETE;
+    op.pFrom = from.as_ptr();
+    op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT) as u16;
+    let r = unsafe { SHFileOperationW(&mut op) };
+    if r != 0 {
+        bail!("Impossible d'envoyer le fichier à la Corbeille (code {r})");
+    }
+    Ok(())
+}
+
+trait WideVec {
+    fn encode_wide_vec(&self) -> Vec<u16>;
+}
+
+impl WideVec for std::ffi::OsStr {
+    fn encode_wide_vec(&self) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        self.encode_wide().collect()
+    }
+}

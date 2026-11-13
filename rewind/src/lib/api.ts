@@ -1,0 +1,358 @@
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { t, locale } from "./i18n.svelte";
+
+export type Marker = { time: number; kind: string; label: string };
+
+export type Clip = {
+  id: string;
+  path: string;
+  thumb: string;
+  title: string;
+  game: string;
+  created: number;
+  duration: number;
+  size: number;
+  kind: "manual" | "auto" | "edit" | "screenshot" | string;
+  markers: Marker[];
+  favorite: boolean;
+  tags: string[];
+};
+
+export type AudioSource = {
+  id: string;
+  kind: "system" | "mic" | "app" | string;
+  device: string;
+  app: string;
+  label: string;
+  enabled: boolean;
+  volume: number;
+};
+
+export type EventRule = { enabled: boolean; before: number; after: number };
+
+export type Settings = {
+  launch_at_startup: boolean;
+  start_minimized: boolean;
+  close_to_tray: boolean;
+  clip_folder: string;
+  folder_per_game: boolean;
+  recording_enabled: boolean;
+  capture_mode: "monitor" | "window" | string;
+  monitor: string;
+  window_exe: string;
+  buffer_seconds: number;
+  clip_seconds: number;
+  clip_long_seconds: number;
+  fps: number;
+  resolution: number;
+  bitrate_mbps: number;
+  encoder: string;
+  show_cursor: boolean;
+  eco_mode: boolean;
+  audio_sources: AudioSource[];
+  separate_tracks: boolean;
+  audio_offset_ms: number;
+  mic_denoise: boolean;
+  input_overlay: boolean;
+  voice_command: boolean;
+  auto_update: boolean;
+  language: "auto" | "fr" | "en" | string;
+  hotkeys: { clip: string; clip_long: string; clip_custom: string; session: string; screenshot: string; toggle_recording: string; bookmark: string };
+  sound_on_clip: boolean;
+  sound_volume: number;
+  toast_on_clip: boolean;
+  notify_overlay: boolean;
+  notify_position: string;
+  welcome_banner: boolean;
+  cs2: Cs2Rules & {
+    enabled: boolean;
+    port: number;
+    timing: "round" | "instant" | string;
+    modes: Record<string, boolean>;
+    /** Profil utilisé : "legit" (règles ci-dessus) ou "hvh" (règles de `hvh`) */
+    profile: "legit" | "hvh" | string;
+    hvh: Cs2Rules;
+  };
+  theme: "dark" | "light" | string;
+  accent: string;
+  animations: boolean;
+  density: "comfortable" | "compact" | string;
+  webhooks: { name: string; url: string }[];
+  discord_max_mb: number;
+  max_library_gb: number;
+  first_run_done: boolean;
+};
+
+/** Règles d'un profil CS2 (legit ou HvH) */
+export type Cs2Rules = {
+  merge_gap: number;
+  events: Record<string, EventRule>;
+  onetap_ignore_snipers: boolean;
+  streak_count: number;
+  streak_window: number;
+  min_round_kills: number;
+  min_sequence_kills: number;
+  max_sequence: number;
+  special_always: boolean;
+};
+
+export type Status = {
+  recording: boolean;
+  starting: boolean;
+  buffered: number;
+  buffer_target: number;
+  encoder: string;
+  width: number;
+  height: number;
+  fps: number;
+  buffer_mb: number;
+  error: string;
+  audio: { label: string; level: number; active: boolean }[];
+  app: string;
+  /** Début du clip sur mesure en cours (0 = aucun) */
+  custom_since: number;
+  /** Début de la session complète en cours (0 = aucune) */
+  session_since: number;
+  /** Commande vocale : 0 coupée, 1 démarrage, 2 à l'écoute, 3 indisponible, 4 erreur */
+  voice: number;
+};
+
+export type Hardware = {
+  monitors: { index: number; handle: number; name: string; width: number; height: number; primary: boolean; x: number; y: number }[];
+  outputs: { id: string; name: string; default: boolean }[];
+  inputs: { id: string; name: string; default: boolean }[];
+  encoders: string[];
+  apps: string[];
+  ffmpeg: string;
+};
+
+export type Cs2Info = {
+  installs: string[];
+  configured: string[];
+  running: boolean;
+  needs_restart: boolean;
+  since_last: number;
+  live: { messages: number; map: string; mode: string; map_phase: string; round_phase: string; spectating: boolean; token_mismatch: boolean; kills: number };
+};
+
+export type UpdateInfo = { configured: boolean; current: string; available: string | null; notes: string };
+
+/** Touche clavier/souris : `key` = code virtuel Windows (1 clic gauche, 2 clic droit, 0x57 W…), `t` en secondes dans le clip. */
+export type InputEvent = { t: number; key: number; down: boolean };
+
+export type MediaInfo = { duration: number; width: number; height: number; fps: number; tracks: string[] };
+export type Filmstrip = { sprite: string; frames: number; interval: number; frame_w: number; frame_h: number };
+export type Waveform = { rate: number; peaks: number[] };
+
+export type StudioExportPiece = {
+  path: string;
+  start: number;
+  end: number;
+  speed: number;
+  volume: number;
+  track_volumes: number[];
+  transition: string;
+  transition_dur: number;
+  clip_id: string;
+};
+export type StudioExportOptions = {
+  title: string;
+  format: string;
+  height: number;
+  fps: number;
+  max_mb: number;
+  music: { path: string; volume: number; offset: number; at: number; fade_in: number; fade_out: number; duck: boolean } | null;
+  keys: boolean;
+  lang: string;
+};
+
+export type Moment = { time: number; kind: string; multi: string; weapon: string; round: number; count?: number };
+export type Cs2Event =
+  | { Connected: { map: string; mode: string } }
+  | { Moment: Moment }
+  | { Clip: { title: string } };
+
+export const api = {
+  getSettings: () => invoke<Settings>("get_settings"),
+  saveSettings: (settings: Settings) => invoke<{ hotkey_errors: string[]; cs2_files: string[] }>("save_settings", { settings }),
+  status: () => invoke<Status>("get_status"),
+  clips: () => invoke<Clip[]>("list_clips"),
+  refresh: () => invoke<Clip[]>("refresh_library"),
+  clipNow: (seconds?: number) => invoke<void>("clip_now", { seconds }),
+  /** "custom" (clip sur mesure), "session" (session complète) ou "bookmark" (repère) : comme les raccourcis */
+  holdAction: (action: "custom" | "session" | "bookmark") => invoke<void>("hold_action", { action }),
+  clipInputs: (id: string) => invoke<InputEvent[]>("clip_inputs", { id }),
+  checkUpdate: () => invoke<UpdateInfo>("check_update"),
+  installUpdate: () => invoke<void>("install_update"),
+  screenshot: () => invoke<void>("take_screenshot"),
+  setRecording: (enabled: boolean) => invoke<void>("set_recording", { enabled }),
+  setMicMuted: (muted: boolean) => invoke<void>("set_mic_muted", { muted }),
+  updateClip: (id: string, patch: { title?: string; favorite?: boolean; tags?: string[] }) =>
+    invoke<Clip>("update_clip", { id, ...patch }),
+  deleteClips: (ids: string[]) => invoke<void>("delete_clips", { ids }),
+  reveal: (id: string) => invoke<void>("reveal_clip", { id }),
+  openExternal: (id: string) => invoke<void>("open_external", { id }),
+  openFolder: (path: string) => invoke<void>("open_folder", { path }),
+  copy: (id: string) => invoke<void>("copy_clip", { id }),
+  copyForDiscord: (id: string) => invoke<{ compressed: boolean; size_mb: number; height: number; max_mb: number }>("copy_for_discord", { id }),
+  studioExport: (pieces: StudioExportPiece[], options: StudioExportOptions, game: string) =>
+    invoke<Clip>("studio_export", { pieces, options, game }),
+  mediaInfo: (path: string) => invoke<MediaInfo>("media_info", { path }),
+  mediaFilmstrip: (path: string) => invoke<Filmstrip>("media_filmstrip", { path }),
+  mediaWaveform: (path: string) => invoke<Waveform>("media_waveform", { path }),
+  trim: (id: string, start: number, end: number, exact: boolean) => invoke<Clip>("edit_trim", { id, start, end, exact }),
+  merge: (ids: string[]) => invoke<Clip>("edit_merge", { ids }),
+  vertical: (id: string, mode: string, start: number, end: number) => invoke<Clip>("edit_vertical", { id, mode, start, end }),
+  shareDiscord: (id: string, webhook: number, message: string) =>
+    invoke<{ url: string; compressed: boolean }>("share_discord", { id, webhook, message }),
+  hardware: () => invoke<Hardware>("get_hardware"),
+  cs2Info: () => invoke<Cs2Info>("cs2_info"),
+  cs2Install: () => invoke<string[]>("cs2_install"),
+  engineLog: () => invoke<string>("engine_log"),
+  quit: () => invoke<void>("quit_app"),
+};
+
+export const fileUrl = (path: string) => (!path ? "" : path.startsWith("/mock/") ? path : convertFileSrc(path));
+
+const KIND_FR: Record<string, string> = {
+  kill: "Kill",
+  headshot: "Headshot",
+  onetap: "One Tap",
+  knife: "Couteau",
+  zeus: "Zeus",
+  collateral: "Collateral",
+  "2k": "2K",
+  "3k": "3K",
+  "4k": "4K",
+  ace: "ACE",
+  clutch: "Clutch",
+  streak: "Série",
+  death: "Mort",
+  assist: "Assist",
+  manual: "Raccourci",
+};
+/** Libellés des moments (traduits à la lecture). */
+export const KIND_LABEL: Record<string, string> = new Proxy(KIND_FR, {
+  get: (o, k: string) => (k in o ? t(o[k]) : undefined),
+});
+
+export function formatDuration(s: number): string {
+  if (!isFinite(s) || s <= 0) return "0:00";
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
+export function formatSize(bytes: number): string {
+  if (bytes > 1e9) return `${(bytes / 1e9).toFixed(1)} ${t("Go")}`;
+  if (bytes > 1e6) return `${(bytes / 1e6).toFixed(0)} ${t("Mo")}`;
+  if (bytes <= 0) return `0 ${t("Ko")}`;
+  return `${Math.max(1, Math.round(bytes / 1e3))} ${t("Ko")}`;
+}
+
+export function relativeDate(epoch: number): string {
+  const d = new Date(epoch * 1000);
+  const now = new Date();
+  const diff = (now.getTime() - d.getTime()) / 1000;
+  if (diff < 60) return t("à l'instant");
+  if (diff < 3600) return t("il y a {n} min", { n: Math.floor(diff / 60) });
+  const time = d.toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" });
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return t("aujourd'hui, {h}", { h: time });
+  const y = new Date(now);
+  y.setDate(now.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return t("hier, {h}", { h: time });
+  return d.toLocaleDateString(locale(), { day: "numeric", month: "short", year: d.getFullYear() === now.getFullYear() ? undefined : "numeric" }) + `, ${time}`;
+}
+
+export function dayGroup(epoch: number): string {
+  const d = new Date(epoch * 1000);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return t("Aujourd'hui");
+  const y = new Date(now);
+  y.setDate(now.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return t("Hier");
+  const diffDays = (now.getTime() - d.getTime()) / 86400000;
+  if (diffDays < 7) return d.toLocaleDateString(locale(), { weekday: "long" }).replace(/^./, (c) => c.toUpperCase());
+  return d.toLocaleDateString(locale(), { month: "long", year: "numeric" }).replace(/^./, (c) => c.toUpperCase());
+}
+
+/** Badges principaux d'un clip (événements CS2, etc.) */
+export function badges(clip: Clip): { label: string; hot: boolean }[] {
+  const kinds = clip.markers.map((m) => m.kind);
+  const out: { label: string; hot: boolean }[] = [];
+  for (const k of ["ace", "4k", "3k", "clutch", "collateral", "onetap", "knife", "zeus", "2k"]) {
+    if (kinds.includes(k)) out.push({ label: KIND_LABEL[k], hot: ["ace", "4k", "clutch"].includes(k) });
+  }
+  const hs = kinds.filter((k) => k === "headshot").length;
+  if (hs > 0 && out.length < 3) out.push({ label: hs > 1 ? `${hs}× HS` : "HS", hot: false });
+  return out.slice(0, 3);
+}
+
+/** Couleur propre à chaque jeu / appli (connue, sinon déduite du nom). */
+const GAME_COLORS: Record<string, string> = {
+  "counter-strike 2": "#f0a23b",
+  discord: "#7b86ff",
+  valorant: "#ff5a64",
+  fortnite: "#b07cff",
+  "league of legends": "#d4af5a",
+  minecraft: "#6cc24a",
+  "rocket league": "#3b8cff",
+  "apex legends": "#e5484d",
+  "overwatch 2": "#f99e1a",
+  chrome: "#5a9bff",
+  edge: "#35c1d9",
+  firefox: "#ff8a3d",
+  brave: "#ff6a3d",
+  spotify: "#1ed760",
+  steam: "#66c0f4",
+  bureau: "#9aa3b5",
+};
+
+export function gameColor(name: string): string {
+  const key = (name || "Bureau").toLowerCase();
+  if (GAME_COLORS[key]) return GAME_COLORS[key];
+  let h = 0;
+  for (const c of key) h = (h * 31 + c.charCodeAt(0)) % 360;
+  return `hsl(${h} 70% 62%)`;
+}
+
+/** Teinte d'un jeu dans l'interface : volontairement neutre (la couleur est réservée aux signaux). */
+export function gameTone(_name: string): string {
+  return "#5c5c63";
+}
+
+export function gameInitials(name: string): string {
+  const words = (name || "Bureau").replace(/[^\p{L}\p{N} ]/gu, " ").split(/\s+/).filter(Boolean);
+  if (words.length >= 2 && /\d/.test(words[words.length - 1])) return (words[0][0] + words[words.length - 1]).toUpperCase().slice(0, 3);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  return (words[0] ?? "?").slice(0, 2).toUpperCase();
+}
+
+/** Découpe en sessions : des clips séparés de moins de 2 h appartiennent à la même session. */
+export function sessions(clips: Clip[]): { label: string; games: string[]; clips: Clip[] }[] {
+  const sorted = [...clips].sort((a, b) => b.created - a.created);
+  const out: { label: string; games: string[]; clips: Clip[] }[] = [];
+  for (const c of sorted) {
+    const last = out[out.length - 1];
+    const prev = last?.clips[last.clips.length - 1];
+    if (last && prev && prev.created - c.created < 2 * 3600) last.clips.push(c);
+    else out.push({ label: "", games: [], clips: [c] });
+  }
+  for (const s of out) {
+    const start = new Date(s.clips[s.clips.length - 1].created * 1000);
+    const h = start.getHours();
+    const moment = h < 6 ? "nuit" : h < 12 ? "matin" : h < 18 ? "après-midi" : "soir";
+    const day = dayGroup(s.clips[0].created);
+    const now = new Date();
+    const ageDays = (now.getTime() - start.getTime()) / 86400000;
+    if (day === t("Aujourd'hui")) s.label = t(moment === "nuit" ? "Cette nuit" : moment === "après-midi" ? "Cet après-midi" : moment === "matin" ? "Ce matin" : "Ce soir");
+    else if (ageDays < 7) s.label = `${day} ${t(moment)}`;
+    else s.label = `${start.toLocaleDateString(locale(), { day: "numeric", month: "short" })} · ${t(moment)}`;
+    s.label += ` · ${start.toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" })}`;
+    const counts = new Map<string, number>();
+    for (const c of s.clips) counts.set(c.game || t("Bureau"), (counts.get(c.game || t("Bureau")) ?? 0) + 1);
+    s.games = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([g]) => g);
+  }
+  return out;
+}

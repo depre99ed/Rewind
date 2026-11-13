@@ -1,69 +1,81 @@
-# Rewind
+# Rewind : documentation développeur
 
-Clips instantanés pour Windows, légers et ouverts. Rewind filme en continu (jeux, Discord, bureau)
-et garde les dernières secondes quand tu appuies sur un raccourci. En Rust (Tauri 2) + Svelte 5.
+Guide pour compiler, tester et comprendre le code. Pour la présentation de l'application, voir le [README principal](../README.md).
 
-*Instant clips for Windows, lightweight and open. Rewind records continuously (games, Discord, desktop)
-and keeps the last seconds when you press a hotkey. Interface in French and English.*
+## Architecture
 
-## Ce que fait Rewind
+| Partie | Fichier | Rôle |
+|---|---|---|
+| Capture et encodage | `src-tauri/src/recorder.rs` | FFmpeg `gfxcapture` (Windows Graphics Capture, sans injection), puis NVENC, AMF ou Quick Sync. Segments de 1 s horodatés à l'horloge du PC, assemblés sans réencodage à l'export |
+| Audio | `src-tauri/src/audio.rs` | WASAPI : son du PC (sans l'application qui a sa propre piste), micro, une piste par application |
+| Counter-Strike 2 | `src-tauri/src/cs2.rs` | Serveur Game State Integration sur `127.0.0.1:12762`, détection des moments, règles Legit et HvH |
+| Bibliothèque | `src-tauri/src/library.rs` | Index, miniatures, Corbeille Windows (jamais de suppression définitive) |
+| Montage | `src-tauri/src/editor.rs`, `media.rs` | Couper, fusionner, Studio, vertical 9:16, compression Discord |
+| Partage | `src-tauri/src/share.rs` | Webhook Discord, copie du fichier pour le presse-papiers |
+| Mises à jour | `src-tauri/src/update.rs` | Recherche et installation signées depuis GitHub Releases |
+| Veille | `src-tauri/src/watchdog.rs` | Détecte une fenêtre figée, écrit une ligne de journal et une image mémoire `gel-*.dmp` |
+| Interface | `src/lib/components/` | Svelte 5. Verre liquide dans `src/lib/glass.ts`, jetons de style dans `src/lib/styles.css` |
 
-- **Capture sans injection** : Windows Graphics Capture + encodeur de la carte graphique (NVENC, AMF,
-  QuickSync ; x264 en secours). Cadence calée sur l'écran (100 Hz → 50 i/s) pour une image régulière.
-- **Son sur pistes séparées** : son du PC, micro, Discord (chaque appli peut avoir sa piste), mixage en plus.
-  Anti-bruit du micro en option.
-- **Raccourcis** : clip court, clip long, clip sur mesure (début / fin), session complète (un fichier,
-  kills repérés), repère, capture d'écran, pause. Bandeau des raccourcis au lancement d'un jeu.
-- **Counter-Strike 2** : clips automatiques par l'API officielle de Valve (Game State Integration),
-  un clip par round (seuil réglable), séquences en deathmatch / HvH, one tap, collateral, ace…
-- **Studio** : frise avec vignettes et forme d'onde, glisser-déposer, aimant, vitesse, transitions,
-  musique de fond (fondus, atténuation automatique), volume par piste, touches clavier/souris incrustées,
-  modèles TikTok / YouTube / Discord 10–20 Mo.
-- **Partage** : « Copier pour Discord » compresse sous la taille voulue puis met le fichier dans le presse-papiers.
-- **Options** : touches clavier/souris à l'écran (touches de jeu seulement, jeu au premier plan seulement),
-  commande vocale « Rewind clip » (hors ligne, reconnaissance vocale de Windows).
-- **Robustesse** : chien de garde, reprise en ~2 s après une panne de l'enregistreur, clips recollés à cheval
-  sur un redémarrage, pause si le disque est presque plein, réglages et bibliothèque réparés s'ils sont abîmés.
-- **Mises à jour signées** (GitHub Releases) : une version non signée par la clé du projet est refusée.
+Deux règles à connaître :
 
-Rien n'est envoyé sur Internet (sauf si tu utilises un webhook Discord ou la recherche de mise à jour).
+- **Une commande Tauri sans `async` tourne sur le fil de l'interface.** Elles sont toutes déclarées `#[tauri::command(async)]` pour qu'aucune ne puisse figer la fenêtre en attendant un verrou.
+- **Ne jamais appeler `GetWindowTextW` sur la fenêtre au premier plan.** Si c'est la fenêtre de Rewind, Windows attend le fil de l'interface. Le code utilise `InternalGetWindowText`.
 
 ## Compiler
 
-Prérequis : Rust stable, Node 20+, et `ffmpeg.exe` + `ffprobe.exe` (build récente avec `gfxcapture`)
-dans `src-tauri/bin/` (non versionnés).
+Prérequis : Rust stable, Node 20 ou plus, les outils C++ de Visual Studio, et `ffmpeg.exe` et `ffprobe.exe`
+(build récente avec `gfxcapture` et l'option `dup_frames`, par exemple « nightly » de gyan.dev) dans `src-tauri/bin/`. Ces deux fichiers ne sont pas versionnés.
 
-```bash
+```powershell
+cd rewind
 npm install
-npm run tauri dev
+npm run tauri dev      # application avec rechargement
+npm run dev            # interface seule dans un navigateur, moteur simulé (src/lib/mock.ts)
 ```
 
-Installeur signé : `npm run release` (clé existante requise dans
-`%USERPROFILE%\.tauri\rewind-updater.key`, génération de `latest.json`, copie sur le Bureau).
-Publication complète : `npm run release -- -Version 0.2.2 -Publish -Notes "Corrections"`.
-Voir [le guide de publication](../PUBLICATION.md) pour les prérequis et les vérifications.
+Installeur signé :
+
+```powershell
+npm run release        # compile, signe et copie Rewind-setup.exe sur le Bureau
+```
+
+La clé privée de signature doit exister dans `%USERPROFILE%\.tauri\rewind-updater.key`. Elle ne va jamais dans le dépôt.
+Pour publier une version, voir [`PUBLICATION.md`](../PUBLICATION.md).
 
 ## Tests
 
-Tests unitaires : `cargo test` dans `src-tauri` (CS2, Studio, réglages, recollage, touches…).
+Tests unitaires (CS2, Studio, réglages, recollage, touches) :
 
-Tests de bout en bout (mettre `REWIND_DATA_DIR` vers un dossier de test, jamais vers les vraies données) :
+```powershell
+cd src-tauri
+cargo test --lib
+```
+
+Tests de bout en bout. **Toujours** mettre `REWIND_DATA_DIR` vers un dossier de test, jamais vers les vraies données.
 
 | Commande | Vérifie |
 |---|---|
-| `rewind --stress <minutes> <dossier>` | endurance : clips en continu et en rafale, FFmpeg tué régulièrement, mémoire, CPU, handles |
-| `rewind --stitch <dossier> [son]` | clip à cheval sur une panne (`REWIND_DOUBLE=1` : deux pannes de suite) |
-| `rewind --hold <dossier>` | session complète plus longue que le tampon, avec repères |
-| `rewind --studio <clipA> <clipB> <dossier> [musique]` | exports du Studio (durées image ET son, 480p, taille max, touches) |
-| `rewind --media <fichier>` | pistes, vignettes, forme d'onde |
-| `rewind --keys` | crochets clavier réels (Maj / Ctrl simulés) |
-| `rewind --voice <dossier de .wav>` | commande vocale (oui-* doit déclencher, non-* jamais) |
-| `rewind --verify-update <setup.exe> <.sig>` | signature des mises à jour |
-| `rewind --replay-cs2 <journal.jsonl>` | rejoue une partie CS2 enregistrée |
+| `rewind --selftest <secondes> <dossier>` | Capture et export sans interface |
+| `rewind --stress <minutes> <dossier>` | Endurance : clips en continu et en rafale, FFmpeg tué régulièrement, mémoire, processeur, handles |
+| `rewind --stitch <dossier> [son]` | Clip à cheval sur une panne (`REWIND_DOUBLE=1` : deux pannes de suite, `REWIND_CUT_END=<s>` : son coupé avant la fin) |
+| `rewind --hold <dossier>` | Session complète plus longue que le tampon, avec repères |
+| `rewind --studio <clipA> <clipB> <dossier> [musique]` | Exports du Studio : durées image et son, 480p, taille maximale, touches |
+| `rewind --media <fichier>` | Pistes, vignettes, forme d'onde |
+| `rewind --keys` | Crochets clavier réels |
+| `rewind --voice <dossier de .wav>` | Commande vocale : les « oui » déclenchent, les « non » jamais |
+| `rewind --replay-cs2 <journal.jsonl>` | Rejoue une partie CS2 enregistrée |
+| `rewind --verify-update <setup.exe> <.sig>` | Signature d'une mise à jour, et refus d'un fichier modifié |
+| `rewind --check-update <rapport.json> [--download]` | Contrôle le canal GitHub réel, télécharge et vérifie la signature sans rien installer |
 
 Traductions : `node tools/check-i18n.mjs` vérifie que chaque phrase de l'interface a sa version anglaise.
 
-## Licence
+Gel de la fenêtre : si Rewind écrit « interface bloquée » dans son journal, il a aussi enregistré une image mémoire
+`gel-*.dmp` dans `%LOCALAPPDATA%\com.rewind.app\`. Elle se lit avec WinDbg : `cdb -z gel.dmp -c "~*k 25; q"`.
 
-À confirmer par l'auteur (le `package.json` indique MIT). FFmpeg est distribué à côté de Rewind sous sa propre
-licence (`src-tauri/bin/FFMPEG-LICENSE.txt`).
+## Données
+
+| Quoi | Où |
+|---|---|
+| Clips | `Vidéos\Rewind\<jeu>\` |
+| Réglages, bibliothèque, journal | `%LOCALAPPDATA%\com.rewind.app\` |
+| Tampon d'enregistrement | dossier `buffer` dans le dossier de données, vidé au démarrage de l'instance principale |

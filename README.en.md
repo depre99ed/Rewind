@@ -1,79 +1,132 @@
+<div align="center">
+
+<img src="docs/logo.png" alt="Rewind logo" width="96" height="96">
+
 # Rewind
 
-**Instant clips for Windows.** Rewind records your screen continuously and keeps the last seconds
-when you press a hotkey. In Counter-Strike 2, it clips your best rounds on its own.
+**The last seconds of your screen, always within reach.**<br>
+Press a hotkey and the clip is saved. In Counter-Strike 2, your best rounds are clipped for you.
 
-[Download for Windows](https://github.com/depre99ed/Rewind/releases/latest) · Windows 11 and recent Windows 10, 64-bit · English and French · [Version française](README.md)
+[![Download for Windows](https://img.shields.io/badge/Download-for%20Windows-c8f031?style=for-the-badge&labelColor=0b0b0c)](https://github.com/depre99ed/Rewind/releases/latest)
 
-![The Rewind library: latest clip featured, clips grouped by day](docs/bibliotheque.png)
+[![Latest version](https://img.shields.io/github/v/release/depre99ed/Rewind?style=flat-square&label=version&color=2a2a2d&labelColor=0b0b0c)](https://github.com/depre99ed/Rewind/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/depre99ed/Rewind/total?style=flat-square&label=downloads&color=2a2a2d&labelColor=0b0b0c)](https://github.com/depre99ed/Rewind/releases)
+![Windows 11](https://img.shields.io/badge/Windows-11-2a2a2d?style=flat-square&labelColor=0b0b0c)
+![Anti-cheat safe](https://img.shields.io/badge/anti--cheat-no%20injection-2a2a2d?style=flat-square&labelColor=0b0b0c)
 
-## What Rewind does
+[Features](#features) · [Install](#install) · [Hotkeys](#hotkeys) · [Counter-Strike 2](#counter-strike-2) · [Privacy](#privacy) · [Français](README.md)
 
-**Record without thinking about it**
-- One hotkey keeps the last 30 seconds, another the last 2 minutes. Both lengths are adjustable.
-- Custom clip: press once to start, once to stop.
-- Full session: the whole match in a single file, with kills marked on the timeline.
-- Separate audio tracks: system sound, microphone, Discord. Any application can get its own track.
+<br>
 
-**Counter-Strike 2**
-- Automatic clips through Valve's official API (Game State Integration). No injection, no reading of game memory.
-- One clip per round, triggered by what you choose: kill count, one tap, headshot, knife, Zeus, collateral, ace.
-- Two profiles, Legit and HvH, each with its own settings.
+<img src="docs/bibliotheque.png" alt="The Rewind library: latest clip featured, clips grouped by day" width="860">
 
-![Counter-Strike 2 automatic clip settings](docs/counter-strike-2.png)
+</div>
 
-**Edit and share**
-- Studio: timeline with thumbnails and waveform, trimming, transitions, background music, per-track volume.
-- Ready-made formats: 16:9, 9:16 with blurred background or cropped, 10 or 20 MB files for Discord.
-- "Copy for Discord" compresses the clip to the right size and puts it on the clipboard, ready to paste.
+<br>
 
-![The Studio: timeline, preview and project settings](docs/studio.png)
+## Why Rewind
+
+You are playing, something wild happens, and it is too late to start recording.
+Rewind runs in the background and keeps the last few minutes in memory. Press a hotkey and what just happened
+is saved, with your PC sound, your microphone and Discord.
+
+- **Light.** About 25 MB of memory for the engine while the window is closed. Encoding runs on your graphics card.
+- **Anti-cheat safe.** Rewind records with Windows Graphics Capture, like the Windows Snipping Tool. It injects nothing into games.
+- **Private.** No account, no analytics. Your clips stay on your PC.
+- **Stable.** If the recorder crashes, it restarts within 2 seconds, and a clip that spans the crash is stitched back together without a gap.
+
+## Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### Record
+- Clip the last 30 seconds or the last 2 minutes, both adjustable
+- Custom clip: press once to start, once to stop
+- Full session in a single file, with highlights marked
+- Separate audio tracks: PC, microphone, Discord, and any application you like
+- 1080p at 60 frames per second by default, even frame pacing on 100 Hz and faster screens
+
+</td>
+<td width="50%" valign="top">
+
+### Edit and share
+- Studio: timeline with thumbnails and waveform, trimming, transitions, background music
+- Ready-made formats: 16:9, 9:16 blurred or cropped, 10 or 20 MB files
+- "Copy for Discord" compresses to the right size and puts the clip on the clipboard
+- Keyboard and mouse presses shown on the video, if you want them
+- Offline voice command "Rewind clip"
+
+</td>
+</tr>
+</table>
+
+<div align="center">
+<img src="docs/studio.png" alt="The Studio: timeline, preview and project settings" width="860">
+</div>
+
+## Counter-Strike 2
+
+Rewind reads Valve's official API, the one used by broadcast overlays (Game State Integration).
+It does not read game memory and injects nothing: no risk for your account.
+
+- **One clip per round.** Even if the round has several great moments, you get a single clip.
+- **You choose what triggers it**: kills in the round, one tap, headshot, knife, Zeus, collateral, ace.
+- **Two profiles.** Legit for competitive, Premier or FACEIT. HvH for community servers, deathmatch and practice, each with its own settings.
+
+<div align="center">
+<img src="docs/counter-strike-2.png" alt="Counter-Strike 2 automatic clip settings" width="860">
+</div>
 
 The screenshots show the French interface. The language can be changed in Settings.
 
 ## Install
 
 1. Download `Rewind_<version>_x64-setup.exe` from the [latest release](https://github.com/depre99ed/Rewind/releases/latest).
-2. Run it. Rewind installs for your Windows account only and does not need administrator rights.
+2. Run it. It installs for your Windows account only, without administrator rights.
 3. Windows may show "Windows protected your PC", because the installer does not have a publisher certificate yet.
    Click **More info**, then **Run anyway**.
 
-Rewind then updates itself. It checks for a new version at startup and every 4 hours. It installs only when you
-click "Install and restart". Every update is signed: a version that is not signed with the project key is rejected.
+**Updates.** Rewind checks for a new version at startup, then every 4 hours. A button appears at the top of the window:
+click "Install and restart" whenever you want. Every update is signed, and Rewind rejects any version that is not signed
+with the project key.
 
-## Default hotkeys
+**Compatibility.** Tested on Windows 11. Windows 10 (version 2004 or newer) should work, but I have not verified it.
 
-All of them can be changed in Settings → Hotkeys.
+**Recommended hardware.** An NVIDIA (NVENC), AMD (AMF) or Intel (Quick Sync) graphics card. Without a hardware encoder,
+Rewind falls back to 720p at 30 frames per second on the CPU to stay light.
+
+## Hotkeys
+
+All hotkeys can be changed in Settings → Hotkeys.
 
 | Hotkey | Action |
 |---|---|
-| `Alt+F10` | Keep the last 30 seconds |
-| `Alt+Shift+F10` | Keep the last 2 minutes |
-| `Alt+F11` | Custom clip: start, then stop |
-| `Alt+F7` | Full session: start, then stop |
-| `Alt+F8` | Add a marker to the running session |
-| `Alt+F12` | Screenshot |
-| `Alt+F9` | Pause or resume recording |
+| <kbd>Alt</kbd> + <kbd>F10</kbd> | Keep the last 30 seconds |
+| <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>F10</kbd> | Keep the last 2 minutes |
+| <kbd>Alt</kbd> + <kbd>F11</kbd> | Custom clip: start, then stop |
+| <kbd>Alt</kbd> + <kbd>F7</kbd> | Full session: start, then stop |
+| <kbd>Alt</kbd> + <kbd>F8</kbd> | Add a marker to the running session |
+| <kbd>Alt</kbd> + <kbd>F12</kbd> | Screenshot |
+| <kbd>Alt</kbd> + <kbd>F9</kbd> | Pause or resume recording |
 
-## Requirements
-
-- **Graphics card**: NVIDIA (NVENC), AMD (AMF) or Intel (Quick Sync). Without a hardware encoder, Rewind falls back to 720p at 30 fps on the CPU.
-- **Defaults**: 1080p at 60 fps. On a 100 Hz screen, the frame rate is locked to 50 fps to keep frames evenly spaced.
-- **Capture**: Windows Graphics Capture, the same technique as the Windows Snipping Tool. Nothing is injected into games, so anti-cheat systems are not affected.
+When a game starts, a small 6-second banner reminds you of these hotkeys.
 
 ## Privacy
 
-Your clips stay on your PC, in `Videos\Rewind\<game>\`. Settings and the log are in `%LOCALAPPDATA%\com.rewind.app\`.
-Rewind has no account and no usage statistics. It only goes online in two cases:
-- to check for updates on this GitHub page;
+Your clips are stored in `Videos\Rewind\<game>\`. Settings and the log are in `%LOCALAPPDATA%\com.rewind.app\`.
+Rewind only goes online in two cases:
+
+- to check for updates, on this repository's releases page;
 - to send a clip to a Discord webhook, if you set one up.
 
-## Build from source
+## For developers
 
-The application lives in [`rewind/`](rewind/): engine in Rust (Tauri 2), interface in Svelte 5, recording through FFmpeg.
-Build steps, tests and architecture are described in [`rewind/README.md`](rewind/README.md) (in French).
+Engine in Rust (Tauri 2), interface in Svelte 5, recording through FFmpeg. Build steps, architecture and tests are in
+[`rewind/README.md`](rewind/README.md) (in French). Publishing a version is described in [`PUBLICATION.md`](PUBLICATION.md) (in French).
 
 ## License
 
-FFmpeg ships with Rewind under its own license ([`rewind/src-tauri/bin/FFMPEG-LICENSE.txt`](rewind/src-tauri/bin/FFMPEG-LICENSE.txt)).
+FFmpeg ships with Rewind under its own license ([text](rewind/src-tauri/bin/FFMPEG-LICENSE.txt)).
 The license for Rewind's own code has not been chosen yet.

@@ -9,10 +9,10 @@ New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Clone du depot public impossible' }
 & git -C $stage checkout -B main | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'Branche de publication impossible' }
-$files = @(& git -C $workspace ls-files --cached --others --exclude-standard -- rewind)
+$files = @(& git -C $workspace ls-files --cached --others --exclude-standard -- rewind docs)
 if ($LASTEXITCODE -ne 0) { throw 'Inventaire des sources impossible' }
 $files = @($files | Where-Object { $_ -notmatch '(^|/)(\.claude|\.vscode|node_modules|target|build|\.svelte-kit|gen)/' -and $_ -notmatch '(\.key|\.pem|\.log|\.env)$' })
-$files += @('README.md', '.gitignore', 'PUBLICATION.md')
+$files += @('README.md', 'README.en.md', '.gitignore', 'PUBLICATION.md')
 $files = @($files | Sort-Object -Unique | Where-Object { Test-Path -LiteralPath (Join-Path $workspace $_) -PathType Leaf })
 # Retirer uniquement les fichiers precedemment publies qui n'existent plus.
 $prefix = [IO.Path]::GetFullPath($stage).TrimEnd('\') + '\'

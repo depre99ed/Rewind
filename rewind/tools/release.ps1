@@ -5,12 +5,15 @@ param(
     [string]$Version = "",
     [string]$Repo = "depre99ed/Rewind",
     [string]$Notes = "",
+    # Notes de version en Markdown (UTF-8) : accents et plusieurs lignes, affichees aussi dans l'appli
+    [string]$NotesFile = "",
     [switch]$Publish
 )
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $workspace = (Resolve-Path (Join-Path $root "..")).Path
 $utf8 = New-Object System.Text.UTF8Encoding $false
+if ($NotesFile) { $Notes = [IO.File]::ReadAllText((Resolve-Path $NotesFile).Path, [Text.Encoding]::UTF8).Trim() }
 function Assert-Exit([string]$Action) {
     if ($LASTEXITCODE -ne 0) { throw "$Action (code $LASTEXITCODE)" }
 }
@@ -108,7 +111,7 @@ try {
     & (Join-Path $PSScriptRoot 'copier-setup.ps1')
     if (-not $Publish) { Write-Host "Build signe pret : $setup"; return }
     if (-not $repoExists) {
-        & gh repo create $Repo --public --description 'Rewind - clips instantanes pour Windows, Tauri et Svelte'
+        & gh repo create $Repo --public --description 'Instant clips for Windows: replay buffer, automatic Counter-Strike 2 clips, built-in editor. No injection.'
         Assert-Exit 'Creation du depot'
     }
     & gh auth setup-git

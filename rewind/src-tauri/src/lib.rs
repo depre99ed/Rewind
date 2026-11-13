@@ -14,6 +14,7 @@ mod toast;
 mod update;
 mod util;
 mod voice;
+mod watchdog;
 
 use library::{Clip, Library};
 use parking_lot::Mutex;
@@ -43,6 +44,8 @@ pub struct AppState {
     custom: Mutex<Option<Hold>>,
     /// Session complète en cours
     session: Mutex<Option<Hold>>,
+    /// Dernier état connu du moteur : renvoyé si le moteur est occupé (l'interface n'attend jamais)
+    last_status: Mutex<recorder::Status>,
 }
 
 /// Enregistrement « long » en cours : heure de début et repères accumulés (kills CS2, repères).
@@ -457,6 +460,12 @@ fn toggle_recording(app: &AppHandle) {
 // Raccourcis clavier globaux
 // ---------------------------------------------------------------------------
 
+/// Exécute `f` hors du fil de l'interface (raccourcis, menu de l'icône).
+fn off_ui(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) {
+    let app = app.clone();
+    std::thread::spawn(move || f(&app));
+}
+
 fn register_hotkeys(app: &AppHandle, settings: &Settings) -> Vec<String> {
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
@@ -479,18 +488,21 @@ fn register_hotkeys(app: &AppHandle, settings: &Settings) -> Vec<String> {
             if event.state != ShortcutState::Pressed {
                 return;
             }
-            let state = app.state::<AppState>();
-            let s = state.settings.lock().clone();
-            match action {
-                "clip" => clip_last(app, s.clip_seconds),
-                "clip_long" => clip_last(app, s.clip_long_seconds),
-                "clip_custom" => toggle_custom(app),
-                "session" => toggle_session(app),
-                "bookmark" => bookmark(app),
-                "screenshot" => screenshot(app),
-                "toggle" => toggle_recording(app),
-                _ => {}
-            }
+            // Ce rappel tourne sur le fil de l'interface : le travail (verrous, notifications) part
+            // dans un fil à lui, pour que la fenêtre ne puisse jamais attendre le moteur.
+            off_ui(app, move |app| {
+                let s = app.state::<AppState>().settings.lock().clone();
+                match action {
+                    "clip" => clip_last(app, s.clip_seconds),
+                    "clip_long" => clip_last(app, s.clip_long_seconds),
+                    "clip_custom" => toggle_custom(app),
+                    "session" => toggle_session(app),
+                    "bookmark" => bookmark(app),
+                    "screenshot" => screenshot(app),
+                    "toggle" => toggle_recording(app),
+                    _ => {}
+                }
+            });
         });
         if let Err(e) = result {
             errors.push(format!("{keys} : {e}"));
@@ -503,7 +515,7 @@ fn register_hotkeys(app: &AppHandle, settings: &Settings) -> Vec<String> {
 // Commandes appelées par l'interface
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_settings(state: State<AppState>) -> Settings {
     state.settings.lock().clone()
 }
@@ -514,7 +526,7 @@ struct SaveResult {
     cs2_files: Vec<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_settings(app: AppHandle, state: State<AppState>, mut settings: Settings) -> Res<SaveResult> {
     settings.sanitize();
     settings.save().map_err(err)?;
@@ -546,9 +558,18 @@ fn save_settings(app: AppHandle, state: State<AppState>, mut settings: Settings)
     Ok(SaveResult { hotkey_errors, cs2_files })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_status(state: State<AppState>) -> recorder::Status {
-    let mut st = state.recorder.lock().status();
+    // Interrogé plusieurs fois par seconde : si le moteur est occupé (démarrage de FFmpeg…),
+    // on renvoie le dernier état connu au lieu d'empiler des attentes.
+    let fresh = state.recorder.try_lock_for(Duration::from_millis(150)).map(|r| r.status());
+    let mut st = match fresh {
+        Some(s) => {
+            *state.last_status.lock() = s.clone();
+            s
+        }
+        None => state.last_status.lock().clone(),
+    };
     st.custom_since = state.custom.lock().as_ref().map(|h| h.start).unwrap_or(0.0);
     st.session_since = state.session.lock().as_ref().map(|h| h.start).unwrap_or(0.0);
     st.voice = voice::STATE.load(std::sync::atomic::Ordering::Relaxed);
@@ -613,13 +634,13 @@ async fn install_update(app: AppHandle) -> Res<()> {
 }
 
 /// Touches clavier/souris gardées avec un clip (vide si l'option était coupée).
-#[tauri::command]
+#[tauri::command(async)]
 fn clip_inputs(id: String) -> Vec<inputs::InputEvent> {
     inputs::for_clip(&id)
 }
 
 /// Boutons de l'interface : clip sur mesure / session complète / repère (comme les raccourcis).
-#[tauri::command]
+#[tauri::command(async)]
 fn hold_action(app: AppHandle, action: String) {
     match action.as_str() {
         "custom" => toggle_custom(&app),
@@ -629,23 +650,23 @@ fn hold_action(app: AppHandle, action: String) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_clips(state: State<AppState>) -> Vec<Clip> {
     state.library.lock().clips.clone()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn clip_now(app: AppHandle, state: State<AppState>, seconds: Option<u32>) {
     let s = seconds.unwrap_or_else(|| state.settings.lock().clip_seconds);
     clip_last(&app, s);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn take_screenshot(app: AppHandle) {
     screenshot(&app);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_recording(app: AppHandle, state: State<AppState>, enabled: bool) {
     let paused = state.recorder.lock().paused;
     if paused == enabled {
@@ -653,12 +674,12 @@ fn set_recording(app: AppHandle, state: State<AppState>, enabled: bool) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_mic_muted(state: State<AppState>, muted: bool) {
     state.recorder.lock().mic_muted.store(muted, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn update_clip(state: State<AppState>, id: String, title: Option<String>, favorite: Option<bool>, tags: Option<Vec<String>>) -> Res<Clip> {
     let mut lib = state.library.lock();
     if let Some(t) = title {
@@ -679,7 +700,7 @@ fn update_clip(state: State<AppState>, id: String, title: Option<String>, favori
     Ok(c)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_clips(state: State<AppState>, ids: Vec<String>) -> Res<()> {
     let mut lib = state.library.lock();
     for id in ids {
@@ -692,24 +713,24 @@ fn clip_path(state: &State<AppState>, id: &str) -> Res<PathBuf> {
     state.library.lock().get(id).map(|c| PathBuf::from(&c.path)).ok_or_else(|| "Clip introuvable".to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn reveal_clip(state: State<AppState>, id: String) -> Res<()> {
     share::reveal(&clip_path(&state, &id)?).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_external(state: State<AppState>, id: String) -> Res<()> {
     share::open_default(&clip_path(&state, &id)?).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_folder(path: String) -> Res<()> {
     let p = PathBuf::from(path);
     std::fs::create_dir_all(&p).ok();
     share::open_default(&p).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn copy_clip(state: State<AppState>, id: String) -> Res<()> {
     share::copy_file_to_clipboard(&clip_path(&state, &id)?).map_err(err)
 }
@@ -964,7 +985,7 @@ struct Cs2Info {
     since_last: f64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn cs2_info(state: State<AppState>) -> Cs2Info {
     let dirs = cs2::cs2_cfg_dirs();
     let installs: Vec<String> = dirs.iter().map(|p| p.to_string_lossy().to_string()).collect();
@@ -984,18 +1005,18 @@ fn cs2_info(state: State<AppState>) -> Cs2Info {
     Cs2Info { installs, configured, running: cs2_pid.is_some(), needs_restart, live, since_last }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn cs2_install(state: State<AppState>) -> Vec<String> {
     let port = state.settings.lock().cs2.port;
     cs2::install_config(port, &cs2::token())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn engine_log() -> String {
     recorder::last_log()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn refresh_library(state: State<AppState>) -> Vec<Clip> {
     let folder = PathBuf::from(&state.settings.lock().clip_folder);
     let mut lib = state.library.lock();
@@ -1006,7 +1027,7 @@ fn refresh_library(state: State<AppState>) -> Vec<Clip> {
     lib.clips.clone()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn quit_app(app: AppHandle) {
     app.exit(0);
 }
@@ -1053,12 +1074,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main(app),
-            "clip" => {
+            "clip" => off_ui(app, |app| {
                 let s = app.state::<AppState>().settings.lock().clip_seconds;
                 clip_last(app, s);
-            }
+            }),
             "shot" => screenshot(app),
-            "toggle" => toggle_recording(app),
+            "toggle" => off_ui(app, toggle_recording),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -1132,6 +1153,7 @@ pub fn selftest(seconds: u64, out: PathBuf) -> i32 {
     for m in util::monitors() {
         println!("écran {} : {}x{} à {} Hz{}", m.name, m.width, m.height, m.refresh, if m.primary { " (principal)" } else { "" });
     }
+    recorder::clean_buffer();
     let mut rec = Recorder::new(settings);
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(seconds) {
@@ -1296,6 +1318,7 @@ pub fn hold_test(out: PathBuf) -> i32 {
     settings.clip_seconds = 5;
     settings.clip_long_seconds = 5;
     settings.buffer_seconds = 10;
+    recorder::clean_buffer();
     let rec = Arc::new(Mutex::new(Recorder::new(settings)));
     let run = |secs: f64| {
         let s = std::time::Instant::now();
@@ -1404,6 +1427,7 @@ pub fn stitch_test(out: PathBuf, audio_fault: bool) -> i32 {
     let _ = std::fs::create_dir_all(&out);
     let mut settings = Settings::load();
     settings.recording_enabled = true;
+    recorder::clean_buffer();
     let rec = Arc::new(Mutex::new(Recorder::new(settings)));
     let t0 = std::time::Instant::now();
     let run = |secs: f64| {
@@ -1568,6 +1592,7 @@ pub fn stress(minutes: u64, out: PathBuf) -> i32 {
     let keep = out.join("clips-recolles");
     let mut settings = Settings::load();
     settings.recording_enabled = true;
+    recorder::clean_buffer();
     let rec = Arc::new(Mutex::new(Recorder::new(settings)));
     let start = std::time::Instant::now();
     let total = Duration::from_secs(minutes * 60);
@@ -1854,6 +1879,7 @@ pub fn run() {
         cs2_live: Mutex::new(None),
         custom: Mutex::new(None),
         session: Mutex::new(None),
+        last_status: Mutex::new(recorder::Status::default()),
     };
     let from_autostart = std::env::args().any(|a| a == "--tray");
 
@@ -1868,6 +1894,8 @@ pub fn run() {
         .manage(state)
         .setup(move |app| {
             let handle = app.handle().clone();
+            // Ici seulement : un 2e lancement s'arrête avant (extension « une seule instance »)
+            recorder::clean_buffer();
             build_tray(&handle)?;
             toast::create(&handle);
             let errors = register_hotkeys(&handle, &settings);
@@ -1886,6 +1914,18 @@ pub fn run() {
             }
             if !(from_autostart || settings.start_minimized) {
                 show_main(&handle);
+            }
+
+            // Veille de l'interface (journal + image mémoire si la fenêtre se fige)
+            watchdog::start(handle.clone());
+            // Test de la veille (debug seulement) : fige l'interface N s, 5 s après le démarrage
+            #[cfg(debug_assertions)]
+            if let Some(secs) = std::env::var("REWIND_TEST_FREEZE_UI").ok().and_then(|s| s.parse::<u64>().ok()) {
+                let h = handle.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(5));
+                    let _ = h.run_on_main_thread(move || std::thread::sleep(Duration::from_secs(secs)));
+                });
             }
 
             // Surveillance du moteur

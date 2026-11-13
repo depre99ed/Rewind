@@ -28,7 +28,7 @@ use windows_sys::Win32::{
         },
     },
     UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
+        GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, InternalGetWindowText,
     },
 };
 
@@ -301,7 +301,11 @@ pub fn foreground() -> Option<Foreground> {
         GetWindowThreadProcessId(hwnd, &mut pid);
         let exe = exe_of_pid(pid)?;
         let mut buf = [0u16; 512];
-        let n = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+        // JAMAIS GetWindowTextW ici : pour une fenêtre de Rewind, il envoie un message au fil de
+        // l'interface et attend sa réponse. Appelé sous le verrou du moteur pendant que l'interface
+        // attend ce verrou, il figeait Rewind pour toujours (gel du 2026-11-13, vu dans une image
+        // mémoire). InternalGetWindowText lit le titre directement, sans message.
+        let n = InternalGetWindowText(hwnd, buf.as_mut_ptr(), buf.len() as i32);
         let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
         let mut rect: RECT = std::mem::zeroed();
         GetWindowRect(hwnd, &mut rect);

@@ -1,6 +1,6 @@
 [package]
 name = "rewind"
-version = "0.2.1"
+version = "0.2.2"
 description = "Rewind : clips instantanés pour Windows (jeux, Discord, bureau)"
 authors = ["Rewind"]
 edition = "2024"
@@ -40,6 +40,8 @@ windows-sys = { version = "0.59", features = [
   "Win32_Storage_FileSystem",
   "Win32_System_Com",
   "Win32_System_DataExchange",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_Kernel",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_IO",
   "Win32_System_JobObjects",

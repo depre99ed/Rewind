@@ -187,11 +187,16 @@ fn buffer_root() -> PathBuf {
     util::data_dir().join("buffer")
 }
 
+/// Nettoie les restes d'une session précédente (à appeler avant de démarrer le moteur).
+pub fn clean_buffer() {
+    let _ = fs::remove_dir_all(buffer_root());
+    let _ = fs::create_dir_all(buffer_root());
+}
+
 impl Recorder {
+    /// Ne touche pas au disque : le tampon se vide avec `clean_buffer`, seulement dans l'instance
+    /// principale (un 2e lancement effaçait le tampon de Rewind déjà ouvert, 2026-11-13).
     pub fn new(settings: Settings) -> Self {
-        // Nettoie les restes d'une session précédente
-        let _ = fs::remove_dir_all(buffer_root());
-        let _ = fs::create_dir_all(buffer_root());
         Self {
             capture: None,
             segments: VecDeque::new(),

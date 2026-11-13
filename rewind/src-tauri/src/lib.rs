@@ -46,6 +46,8 @@ pub struct AppState {
     session: Mutex<Option<Hold>>,
     /// Dernier état connu du moteur : renvoyé si le moteur est occupé (l'interface n'attend jamais)
     last_status: Mutex<recorder::Status>,
+    /// Mise à jour trouvée au lancement, montrée dans la fenêtre « update »
+    pending_update: Mutex<Option<update::UpdateInfo>>,
 }
 
 /// Enregistrement « long » en cours : heure de début et repères accumulés (kills CS2, repères).
@@ -1027,6 +1029,51 @@ fn refresh_library(state: State<AppState>) -> Vec<Clip> {
     lib.clips.clone()
 }
 
+/// Fenêtre de mise à jour : ce qui a été trouvé au lancement.
+#[tauri::command(async)]
+fn pending_update(state: State<AppState>) -> Option<update::UpdateInfo> {
+    state.pending_update.lock().clone()
+}
+
+/// Fenêtre de mise à jour : « Plus tard » → on ouvre Rewind normalement.
+#[tauri::command(async)]
+fn update_later(app: AppHandle) {
+    log::info!("mise à jour remise à plus tard");
+    // La fenêtre principale d'abord : sans aucune fenêtre ouverte, l'appli pourrait se fermer
+    show_main(&app);
+    if let Some(w) = app.get_webview_window("update") {
+        let _ = w.close();
+    }
+}
+
+/// Petite fenêtre centrée, dans le style de l'appli. Renvoie false si elle n'a pas pu s'ouvrir.
+fn show_update_window(app: &AppHandle) -> bool {
+    if let Some(w) = app.get_webview_window("update") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return true;
+    }
+    let built = tauri::WebviewWindowBuilder::new(app, "update", tauri::WebviewUrl::App("update".into()))
+        .title("Rewind")
+        .inner_size(460.0, 340.0)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .decorations(false)
+        .shadow(true)
+        .center()
+        .background_color(tauri::window::Color(10, 10, 11, 255))
+        .focused(true)
+        .build();
+    match built {
+        Ok(_) => true,
+        Err(e) => {
+            log::warn!("fenêtre de mise à jour impossible : {e}");
+            false
+        }
+    }
+}
+
 #[tauri::command(async)]
 fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -1880,8 +1927,16 @@ pub fn run() {
         custom: Mutex::new(None),
         session: Mutex::new(None),
         last_status: Mutex::new(recorder::Status::default()),
+        pending_update: Mutex::new(None),
     };
     let from_autostart = std::env::args().any(|a| a == "--tray");
+    #[allow(unused_mut)]
+    let mut context = tauri::generate_context!();
+    // Tests (debug seulement) : se faire passer pour une version plus ancienne face au vrai canal GitHub
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("REWIND_TEST_CURRENT_VERSION") {
+        context.package_info_mut().version = v.parse().expect("version de test invalide");
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
@@ -1913,7 +1968,28 @@ pub fn run() {
                 let _ = s.save();
             }
             if !(from_autostart || settings.start_minimized) {
-                show_main(&handle);
+                // Lancement par l'utilisateur : s'il existe une mise à jour, une petite fenêtre la propose
+                // (mettre à jour ou plus tard) ; sinon Rewind s'ouvre normalement. L'enregistrement
+                // démarre dans tous les cas, sans attendre.
+                let h = handle.clone();
+                let check = settings.auto_update;
+                tauri::async_runtime::spawn(async move {
+                    let found = if check {
+                        update::check_within(&h, Duration::from_secs(4)).await.ok().filter(|i| i.available.is_some())
+                    } else {
+                        None
+                    };
+                    match found {
+                        Some(info) => {
+                            log::info!("mise à jour proposée au lancement : {:?}", info.available);
+                            *h.state::<AppState>().pending_update.lock() = Some(info);
+                            if !show_update_window(&h) {
+                                show_main(&h);
+                            }
+                        }
+                        None => show_main(&h),
+                    }
+                });
             }
 
             // Veille de l'interface (journal + image mémoire si la fenêtre se fige)
@@ -2153,8 +2229,10 @@ pub fn run() {
             engine_log,
             refresh_library,
             quit_app,
+            pending_update,
+            update_later,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("Rewind n'a pas pu démarrer")
         .run(|app, event| {
             // Plus de fenêtre ouverte : on reste en arrière-plan si « Fermer = réduire » est actif.

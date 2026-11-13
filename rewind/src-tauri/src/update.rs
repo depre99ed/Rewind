@@ -24,12 +24,17 @@ fn endpoint() -> Option<tauri::Url> {
 }
 
 pub async fn check(app: &AppHandle) -> Result<UpdateInfo, String> {
+    check_within(app, std::time::Duration::from_secs(20)).await
+}
+
+/// Recherche avec un délai maximal (au lancement : quelques secondes, pour ne pas retarder la fenêtre).
+pub async fn check_within(app: &AppHandle, timeout: std::time::Duration) -> Result<UpdateInfo, String> {
     let current = app.package_info().version.to_string();
     let Some(url) = endpoint() else {
         return Ok(UpdateInfo { configured: false, current, available: None, notes: String::new() });
     };
     let updater = app.updater_builder().endpoints(vec![url]).map_err(|e| e.to_string())?
-        .timeout(std::time::Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
+        .timeout(timeout).build().map_err(|e| e.to_string())?;
     match updater.check().await {
         Ok(Some(u)) => Ok(UpdateInfo { configured: true, current, available: Some(u.version.clone()), notes: u.body.clone().unwrap_or_default() }),
         Ok(None) => Ok(UpdateInfo { configured: true, current, available: None, notes: String::new() }),

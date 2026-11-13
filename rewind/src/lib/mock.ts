@@ -151,6 +151,12 @@ if (typeof window !== "undefined" && !inTauri) {
             }, 200);
           });
         case "plugin:window|is_maximized": return false;
+        // Mode démo : « ?update=1 » simule une version plus récente (pour les captures)
+        case "check_update":
+          return {
+            configured: true, current: "0.2.1",
+            available: new URLSearchParams(location.search).get("update") ? "0.2.2" : null, notes: "",
+          };
         default: return null;
       }
     },

@@ -2,6 +2,7 @@
   import { Volume2, VolumeX, Gauge, Blend, Scissors, CopyPlus, Trash2, Music, Crosshair, Monitor, Smartphone, X, Keyboard, ArrowLeftToLine, ArrowRightToLine, ArrowLeft, ArrowRight } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { studio, media, SPEEDS, TRANSITIONS, fmtTime, clampSpeed, pickMusic } from "$lib/studio.svelte";
+  import { fit } from "$lib/fit";
   import { fileUrl, gameTone, KIND_LABEL } from "$lib/api";
   import { t } from "$lib/i18n.svelte";
 
@@ -50,7 +51,7 @@
   {#if p}
     <!-- Morceau sélectionné -->
     <header class="head">
-      <div class="hthumb" style="--c:{gameTone(p.game)}">{#if p.thumb}<img src={fileUrl(p.thumb)} alt="" />{/if}</div>
+      <div class="hthumb" style="--c:{gameTone(p.game)}">{#if p.thumb}<img use:fit src={fileUrl(p.thumb)} alt="" />{/if}</div>
       <div class="htext">
         <strong>{p.title}</strong>
         <small class="faint">{t("Morceau {a} sur {b}", { a: i + 1, b: app.studio.length })} · {L.lens[i]?.toFixed(1)} s</small>

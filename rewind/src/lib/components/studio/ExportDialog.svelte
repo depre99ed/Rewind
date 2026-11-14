@@ -2,6 +2,7 @@
   import { Smartphone, MonitorPlay, MessageCircle, SlidersHorizontal, Download, X, Check, FolderOpen, Play, Clipboard, TriangleAlert } from "@lucide/svelte";
   import { app, type StudioFormat } from "$lib/state.svelte";
   import { studio, media, clampSpeed, fmtTime } from "$lib/studio.svelte";
+  import { fit } from "$lib/fit";
   import { api, fileUrl, formatSize, type Clip } from "$lib/api";
   import { t, lang } from "$lib/i18n.svelte";
 
@@ -118,7 +119,7 @@
 
     {#if done}
       <div class="done">
-        <div class="dthumb">{#if done.thumb}<img src={fileUrl(done.thumb)} alt="" />{/if}<span class="ok"><Check size={22} /></span></div>
+        <div class="dthumb">{#if done.thumb}<img use:fit src={fileUrl(done.thumb)} alt="" />{/if}<span class="ok"><Check size={22} /></span></div>
         <div class="dinfo">
           <strong>{done.title}</strong>
           <span class="faint">{fmtTime(done.duration, true)} · {formatSize(done.size)} · {t("exporté en {n} s", { n: elapsed.toFixed(0) })}</span>

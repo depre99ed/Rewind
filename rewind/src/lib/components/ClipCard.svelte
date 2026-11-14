@@ -3,6 +3,7 @@
   import { app } from "$lib/state.svelte";
   import { type Clip, fileUrl, formatDuration, relativeDate, badges, gameTone } from "$lib/api";
   import { t } from "$lib/i18n.svelte";
+  import { fit } from "$lib/fit";
 
   let { clip, selected = false, selecting = false, onopen, onselect, onfav }: {
     clip: Clip;
@@ -44,12 +45,12 @@
 <div class="card" style="--c:{gameTone(clip.game)}" class:selected role="button" tabindex="0" onclick={click} onkeydown={(e) => e.key === "Enter" && onopen()} onmouseenter={enter} onmouseleave={leave}>
   <div class="media">
     {#if clip.thumb}
-      <img src={fileUrl(clip.thumb)} alt="" loading="lazy" draggable="false" />
+      <img use:fit src={fileUrl(clip.thumb)} alt="" loading="lazy" draggable="false" />
     {:else}
       <div class="ph"></div>
     {/if}
     {#if hover}
-      <video bind:this={video} src={fileUrl(clip.path)} muted playsinline preload="auto" class="appear"></video>
+      <video use:fit bind:this={video} src={fileUrl(clip.path)} muted playsinline preload="auto" class="appear"></video>
     {/if}
     <div class="top">
       <div class="badges">

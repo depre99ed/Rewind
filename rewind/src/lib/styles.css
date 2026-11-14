@@ -114,6 +114,10 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
 button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; padding: 0; letter-spacing: inherit; }
 input, select, textarea { font: inherit; color: inherit; letter-spacing: inherit; }
 img, video { display: block; }
+/* Clip vertical (9:16) dans un cadre 16:9 : image entière + fond flou de la même image, jamais rogné (action `fit`) */
+img.portrait, video.portrait { object-fit: contain !important; background: transparent; }
+.has-portrait { position: relative; overflow: hidden; background: #000; }
+.has-portrait::before { content: ""; position: absolute; inset: -12%; background: var(--pbg, none) center / cover; filter: blur(22px) brightness(0.55) saturate(1.2); }
 :focus-visible { outline: 1.5px solid color-mix(in srgb, var(--text) 70%, transparent); outline-offset: 2px; border-radius: 6px; }
 
 /* ---------- Éléments communs ---------- */

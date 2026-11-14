@@ -2,6 +2,7 @@
   import { Search, Plus, Music, Upload, X, Blend, Film, Clock3 } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { studio, TRANSITIONS, pickMusic, useMusic, recentMusic, fmtTime } from "$lib/studio.svelte";
+  import { fit } from "$lib/fit";
   import { fileUrl, formatDuration, gameTone, badges, type Clip } from "$lib/api";
   import { t } from "$lib/i18n.svelte";
 
@@ -65,7 +66,7 @@
       {#each list as c (c.id)}
         <div class="card" draggable="true" ondragstart={(e) => dragStart(e, c)} role="listitem" title={t("Glisse sur la frise, ou clique sur +")}>
           <div class="thumb" style="--c:{gameTone(c.game)}">
-            {#if c.thumb}<img src={fileUrl(c.thumb)} alt="" loading="lazy" draggable="false" />{/if}
+            {#if c.thumb}<img use:fit src={fileUrl(c.thumb)} alt="" loading="lazy" draggable="false" />{/if}
             <em class="mono">{formatDuration(c.duration)}</em>
             {#if inMontage.has(c.id)}<span class="used">{t("Dans le montage")}</span>{/if}
             <button class="add" onclick={() => studio.insertClips([c])} aria-label={t("Ajouter au montage")}><Plus size={16} /></button>

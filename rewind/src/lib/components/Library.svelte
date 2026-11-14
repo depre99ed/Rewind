@@ -5,6 +5,7 @@
     CalendarDays, Gamepad2, CalendarClock, ArrowDownWideNarrow, Loader2,
   } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
+  import { fit } from "$lib/fit";
   import { api, dayGroup, fileUrl, formatDuration, formatSize, relativeDate, badges, gameTone, sessions, type Clip } from "$lib/api";
   import ClipCard from "./ClipCard.svelte";
   import { t } from "$lib/i18n.svelte";
@@ -144,9 +145,9 @@
         <div class="hero appear" style="--c:{gameTone(hero.game)}">
           <button class="hmedia" onclick={() => (app.openClip = hero)} aria-label={t("Lire")}>
             {#key hero.id}
-              {#if hero.thumb}<img src={fileUrl(hero.thumb)} alt="" />{/if}
+              {#if hero.thumb}<img use:fit src={fileUrl(hero.thumb)} alt="" />{/if}
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video bind:this={heroVideo} src={fileUrl(hero.path)} muted loop playsinline preload="auto"></video>
+              <video use:fit bind:this={heroVideo} src={fileUrl(hero.path)} muted loop playsinline preload="auto"></video>
             {/key}
             <span class="hplay"><Play size={22} fill="currentColor" /></span>
           </button>

@@ -1168,6 +1168,14 @@ fn mark_proposed_update(version: &str) {
     let _ = std::fs::write(util::data_dir().join("update-proposed.txt"), version);
 }
 
+/// L'utilisateur est occupé : jeu ou plein écran au premier plan, clip sur mesure ou session en cours.
+fn user_busy(app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    util::foreground().is_some_and(|f| f.fullscreen || util::is_game(&f.exe, f.fullscreen))
+        || state.custom.lock().is_some()
+        || state.session.lock().is_some()
+}
+
 /// Propose la fenêtre de mise à jour pendant l'utilisation, une seule fois par version, au premier
 /// moment calme : aucun jeu ni plein écran au premier plan, aucun clip sur mesure ni session en cours.
 /// Sinon on réessaie toutes les 20 s pendant 6 h ; le bouton de la barre de titre reste disponible.
@@ -1185,11 +1193,7 @@ fn propose_update_when_idle(app: AppHandle, info: update::UpdateInfo) {
             if !state.settings.lock().auto_update || last_proposed_update() == version {
                 break;
             }
-            let busy = util::foreground().is_some_and(|f| f.fullscreen || util::is_game(&f.exe, f.fullscreen))
-                || state.custom.lock().is_some()
-                || state.session.lock().is_some()
-                || app.get_webview_window("update").is_some();
-            if busy {
+            if user_busy(&app) || app.get_webview_window("update").is_some() {
                 continue;
             }
             *state.pending_update.lock() = Some(info.clone());
@@ -2115,20 +2119,31 @@ pub fn run() {
             if !errors.is_empty() {
                 log::warn!("raccourcis : {errors:?}");
             }
+            // Démarrage automatique avec Windows : jamais depuis un test ni une version de développement
+            // (un essai avait écrit le chemin du dossier de compilation dans le registre de l'utilisateur).
+            let real_install = !cfg!(debug_assertions) && std::env::var_os("REWIND_DATA_DIR").is_none();
             if !settings.first_run_done {
                 // Premier lancement : on applique le choix par défaut une seule fois
-                if settings.launch_at_startup {
+                if settings.launch_at_startup && real_install {
                     let _ = handle.autolaunch().enable();
                 }
                 let state = handle.state::<AppState>();
                 let mut s = state.settings.lock();
                 s.first_run_done = true;
                 let _ = s.save();
+            } else if settings.launch_at_startup && real_install {
+                // À chaque lancement : le démarrage automatique doit viser CET exécutable
+                // (après une mise à jour ou un déplacement, l'ancien chemin ne marcherait plus).
+                if let Err(e) = handle.autolaunch().enable() {
+                    log::warn!("démarrage automatique : {e}");
+                }
             }
-            if !(from_autostart || settings.start_minimized) {
-                // Lancement par l'utilisateur : s'il existe une mise à jour, une petite fenêtre la propose
-                // (mettre à jour ou plus tard) ; sinon Rewind s'ouvre normalement. L'enregistrement
-                // démarre dans tous les cas, sans attendre.
+            // Lancement : s'il existe une mise à jour, une petite fenêtre la propose (mettre à jour ou plus
+            // tard). Sinon Rewind s'ouvre normalement, ou reste réduit dans la zone de notification si
+            // « Démarrage réduit » est actif ou si Windows l'a lancé. L'enregistrement démarre dans tous
+            // les cas, sans attendre.
+            {
+                let minimized = from_autostart || settings.start_minimized;
                 let h = handle.clone();
                 let check = settings.auto_update;
                 tauri::async_runtime::spawn(async move {
@@ -2137,19 +2152,28 @@ pub fn run() {
                     } else {
                         None
                     };
-                    match found {
-                        Some(info) => {
-                            log::info!("mise à jour proposée au lancement : {:?}", info.available);
-                            if let Some(v) = &info.available {
-                                mark_proposed_update(v);
-                            }
-                            h.state::<AppState>().update_at_launch.store(true, std::sync::atomic::Ordering::Relaxed);
-                            *h.state::<AppState>().pending_update.lock() = Some(info);
-                            if !show_update_window(&h) {
-                                show_main(&h);
-                            }
+                    let Some(info) = found else {
+                        if !minimized {
+                            show_main(&h);
                         }
-                        None => show_main(&h),
+                        return;
+                    };
+                    let state = h.state::<AppState>();
+                    // Lancement réduit : « Plus tard » ferme seulement la petite fenêtre, sans ouvrir Rewind
+                    state.update_at_launch.store(!minimized, std::sync::atomic::Ordering::Relaxed);
+                    if minimized && user_busy(&h) {
+                        // Un jeu est au premier plan : on attend un moment calme
+                        log::info!("mise à jour trouvée au lancement réduit, proposée plus tard : {:?}", info.available);
+                        propose_update_when_idle(h.clone(), info);
+                        return;
+                    }
+                    log::info!("mise à jour proposée au lancement : {:?}", info.available);
+                    if let Some(v) = &info.available {
+                        mark_proposed_update(v);
+                    }
+                    *state.pending_update.lock() = Some(info);
+                    if !show_update_window(&h) && !minimized {
+                        show_main(&h);
                     }
                 });
             }

@@ -173,16 +173,45 @@ select.field { padding-right: 28px; appearance: none; background-image: linear-g
 .tag.hot { background: color-mix(in srgb, var(--rec) 16%, transparent); color: var(--rec); }
 
 /* Interrupteur : blanc quand il est activé */
-.switch { position: relative; width: 36px; height: 21px; flex: none; }
-.switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
-.switch span { position: absolute; inset: 0; border-radius: 99px; background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--line-2); transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease); pointer-events: none; }
-.switch span::after { content: ""; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 99px; background: var(--text-2); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4); transition: transform 260ms var(--spring), width 160ms var(--ease), background var(--dur) var(--ease); }
-.switch input:checked + span { background: var(--hi); box-shadow: none; }
-.switch input:checked + span::after { transform: translateX(15px); background: var(--hi-ink); }
-/* Le rond s'étire un peu quand on appuie */
-.switch input:active + span::after { width: 21px; }
+:root[data-theme="dark"] { --sw-off-a: #d6d6da; --sw-off-b: #9a9aa1; --sw-on-a: #323236; --sw-on-b: #09090a; }
+:root[data-theme="light"] { --sw-off-a: #ffffff; --sw-off-b: #efeff1; --sw-on-a: #ffffff; --sw-on-b: #efeff1; }
+:root { --sw-spring: cubic-bezier(0.34, 1.56, 0.5, 1); }
+.switch { position: relative; width: 42px; height: 25px; flex: none; }
+.switch input { position: absolute; inset: -3px; width: calc(100% + 6px); height: calc(100% + 6px); opacity: 0; margin: 0; cursor: pointer; z-index: 1; }
+/* Piste : creuse quand elle est éteinte, pleine (blanc) quand elle est allumée */
+.switch span { position: absolute; inset: 0; border-radius: 99px; background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 3px rgba(0, 0, 0, 0.32); transition: background 320ms var(--ease), box-shadow 320ms var(--ease), transform 220ms var(--ease-out); pointer-events: none; }
+/* Rond : léger dégradé et reflet, il part avec un ressort et s'étire pendant l'appui */
+.switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 19px; height: 19px; border-radius: 99px; background: linear-gradient(180deg, var(--sw-off-a), var(--sw-off-b)); box-shadow: 0 1px 1px rgba(0, 0, 0, 0.28), 0 4px 10px -3px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.6); transition: transform 460ms var(--sw-spring), width 240ms var(--ease-out), background 320ms var(--ease); }
+.switch input:checked + span { background: var(--hi); box-shadow: inset 0 0 0 1px transparent, inset 0 -1px 2px rgba(0, 0, 0, 0.18); }
+.switch input:checked + span::after { transform: translateX(17px); background: linear-gradient(180deg, var(--sw-on-a), var(--sw-on-b)); box-shadow: 0 1px 1px rgba(0, 0, 0, 0.3), 0 4px 10px -3px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.16); }
+/* Appui : la piste se tasse un peu et le rond s'étire (il revient avec un ressort au relâchement) */
+.switch input:active + span { transform: scale(0.96); }
+.switch input:active + span::after { width: 25px; }
 .switch input:checked:active + span::after { transform: translateX(11px); }
 .switch input:focus-visible + span { outline: 1.5px solid color-mix(in srgb, var(--text) 70%, transparent); outline-offset: 2px; }
+
+/* Barre de défilement « verre » (action `glassScroll`) : pastille flottante, extrémités rondes, sans piste */
+.gtrack { position: absolute; top: 0; right: 0; bottom: 0; width: 18px; z-index: 3; cursor: default; touch-action: none; }
+.gthumb {
+  position: absolute; top: 0; right: 5px; width: 5px; border-radius: 99px; opacity: 0; will-change: transform, height;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--text) 46%, transparent), color-mix(in srgb, var(--text) 26%, transparent));
+  box-shadow: inset 0 0.5px 0 color-mix(in srgb, #fff 55%, transparent), inset 0 0 0 0.5px color-mix(in srgb, var(--text) 34%, transparent), 0 2px 6px -1px rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(8px) saturate(1.8); backdrop-filter: blur(8px) saturate(1.8);
+  transition: opacity 260ms var(--ease), width 220ms var(--sw-spring), right 220ms var(--sw-spring), background 200ms;
+}
+.can-scroll .gthumb { opacity: 0.5; }
+.can-scroll.scrolling .gthumb, .can-scroll:hover .gthumb { opacity: 0.95; }
+.gtrack:hover .gthumb, .dragging .gthumb { width: 8px; right: 4px; opacity: 1; }
+.dragging .gthumb { background: linear-gradient(180deg, color-mix(in srgb, var(--text) 62%, transparent), color-mix(in srgb, var(--text) 40%, transparent)); }
+.gscroll-text { overflow-y: auto; -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fade-top, 0px), #000 calc(100% - var(--fade-bottom, 0px)), transparent 100%); mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fade-top, 0px), #000 calc(100% - var(--fade-bottom, 0px)), transparent 100%); }
+
+/* Case à cocher : même langage que l'interrupteur (blanc quand c'est coché, tick qui se dessine) */
+input[type="checkbox"].tick { appearance: none; -webkit-appearance: none; position: relative; flex: none; width: 19px; height: 19px; margin: 0; border-radius: 6.5px; background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--line-2), inset 0 1px 2px rgba(0, 0, 0, 0.3); cursor: pointer; display: grid; place-items: center; transition: background 260ms var(--ease), box-shadow 260ms var(--ease), transform 180ms var(--ease-out); }
+input[type="checkbox"].tick::after { content: ""; width: 19px; height: 19px; background: var(--hi-ink); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.8 8.4l2.8 2.8 5.6-5.8' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.8 8.4l2.8 2.8 5.6-5.8' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px no-repeat; opacity: 0; clip-path: inset(0 100% 0 0); transform: scale(0.5); transition: transform 420ms var(--sw-spring), opacity 160ms var(--ease), clip-path 320ms var(--ease-out); }
+input[type="checkbox"].tick:checked { background: var(--hi); box-shadow: inset 0 -1px 2px rgba(0, 0, 0, 0.18); }
+input[type="checkbox"].tick:checked::after { opacity: 1; clip-path: inset(0 0 0 0); transform: none; transition-delay: 0ms, 0ms, 70ms; }
+input[type="checkbox"].tick:active { transform: scale(0.88); }
+input[type="checkbox"].tick:focus-visible { outline: 1.5px solid color-mix(in srgb, var(--text) 70%, transparent); outline-offset: 2px; }
 
 /* Curseur (range) */
 input[type="range"] { appearance: none; height: 4px; border-radius: 4px; background: var(--panel-3); outline: none; }

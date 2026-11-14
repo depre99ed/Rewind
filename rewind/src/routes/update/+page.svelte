@@ -9,6 +9,7 @@
   import Logo from "$lib/components/Logo.svelte";
   import { EN } from "$lib/i18n-en";
   import { installErrorLog } from "$lib/errlog";
+  import { glassScroll } from "$lib/glassScroll";
 
   type Info = { current: string; available: string | null; notes: string };
   let info = $state<Info | null>(null);
@@ -94,12 +95,14 @@
 
       {#if notes.summary || notes.points.length}
         <section class="notes">
-          {#if notes.summary}<p class="summary">{notes.summary}</p>{/if}
-          {#if notes.points.length}
-            <ul>
-              {#each notes.points as p}<li>{p}</li>{/each}
-            </ul>
-          {/if}
+          <div class="ntext gscroll-text" use:glassScroll>
+            {#if notes.summary}<p class="summary">{notes.summary}</p>{/if}
+            {#if notes.points.length}
+              <ul>
+                {#each notes.points as p}<li>{p}</li>{/each}
+              </ul>
+            {/if}
+          </div>
         </section>
       {/if}
 
@@ -163,30 +166,18 @@
 
   .notes {
     margin-top: 22px;
-    padding: 14px 16px;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
+    position: relative; /* la barre « verre » (glassScroll) flotte dans ce cadre */
+    background: linear-gradient(180deg, color-mix(in srgb, var(--text) 4.5%, var(--panel)), var(--panel));
+    box-shadow: inset 0 0 0 1px var(--line), inset 0 1px 0 color-mix(in srgb, var(--text) 7%, transparent);
+    border-radius: 20px; /* grand arrondi : le texte et la barre en suivent la courbe */
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
-    /* Les barres de défilement sont masquées dans toute l'appli ; ici on en montre une fine, du thème,
-       pour que l'on voie qu'il y a une suite à lire */
-    scrollbar-width: auto; /* nécessaire pour que les règles ::-webkit-scrollbar ci-dessous s'appliquent */
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
-  /* Barre « verre » : une pastille fine et translucide, sans piste ni flèches, qui s'éclaircit au survol */
-  .notes::-webkit-scrollbar { display: block; width: 11px; }
-  .notes::-webkit-scrollbar-track { background: transparent; margin: 10px 0; }
-  .notes::-webkit-scrollbar-button { display: none; }
-  .notes::-webkit-scrollbar-thumb {
-    border: 3.5px solid transparent;
-    border-radius: 99px;
-    background-clip: padding-box;
-    background-color: color-mix(in srgb, var(--text) 22%, transparent);
-    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--text) 30%, transparent), inset 0 1px 0 color-mix(in srgb, var(--text) 25%, transparent);
-    transition: background-color 160ms;
-  }
-  .notes::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text) 42%, transparent); }
+  /* Le texte défile dans le cadre arrondi ; il s'efface doucement en haut et en bas (mask dans styles.css) */
+  .ntext { flex: 1; min-height: 0; padding: 18px 26px 18px 20px; overscroll-behavior: contain; }
   .summary { margin: 0; font-weight: 500; }
   ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
   li { position: relative; padding-left: 14px; color: var(--text-2); font-size: 13px; line-height: 1.45; }

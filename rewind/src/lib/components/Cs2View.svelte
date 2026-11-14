@@ -283,7 +283,7 @@
           <div class="ghead"><strong>{t("Modes de jeu")}</strong><span class="faint">{t("Les clips automatiques ne se font que dans les modes cochés.")}</span></div>
           <div class="modes">
             {#each modes as [key, label]}
-              <label class="mode"><input type="checkbox" checked={s.cs2.modes[key] ?? false} onchange={(e) => app.patch((x) => (x.cs2.modes[key] = e.currentTarget.checked))} />{t(label)}</label>
+              <label class="mode"><input class="tick" type="checkbox" checked={s.cs2.modes[key] ?? false} onchange={(e) => app.patch((x) => (x.cs2.modes[key] = e.currentTarget.checked))} />{t(label)}</label>
             {/each}
           </div>
         </div>
@@ -373,7 +373,6 @@
   .num .field { width: 56px; height: 32px; text-align: center; padding: 0 6px; }
   .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; }
   .mode { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--text-2); cursor: pointer; }
-  .mode input { accent-color: var(--hi); width: 15px; height: 15px; }
   .feed { position: sticky; top: 0; max-height: calc(100vh - 120px); display: flex; flex-direction: column; }
   .feed ul { list-style: none; margin: 0; padding: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
   .feed li { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 7px 10px; border-radius: 6px; color: var(--text-2); background: var(--panel-2); border-left: 2px solid var(--line-2); }

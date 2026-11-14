@@ -328,10 +328,71 @@ impl Cs2 {
             collateral = new_kills >= 2 && shots_now > 0 && shots_now < new_kills;
         }
 
+        // Création des moments : AVANT le traitement des phases. Le kill qui termine un round arrive dans le
+        // MÊME message que la phase « over » ; créé après, il était perdu (le round était déjà clos) et le
+        // clip n'avait que l'autre kill (bug vu le 2026-11-14 : un « 2K » avec un seul repère).
+        let round = i(&v["map"]["round"]);
+        if own {
+            let weapon = self.det.weapon.clone();
+            let wtype = self.det.weapon_type.clone();
+            let mut fresh: Vec<Moment> = Vec::new();
+            let base_kills = self.det.round_kills - new_kills;
+            for n in 0..new_kills {
+                let hs = n < new_hs;
+                let kind = if collateral {
+                    "collateral"
+                } else if wtype.eq_ignore_ascii_case("knife") {
+                    "knife"
+                } else if weapon == "weapon_taser" {
+                    "zeus"
+                } else if hs {
+                    "headshot"
+                } else {
+                    "kill"
+                };
+                let count = base_kills + n + 1;
+                let multi = match count {
+                    2 => "2k",
+                    3 => "3k",
+                    4 => "4k",
+                    c if c >= 5 => "ace",
+                    _ => "",
+                };
+                fresh.push(Moment {
+                    time: now,
+                    kind: kind.into(),
+                    multi: if self.round_based() { multi.into() } else { String::new() },
+                    weapon: weapon.trim_start_matches("weapon_").to_string(),
+                    round,
+                    count: 0,
+                });
+            }
+            for _ in 0..new_deaths {
+                fresh.push(Moment { time: now, kind: "death".into(), multi: String::new(), weapon: String::new(), round, count: 0 });
+            }
+            for _ in 0..new_assists {
+                fresh.push(Moment { time: now, kind: "assist".into(), multi: String::new(), weapon: String::new(), round, count: 0 });
+            }
+            for m in fresh {
+                let idx = self.det.round_moments.len();
+                if m.kind == "headshot" {
+                    let class = weapon_class(&weapon, &wtype);
+                    if let Some(shot) = self.attributed_shot(now, &class) {
+                        self.det.pending.push((idx, shot, class));
+                    }
+                }
+                let _ = self.events.send(Cs2Event::Moment(m.clone()));
+                let killed = is_kill(&m.kind);
+                self.det.round_moments.push(m);
+                if killed {
+                    self.bump_streak(now, round);
+                }
+            }
+        }
+
         // Phases
         let round_phase = s(&v["round"]["phase"]);
         let map_phase = s(&v["map"]["phase"]);
-        let round = i(&v["map"]["round"]);
         if map_phase != self.det.map_phase {
             if self.det.map_phase == "warmup" {
                 // Fin de l'échauffement : on clôt la séquence en cours
@@ -369,62 +430,6 @@ impl Cs2 {
             return;
         }
 
-        // Création des moments
-        let weapon = self.det.weapon.clone();
-        let wtype = self.det.weapon_type.clone();
-        let mut fresh: Vec<Moment> = Vec::new();
-        let base_kills = self.det.round_kills - new_kills;
-        for n in 0..new_kills {
-            let hs = n < new_hs;
-            let kind = if collateral {
-                "collateral"
-            } else if wtype.eq_ignore_ascii_case("knife") {
-                "knife"
-            } else if weapon == "weapon_taser" {
-                "zeus"
-            } else if hs {
-                "headshot"
-            } else {
-                "kill"
-            };
-            let count = base_kills + n + 1;
-            let multi = match count {
-                2 => "2k",
-                3 => "3k",
-                4 => "4k",
-                c if c >= 5 => "ace",
-                _ => "",
-            };
-            fresh.push(Moment {
-                time: now,
-                kind: kind.into(),
-                multi: if self.round_based() { multi.into() } else { String::new() },
-                weapon: weapon.trim_start_matches("weapon_").to_string(),
-                round,
-                count: 0,
-            });
-        }
-        for _ in 0..new_deaths {
-            fresh.push(Moment { time: now, kind: "death".into(), multi: String::new(), weapon: String::new(), round, count: 0 });
-        }
-        for _ in 0..new_assists {
-            fresh.push(Moment { time: now, kind: "assist".into(), multi: String::new(), weapon: String::new(), round, count: 0 });
-        }
-        for m in fresh {
-            let idx = self.det.round_moments.len();
-            if m.kind == "headshot" {
-                let class = weapon_class(&weapon, &wtype);
-                if let Some(shot) = self.attributed_shot(now, &class) {
-                    self.det.pending.push((idx, shot, class));
-                }
-            }
-            let _ = self.events.send(Cs2Event::Moment(m.clone()));
-            let killed = is_kill(&m.kind);
-            self.det.round_moments.push(m);
-            if killed {
-                self.bump_streak(now, round);
-            }
-        }
         self.judge_onetaps(now, false);
         self.sequence(now, false);
     }
@@ -999,6 +1004,25 @@ mod tests {
         assert_eq!(kinds.iter().filter(|k| **k == "onetap").count(), 1);
         assert!(clip.end > clip.start + 1.5);
         assert!(rx.try_recv().is_err(), "un seul clip par round");
+    }
+
+    /// Cas réel du 2026-11-14 : le kill qui termine le round arrive dans le MÊME message que la phase « over ».
+    /// Il était créé après la clôture du round : le clip « 2K » n'avait qu'un seul repère.
+    #[test]
+    fn dernier_kill_dans_le_message_de_fin_de_round() {
+        let (mut cs, rx) = setup("round");
+        cs.handle(&payload(&P::default()));
+        sleep(Duration::from_millis(300));
+        cs.handle(&payload(&P { kills: 1, hs: 1, round_kills: 1, ammo: 29, ..Default::default() }));
+        sleep(Duration::from_millis(300));
+        // 2e kill + fin du round dans un seul message
+        cs.handle(&payload(&P { kills: 2, hs: 2, round_kills: 2, ammo: 27, phase: "over", win: "T", ..Default::default() }));
+        let clip = rx.try_recv().expect("un clip à la fin du round");
+        let kills = clip.markers.iter().filter(|m| is_kill(&m.1)).count();
+        println!("titre : {} ; repères : {:?}", clip.title, clip.markers.iter().map(|m| (m.1.as_str(), m.0)).collect::<Vec<_>>());
+        assert_eq!(kills, 2, "les deux kills doivent être marqués");
+        assert!(clip.title.contains("2K"), "{}", clip.title);
+        assert!(rx.try_recv().is_err(), "un seul clip");
     }
 
     #[test]

@@ -29,7 +29,7 @@ if (typeof window !== "undefined" && !inTauri) {
     mk(3, "Fou rire en vocal", "Discord", 1500, "manual", 30, [[29, "manual", "Raccourci"]]),
     mk(4, "CS2 4K · 3× Headshot", "Counter-Strike 2", 2.1 * h, "auto", 27, [[6, "headshot", "Headshot"], [10, "headshot", "Headshot"], [14, "kill", "Kill"], [19, "headshot", "Headshot"]]),
     mk(5, "CS2 One Tap", "Counter-Strike 2", 3 * h, "auto", 9, [[6, "onetap", "One Tap · USP-S"]]),
-    mk(7, "CS2 Collateral", "Counter-Strike 2", 26 * h, "auto", 12, [[7, "collateral", "Collateral · AWP"]]),
+    mk(7, "CS2 Collateral", "Counter-Strike 2", 26 * h, "auto", 12, [[7, "collateral", "Collateral · AWP"], [7, "collateral", "Collateral · AWP"], [7.6, "2k", "2K"], [9.5, "death", "Mort"], [10.2, "assist", "Assist"]]),
     mk(8, "Clutch 1v3 inferno", "Counter-Strike 2", 27 * h, "edit", 41, [], true),
     mk(9, "CS2 3K · Headshot", "Counter-Strike 2", 28 * h, "auto", 22, [[5, "kill", "Kill"], [11, "headshot", "Headshot"], [16, "kill", "Kill"]]),
     mk(10, "Chrome", "Chrome", 30 * h, "manual", 30),

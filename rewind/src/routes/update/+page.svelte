@@ -45,7 +45,9 @@
       document.documentElement.dataset.theme = s?.theme === "light" ? "light" : "dark";
       if (s?.animations === false) document.documentElement.dataset.motion = "off";
       info = demo
-        ? { current: "0.2.2", available: "0.2.3", notes: "Fenêtre de mise à jour au lancement.\n\n- Point 1\n- Point 2" }
+        ? { current: "0.2.2", available: "0.2.3", notes: new URLSearchParams(location.search).get("long")
+            ? "Un démarrage réduit qui ne cache plus les mises à jour, et un démarrage avec Windows plus fiable.\n\n- Démarrage réduit ou lancement par Windows : s'il y a une mise à jour, la petite fenêtre s'ouvre ; sinon Rewind reste discret.\n- « Plus tard » ferme la fenêtre sans ouvrir Rewind.\n- Le démarrage avec Windows vise toujours la version installée, même après une mise à jour.\n- Quatrième point.\n- Cinquième point, plus long, pour vérifier que la liste défile bien sans jamais cacher les boutons.\n- Sixième point."
+            : "Fenêtre de mise à jour au lancement.\n\n- Point 1\n- Point 2" }
         : await invoke<Info | null>("pending_update");
     })();
     const un = listen<{ op: string; value: number }>("edit-progress", (e) => {
@@ -136,6 +138,7 @@
     display: flex;
     flex-direction: column;
     padding: 28px 28px 22px;
+    min-height: 0; /* sans cela, de longues notes poussaient le pied de page (boutons) hors de la fenêtre */
     animation: rise 260ms var(--ease-out) both;
   }
   @keyframes rise {
@@ -166,8 +169,24 @@
     border-radius: var(--radius);
     flex: 1;
     min-height: 0;
-    overflow: auto;
+    overflow-y: auto;
+    /* Les barres de défilement sont masquées dans toute l'appli ; ici on en montre une fine, du thème,
+       pour que l'on voie qu'il y a une suite à lire */
+    scrollbar-width: auto; /* nécessaire pour que les règles ::-webkit-scrollbar ci-dessous s'appliquent */
   }
+  /* Barre « verre » : une pastille fine et translucide, sans piste ni flèches, qui s'éclaircit au survol */
+  .notes::-webkit-scrollbar { display: block; width: 11px; }
+  .notes::-webkit-scrollbar-track { background: transparent; margin: 10px 0; }
+  .notes::-webkit-scrollbar-button { display: none; }
+  .notes::-webkit-scrollbar-thumb {
+    border: 3.5px solid transparent;
+    border-radius: 99px;
+    background-clip: padding-box;
+    background-color: color-mix(in srgb, var(--text) 22%, transparent);
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--text) 30%, transparent), inset 0 1px 0 color-mix(in srgb, var(--text) 25%, transparent);
+    transition: background-color 160ms;
+  }
+  .notes::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text) 42%, transparent); }
   .summary { margin: 0; font-weight: 500; }
   ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
   li { position: relative; padding-left: 14px; color: var(--text-2); font-size: 13px; line-height: 1.45; }

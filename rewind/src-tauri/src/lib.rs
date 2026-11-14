@@ -1216,7 +1216,7 @@ fn show_update_window(app: &AppHandle) -> bool {
     }
     let built = tauri::WebviewWindowBuilder::new(app, "update", tauri::WebviewUrl::App("update".into()))
         .title("Rewind")
-        .inner_size(460.0, 340.0)
+        .inner_size(460.0, 400.0)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)

@@ -72,5 +72,10 @@ fn main() {
         let file = std::path::PathBuf::from(args.get(2).cloned().unwrap_or_default());
         std::process::exit(rewind_lib::replay_cs2(file));
     }
+    // Rewind tourne en administrateur (sinon Windows lui cache les touches des jeux lancés en admin) :
+    // relancé par la tâche planifiée, ou première demande à Windows. true = l'instance élevée prend le relais.
+    if rewind_lib::start_elevated() {
+        return;
+    }
     rewind_lib::run()
 }

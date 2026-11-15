@@ -1639,6 +1639,11 @@ pub fn render_test(spec: PathBuf, out: PathBuf) -> i32 {
     }
 }
 
+/// Au lancement : passe la main à un Rewind administrateur si possible (voir admin.rs).
+pub fn start_elevated() -> bool {
+    admin::start_elevated(std::env::args().any(|a| a == "--tray"))
+}
+
 /// Assistant d'entrées lancé en administrateur (`rewind.exe --input-helper`, voir admin.rs).
 pub fn input_helper() -> i32 {
     inputs::helper_main()
@@ -1661,7 +1666,7 @@ fn admin_input_status() -> AdminInput {
     AdminInput {
         game_admin: inputs::game_needs_helper(),
         helper: inputs::HELPER_ON.load(std::sync::atomic::Ordering::Relaxed),
-        enabled: admin::enabled(),
+        enabled: admin::main_enabled(),
         rewind_admin: util::process_elevated(0) == Some(true),
     }
 }
@@ -1669,7 +1674,7 @@ fn admin_input_status() -> AdminInput {
 /// Active (une invite Windows) ou retire l'assistant administrateur.
 #[tauri::command(async)]
 fn admin_input_set(on: bool) -> Res<()> {
-    if on { admin::enable() } else { admin::disable() }.map_err(err)
+    if on { admin::enable_main() } else { admin::disable_main() }.map_err(err)
 }
 
 /// Diagnostic des touches reçues et de l'appareil qui les envoie : `rewind.exe --watch-keys <secondes>`.
@@ -2254,7 +2259,8 @@ pub fn run() {
         pending_update: Mutex::new(None),
         update_at_launch: std::sync::atomic::AtomicBool::new(false),
     };
-    let from_autostart = std::env::args().any(|a| a == "--tray");
+    // --tray : démarrage de Windows ; relancé en administrateur par la tâche, le drapeau passe par un fichier
+    let from_autostart = std::env::args().any(|a| a == "--tray") || admin::take_tray_flag();
     #[allow(unused_mut)]
     let mut context = tauri::generate_context!();
     // Tests (debug seulement) : se faire passer pour une version plus ancienne face au vrai canal GitHub

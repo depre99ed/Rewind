@@ -98,7 +98,7 @@
     const on = !adm?.enabled;
     try {
       await api.adminInputSet(on);
-      app.toast("ok", t(on ? "Assistant autorisé" : "Assistant retiré"), on ? t("Les raccourcis marchent maintenant dans les jeux lancés en administrateur.") : "");
+      app.toast("ok", t(on ? "Rewind redémarre en administrateur" : "Rewind ne sera plus lancé en administrateur"), "");
     } catch (e) {
       app.toast("err", t("Autorisation impossible"), String(e));
     }
@@ -341,18 +341,18 @@
             <div class="group">
               <div class="item">
                 <div class="lbl">
-                  <strong>{t("Raccourcis et touches dans ces jeux")}</strong>
-                  <span>{t("Quand Steam ou un jeu est lancé « en tant qu'administrateur », Windows cache ses touches aux autres programmes : F8 ne marche qu'en dehors du jeu et les touches à l'écran restent vides. Rewind peut lancer un petit assistant autorisé à les lire (une seule demande de Windows).")}</span>
+                  <strong>{t("Lancer Rewind en administrateur")}</strong>
+                  <span>{t("Quand Steam ou un jeu est lancé « en tant qu'administrateur », Windows cache ses touches aux autres programmes : F8 ne marche qu'en dehors du jeu et les touches à l'écran restent vides. Lancé en administrateur, Rewind les voit. Windows le demande une seule fois, ensuite Rewind démarre ainsi tout seul.")}</span>
                   {#if adm?.rewind_admin}
                     <span class="vstate ok">{t("Rewind tourne déjà en administrateur : rien à faire.")}</span>
                   {:else if adm?.enabled}
-                    <span class="vstate" class:ok={adm.helper}>{t(adm.helper ? "● Assistant actif" : "Assistant autorisé, démarrage…")}</span>
+                    <span class="vstate" class:ok={adm.helper}>{t("Activé : Rewind sera lancé en administrateur au prochain démarrage.")}</span>
                   {:else if adm?.game_admin}
                     <span class="vstate bad">{t("Le jeu en cours tourne en administrateur : ses touches sont bloquées.")}</span>
                   {/if}
                 </div>
-                {#if !adm?.rewind_admin}
-                  <button class="btn" class:primary={!adm?.enabled} onclick={setAdmin} disabled={admBusy}>{admBusy ? t("Autorisation…") : t(adm?.enabled ? "Retirer" : "Autoriser")}</button>
+                {#if !adm?.rewind_admin || adm?.enabled}
+                  <button class="btn" class:primary={!adm?.enabled} onclick={setAdmin} disabled={admBusy}>{admBusy ? t("Autorisation…") : t(adm?.enabled ? "Retirer" : "Activer")}</button>
                 {/if}
               </div>
             </div>

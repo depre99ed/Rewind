@@ -3,6 +3,7 @@
   import "$lib/styles.css";
   import { onMount } from "svelte";
   import { app } from "$lib/state.svelte";
+  import { api } from "$lib/api";
   import TitleBar from "$lib/components/TitleBar.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import Library from "$lib/components/Library.svelte";
@@ -16,6 +17,12 @@
   import Welcome from "$lib/components/Welcome.svelte";
 
   let ready = $state(false);
+  // Présence Discord : la page affichée (« Monte une vidéo dans le Studio »…)
+  $effect(() => {
+    const context = app.openClip ? "viewer" : app.view;
+    api.discordContext(context).catch(() => {});
+  });
+
   onMount(async () => {
     await app.init();
     // Partage entre amis : pastille de la barre latérale et messages « X t'a envoyé un clip »

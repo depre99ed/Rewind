@@ -567,6 +567,13 @@
               {/each}
               <button class="btn" onclick={() => app.patch((x) => x.webhooks.push({ name: `${t("Salon")} ${x.webhooks.length + 1}`, url: "" }))}><Plus size={15} />{t("Ajouter un webhook")}</button>
             </div>
+            <h3>{t("Profil Discord")}</h3>
+            <div class="group">
+              <div class="item">
+                <div class="lbl"><strong>{t("Afficher Rewind sur mon profil Discord")}</strong><span>{t("Comme Spotify ou Medal : « Enregistre Counter-Strike 2 », ce que tu fais dans Rewind, et un bouton « Télécharger Rewind ». Il faut que l'application Discord soit ouverte sur ce PC.")}</span></div>
+                <span class="switch"><input type="checkbox" checked={s.discord_presence} onchange={(e) => app.patch((x) => (x.discord_presence = e.currentTarget.checked))} /><span></span></span>
+              </div>
+            </div>
             <h3>{t("Copier pour Discord")}</h3>
             <div class="group">
               <div class="item">

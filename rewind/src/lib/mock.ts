@@ -35,6 +35,9 @@ if (typeof window !== "undefined" && !inTauri) {
     mk(10, "Chrome", "Chrome", 30 * h, "manual", 30),
     mk(11, "CS2 Couteau", "Counter-Strike 2", 3 * 24 * h, "auto", 10, [[7, "knife", "Couteau"]]),
     mk(12, "Bug de physique", "Bureau", 4 * 24 * h, "manual", 60),
+    // Clips reçus d'amis (onglet Amis seulement)
+    mk(15, "CS2 Clutch 1v2", "Counter-Strike 2", 5 * h, "received", 27, [[6, "headshot", "Headshot"], [14, "kill", "Kill"]]),
+    mk(16, "Fou rire Valorant", "Valorant", 26 * h, "received", 18),
     mk(13, "CS2 2K · One Tap", "Counter-Strike 2", 9 * 24 * h, "auto", 14, [[6, "onetap", "One Tap"], [9, "kill", "Kill"]]),
     mk(14, "Capture Counter-Strike 2", "Counter-Strike 2", 10 * 24 * h, "screenshot", 0),
   ];
@@ -77,7 +80,7 @@ if (typeof window !== "undefined" && !inTauri) {
         ),
       },
     },
-    theme: "dark", accent: "#c8f031", animations: true, density: "comfortable", webhooks: [], discord_max_mb: 20, share_enabled: true, share_auto_download: true, max_library_gb: 0, first_run_done: true, clip_sound: "shutter", clip_sound_name: "", welcome_done: !new URLSearchParams(location.search).has("welcome"), medal_prompt_dismissed: false,
+    theme: "dark", accent: "#c8f031", animations: true, density: "comfortable", webhooks: [], discord_max_mb: 20, share_enabled: true, share_auto_download: true, discord_presence: true, max_library_gb: 0, first_run_done: true, clip_sound: "shutter", clip_sound_name: "", welcome_done: !new URLSearchParams(location.search).has("welcome"), medal_prompt_dismissed: false,
   };
   const params = new URLSearchParams(location.search);
   if (params.get("theme") === "light") settings.theme = "light";
@@ -104,8 +107,8 @@ if (typeof window !== "undefined" && !inTauri) {
     limits: { max_clip: 500 * 1048576, daily_bytes: 2048 * 1048576, used_today: 74 * 1048576, part: 50 * 1048576, keep_days: 7 },
     transfers: [{ key: "down-i1", share_id: "i1", kind: "down", title: "CS2 ACE · 2× One Tap", peer: "Lucas", progress: 0.42, state: "running", error: "" }],
     received: [
-      { share_id: "r1", clip_id: "m4", from_id: "f2", from_name: "Noah", title: "CS2 4K · 3× Headshot", game: "Counter-Strike 2", at: now - 5 * h },
-      { share_id: "r2", clip_id: "m11", from_id: "f1", from_name: "Lucas", title: "CS2 Couteau", game: "Counter-Strike 2", at: now - 26 * h },
+      { share_id: "r1", clip_id: "m15", from_id: "f2", from_name: "Noah", title: "CS2 Clutch 1v2", game: "Counter-Strike 2", at: now - 5 * h },
+      { share_id: "r2", clip_id: "m16", from_id: "f1", from_name: "Lucas", title: "Fou rire Valorant", game: "Valorant", at: now - 26 * h },
     ],
   };
   let t = 0;

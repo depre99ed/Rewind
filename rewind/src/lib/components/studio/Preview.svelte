@@ -483,7 +483,7 @@
     else stage?.requestFullscreen().catch(() => {});
   }
   function quickStart() {
-    const recent = app.clips.filter((c) => c.kind !== "screenshot" && c.duration > 0.5).slice(0, 3).reverse();
+    const recent = app.ownClips.filter((c) => c.kind !== "screenshot" && c.duration > 0.5).slice(0, 3).reverse();
     studio.insertClips(recent);
   }
 
@@ -660,7 +660,7 @@
         <Film size={36} />
         <h3>{t("Ton montage commence ici")}</h3>
         <p>{t("Ajoute des clips depuis la colonne de gauche ou glisse-les ici. Ensuite : texte, images, musique, zoom, ralenti…")}</p>
-        {#if app.clips.some((c) => c.kind !== "screenshot")}
+        {#if app.ownClips.some((c) => c.kind !== "screenshot")}
           <button class="btn primary" onclick={quickStart}><Sparkles size={15} />{t("Commencer avec mes 3 derniers clips")}</button>
         {/if}
       </div>

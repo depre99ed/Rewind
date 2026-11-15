@@ -6,6 +6,7 @@ mod medal;
 mod ram;
 mod audio;
 mod cs2;
+mod discord;
 mod rapport;
 mod editor;
 mod ffmpeg;
@@ -1140,6 +1141,12 @@ struct ShareResult {
 // ---------------------------------------------------------------------------
 // Partage de clips entre amis (amis.rs, guichet : rewind/partage)
 // ---------------------------------------------------------------------------
+
+/// Page affichée dans Rewind (présence Discord : « Monte une vidéo dans le Studio »…).
+#[tauri::command(async)]
+fn discord_context(view: String) {
+    discord::set_ui(&view);
+}
 
 #[tauri::command(async)]
 fn friends_view() -> amis::View {
@@ -2663,6 +2670,8 @@ pub fn run() {
             admin::watch();
             // Partage entre amis : relève de la boîte (seulement si l'utilisateur l'a activé)
             amis::start(handle.clone());
+            // Présence Discord (comme Medal ou Spotify), par le canal local de l'application Discord
+            discord::start(handle.clone());
             // Démarrage automatique avec Windows : jamais depuis un test ni une version de développement
             // (un essai avait écrit le chemin du dossier de compilation dans le registre de l'utilisateur).
             let real_install = !cfg!(debug_assertions) && std::env::var_os("REWIND_DATA_DIR").is_none();
@@ -2789,6 +2798,10 @@ pub fn run() {
                     let game = fg.as_ref().is_some_and(|f| util::is_game(&f.exe, f.fullscreen));
                     // Les touches ne sont notées que quand un jeu est devant (jamais du texte ailleurs)
                     inputs::set_game(if game { fg.as_ref().map_or(0, |f| f.pid) } else { 0 });
+                    // Présence Discord : dernier jeu vu au premier plan
+                    if game && let Some(f) = fg.as_ref() {
+                        discord::set_game(&f.exe, f.pid);
+                    }
                     // Retour au jeu : l'interface met en pause le clip qu'on regardait
                     if game && !was_game {
                         let _ = h5.emit("game-front", ());
@@ -2979,6 +2992,7 @@ pub fn run() {
             edit_vertical,
             share_discord,
             friends_view,
+            discord_context,
             friends_enable,
             friends_disable,
             friends_rename,

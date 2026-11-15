@@ -12,6 +12,8 @@ class AppState {
   settings = $state<Settings | null>(null);
   status = $state<Status | null>(null);
   clips = $state<Clip[]>([]);
+  /** Mes clips : tout sauf les clips reçus d'amis (ceux-là ne sont visibles que dans l'onglet Amis) */
+  ownClips = $derived(this.clips.filter((c) => c.kind !== "received"));
   toasts = $state<Toast[]>([]);
   view = $state<"library" | "studio" | "friends" | "cs2" | "settings">("library");
   settingsSection = $state("video");

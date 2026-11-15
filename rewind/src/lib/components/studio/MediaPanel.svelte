@@ -23,7 +23,7 @@
   let q = $state("");
   let game = $state("");
 
-  const clips = $derived(app.clips.filter((c) => c.kind !== "screenshot" && c.duration > 0.3));
+  const clips = $derived(app.ownClips.filter((c) => c.kind !== "screenshot" && c.duration > 0.3));
   const games = $derived([...new Set(clips.map((c) => c.game || t("Bureau")))]);
   const shown = $derived(clips.filter((c) => (!game || (c.game || t("Bureau")) === game) && (!q || c.title.toLowerCase().includes(q.toLowerCase()))));
 

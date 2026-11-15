@@ -1138,4 +1138,10 @@ export const EN: Record<string, string> = {
   "Clé de secours invalide : vérifie les caractères (une faute est détectée automatiquement).": "Invalid recovery key: check the characters (a typo is detected automatically).",
   "Image illisible : choisis une photo JPEG ou PNG.": "Unreadable image: pick a JPEG or PNG picture.",
   "Image trop lourde.": "Image too large.",
+  // --- Clips reçus, présence Discord (2026-11-15)
+  "Profil Discord": "Discord profile",
+  "Afficher Rewind sur mon profil Discord": "Show Rewind on my Discord profile",
+  "Comme Spotify ou Medal : « Enregistre Counter-Strike 2 », ce que tu fais dans Rewind, et un bouton « Télécharger Rewind ». Il faut que l'application Discord soit ouverte sur ce PC.": "Like Spotify or Medal: “Recording Counter-Strike 2”, what you're doing in Rewind, and a “Get Rewind” button. The Discord app must be open on this PC.",
+  "Envoyé par {name}": "Sent by {name}",
+  "un ami": "a friend",
 };

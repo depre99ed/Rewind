@@ -24,7 +24,7 @@
   let newCollection = $state("");
 
   const base = $derived(
-    app.clips.filter((c) => {
+    app.ownClips.filter((c) => {
       if (filter === "fav" && !c.favorite) return false;
       if (filter === "auto" && c.kind !== "auto") return false;
       if (filter === "manual" && c.kind !== "manual") return false;
@@ -52,11 +52,11 @@
     }[sort];
     return [...list].sort(by);
   });
-  const collections = $derived([...new Set(app.clips.flatMap((c) => c.tags))].sort());
+  const collections = $derived([...new Set(app.ownClips.flatMap((c) => c.tags))].sort());
 
   // À la une : les temps forts récents (auto avec actions, favoris)
   const featured = $derived.by(() => {
-    const vids = app.clips.filter((c) => c.kind !== "screenshot" && c.duration > 0);
+    const vids = app.ownClips.filter((c) => c.kind !== "screenshot" && c.duration > 0);
     const score = (c: Clip) => (c.favorite ? 3 : 0) + Math.min(4, c.markers.filter((m) => m.kind !== "manual").length) + (c.kind === "auto" ? 1 : 0) - (Date.now() / 1000 - c.created) / 86400;
     return vids.slice(0, 15).sort((a, b) => score(b) - score(a)).slice(0, 5);
   });
@@ -125,12 +125,12 @@
   }
   const sizeList: ["s" | "m" | "l", number][] = [["s", 10], ["m", 13], ["l", 16]];
   const filters = [["all", "Tout"], ["fav", "Favoris"], ["auto", "Automatiques"], ["manual", "Manuels"], ["edit", "Montages"], ["screenshot", "Captures"]] as const; // traduits à l'affichage
-  const totalSize = $derived(app.clips.reduce((a, c) => a + c.size, 0));
+  const totalSize = $derived(app.ownClips.reduce((a, c) => a + c.size, 0));
 </script>
 
 <section class="lib">
   <div class="scroll">
-    {#if app.clips.length === 0}
+    {#if app.ownClips.length === 0}
       <div class="empty appear">
         <h2>{t("Rewind enregistre en continu.")}</h2>
         <p class="muted">{t("Un fou rire sur Discord, une action folle en jeu ? Appuie sur le raccourci : les dernières secondes sont gardées. Rien n'est envoyé sur Internet.")}</p>
@@ -226,7 +226,7 @@
             </div>
           </div>
         {/each}
-        <p class="foot faint">{t("{n} éléments", { n: app.clips.length })} · {formatSize(totalSize)}</p>
+        <p class="foot faint">{t("{n} éléments", { n: app.ownClips.length })} · {formatSize(totalSize)}</p>
       {/if}
     {/if}
   </div>

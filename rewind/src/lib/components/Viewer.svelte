@@ -53,7 +53,14 @@
   const total = $derived(duration || clip.duration || 0);
   const webhooks = $derived(app.settings?.webhooks.filter((w) => w.url) ?? []);
   const color = $derived(gameTone(clip.game));
-  const list = $derived(app.clips);
+  const received = $derived(clip.kind === "received");
+  const list = $derived(received ? app.clips.filter((c) => c.kind === "received") : app.ownClips);
+  // Clip reçu : l'ami qui l'a envoyé (historique du partage) et sa photo
+  const origin = $derived(received ? (friends.view?.received.find((r) => r.clip_id === clip.id) ?? null) : null);
+  const originAvatar = $derived(origin ? (friends.view?.friends.find((f) => f.id === origin.from_id)?.avatar ?? 0) : 0);
+  $effect(() => {
+    if (received) friends.start();
+  });
   const index = $derived(list.findIndex((c) => c.id === clip.id));
   const markers = $derived(clip.markers.filter((m) => m.time <= total + 0.05));
   // Largeur de la barre de lecture : sert à empiler (voies) les repères trop proches pour tenir côte à côte
@@ -158,7 +165,7 @@
   <div class="glow"></div>
   <div class="left">
     <div class="top">
-      <button class="btn ghost small" onclick={() => (app.openClip = null)}><ArrowLeft size={16} />{t("Bibliothèque")}</button>
+      <button class="btn ghost small" onclick={() => (app.openClip = null)}><ArrowLeft size={16} />{received ? t("Amis") : t("Bibliothèque")}</button>
       <span class="crumb"><i></i>{clip.game || t("Bureau")}<span class="faint">· {relativeDate(clip.created)}</span></span>
       <div class="nav">
         <span class="faint mono">{index + 1} / {list.length}</span>
@@ -219,7 +226,15 @@
 
   <aside>
     <div class="head">
-      <input class="title-input" bind:value={title} onblur={saveTitle} onkeydown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()} spellcheck="false" />
+      {#if received}
+        <h2 class="title-input static" title={clip.title}>{clip.title}</h2>
+        <div class="from">
+          <Avatar id={origin?.from_id ?? ""} version={originAvatar} name={origin?.from_name ?? "?"} size={28} />
+          <span><strong>{t("Envoyé par {name}", { name: origin?.from_name ?? t("un ami") })}</strong><small class="muted">{origin ? relativeDate(origin.at) : ""}</small></span>
+        </div>
+      {:else}
+        <input class="title-input" bind:value={title} onblur={saveTitle} onkeydown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()} spellcheck="false" />
+      {/if}
       <div class="badges">
         <span class="gchip"><i></i>{clip.game || t("Bureau")}</span>
         {#each badges(clip) as b}<span class="tag" class:hot={b.hot}>{b.label}</span>{/each}
@@ -233,6 +248,7 @@
       <div><span>{t("Type")}</span><strong>{kindLabel}</strong></div>
     </div>
 
+    {#if !received}
     <button class="btn primary discord" onclick={() => app.copyForDiscord(clip)} disabled={app.discordBusy === clip.id}>
       {#if app.discordBusy === clip.id}<Loader2 size={17} class="spin" />{t("Compression pour Discord…")}{:else}<Send size={17} />{t("Copier pour Discord")}{/if}
     </button>
@@ -281,6 +297,7 @@
         </div>
       {/if}
     {/if}
+    {/if}
 
     {#if markers.length && !isShot}
       <div class="label">{t("Moments")}</div>
@@ -293,14 +310,16 @@
       </div>
     {/if}
 
+    {#if !received}
     <div class="label">{t("Collections")}</div>
     <div class="tags">
       {#each clip.tags as tag}<span class="ctag"><Hash size={12} />{tag}<button aria-label={t("Retirer")} onclick={() => setTags(clip.tags.filter((x) => x !== tag))}><X size={12} /></button></span>{/each}
       <form onsubmit={(e) => { e.preventDefault(); if (newTag.trim()) { setTags([...clip.tags, newTag.trim()]); newTag = ""; } }}>
         <input class="tag-input" placeholder={t("+ Ajouter")} bind:value={newTag} list="cols" />
-        <datalist id="cols">{#each [...new Set(app.clips.flatMap((c) => c.tags))] as c}<option value={c}></option>{/each}</datalist>
+        <datalist id="cols">{#each [...new Set(app.ownClips.flatMap((c) => c.tags))] as c}<option value={c}></option>{/each}</datalist>
       </form>
     </div>
+    {/if}
 
     <div class="foot">
       <button class="btn small ghost" onclick={() => api.reveal(clip.id)}><FolderOpen size={14} />{t("Dossier")}</button>
@@ -375,6 +394,11 @@
   .row3 .btn { padding: 0 8px; font-size: 13px; }
   .row3 .btn.on { border-color: var(--hi); }
   .tofriends { width: 100%; }
+  .title-input.static { margin: 0; font-size: inherit; font-weight: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; }
+  .from { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .from span { display: flex; flex-direction: column; gap: 1px; font-size: 13px; min-width: 0; }
+  .from strong { font-weight: 500; }
+  .from small { font-size: 12px; }
   .tofriends.on { border-color: var(--hi); }
   .pick { display: flex; flex-wrap: wrap; gap: 6px; }
   .pick .who { padding-left: 4px; }

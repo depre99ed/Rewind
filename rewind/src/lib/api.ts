@@ -106,6 +106,8 @@ export type Settings = {
   /** Partage de clips entre amis (rien n'est envoyé tant que ce n'est pas activé) */
   share_enabled: boolean;
   share_auto_download: boolean;
+  /** Présence Discord (profil : « Enregistre Counter-Strike 2 ») */
+  discord_presence: boolean;
   max_library_gb: number;
   first_run_done: boolean;
   clip_sound: string;
@@ -272,6 +274,7 @@ export const api = {
   diagnosticReport: (copy: boolean, save: boolean) => invoke<DiagnosticOut>("diagnostic_report", { copy, save }),
   quit: () => invoke<void>("quit_app"),
   // Partage entre amis
+  discordContext: (view: string) => invoke<void>("discord_context", { view }),
   friendsView: () => invoke<FriendsView>("friends_view"),
   friendsEnable: (name: string) => invoke<FriendsView>("friends_enable", { name }),
   friendsDisable: () => invoke<void>("friends_disable"),

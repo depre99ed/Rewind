@@ -16,9 +16,9 @@
   const st = $derived(app.status);
   const fill = $derived(st && st.buffer_target > 0 ? Math.min(1, st.buffered / Math.min(st.buffer_target, s?.clip_seconds ?? 30)) : 0);
   const counts = $derived({
-    all: app.clips.filter((c) => c.kind !== "screenshot").length,
+    all: app.ownClips.filter((c) => c.kind !== "screenshot").length,
   });
-  const last = $derived([...app.clips].sort((a, b) => b.created - a.created)[0] ?? null);
+  const last = $derived([...app.ownClips].sort((a, b) => b.created - a.created)[0] ?? null);
 
   async function clip(long = false) {
     if (!s) return;

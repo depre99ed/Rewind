@@ -13,7 +13,7 @@ class AppState {
   status = $state<Status | null>(null);
   clips = $state<Clip[]>([]);
   toasts = $state<Toast[]>([]);
-  view = $state<"library" | "studio" | "cs2" | "settings">("library");
+  view = $state<"library" | "studio" | "friends" | "cs2" | "settings">("library");
   settingsSection = $state("video");
   /** Fenêtre d'accueil affichée (premier démarrage ou « Revoir l'accueil ») */
   showWelcome = $state(false);

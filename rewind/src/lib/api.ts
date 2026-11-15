@@ -103,6 +103,9 @@ export type Settings = {
   density: "comfortable" | "compact" | string;
   webhooks: { name: string; url: string }[];
   discord_max_mb: number;
+  /** Partage de clips entre amis (rien n'est envoyé tant que ce n'est pas activé) */
+  share_enabled: boolean;
+  share_auto_download: boolean;
   max_library_gb: number;
   first_run_done: boolean;
   clip_sound: string;
@@ -268,7 +271,86 @@ export const api = {
   /** Rapport de diagnostic complet ; `copy` = dans le presse-papiers, `save` = dans un fichier (affiché dans l'Explorateur). */
   diagnosticReport: (copy: boolean, save: boolean) => invoke<DiagnosticOut>("diagnostic_report", { copy, save }),
   quit: () => invoke<void>("quit_app"),
+  // Partage entre amis
+  friendsView: () => invoke<FriendsView>("friends_view"),
+  friendsEnable: (name: string) => invoke<FriendsView>("friends_enable", { name }),
+  friendsDisable: () => invoke<void>("friends_disable"),
+  friendsRename: (name: string) => invoke<void>("friends_rename", { name }),
+  friendsAdd: (code: string) => invoke<"pending" | "friends" | string>("friends_add", { code }),
+  friendsAnswer: (user: string, accept: boolean) => invoke<void>("friends_answer", { user, accept }),
+  friendsRemove: (user: string, block: boolean) => invoke<void>("friends_remove", { user, block }),
+  friendsRefresh: () => invoke<void>("friends_refresh"),
+  friendsDeleteIdentity: () => invoke<void>("friends_delete_identity"),
+  friendsRecoveryKey: () => invoke<string>("friends_recovery_key"),
+  friendsSaveRecovery: (path: string) => invoke<void>("friends_save_recovery", { path }),
+  friendsRestore: (key: string) => invoke<FriendsView>("friends_restore", { key }),
+  friendsSetAvatar: (path: string) => invoke<void>("friends_set_avatar", { path }),
+  friendsRemoveAvatar: () => invoke<void>("friends_remove_avatar"),
+  friendsAvatar: (id: string, version: number) => invoke<string>("friends_avatar", { id, version }),
+  friendsShowOnline: (show: boolean) => invoke<void>("friends_show_online", { show }),
+  shareSend: (id: string, to: string[]) => invoke<void>("share_send", { id, to }),
+  shareCancel: (key: string) => invoke<void>("share_cancel", { key }),
+  shareDismiss: (id: string) => invoke<void>("share_dismiss", { id }),
+  shareReport: (id: string, reason: string) => invoke<void>("share_report", { id, reason }),
+  shareDownload: (id: string) => invoke<void>("share_download", { id }),
+  shareThumb: (id: string) => invoke<string>("share_thumb", { id }),
 };
+
+/** Partage entre amis : état complet (voir amis.rs). Les dates du guichet sont en millisecondes. */
+export type FriendPerson = { id: string; name: string; since: number; avatar: number; online: boolean };
+export type FriendIncoming = { id: string; sender: string; sender_name: string; title: string; game: string; duration: number; size: number; sha256: string; markers: Marker[]; has_thumb: boolean; created: number };
+export type FriendSent = { id: string; title: string; game: string; size: number; state: string; created: number; to: { id: string; name: string; state: "waiting" | "received" | "dismissed" | string }[] };
+export type FriendTransfer = { key: string; share_id: string; kind: "up" | "down"; title: string; peer: string; progress: number; state: "running" | "error" | "done"; error: string };
+export type FriendReceived = { share_id: string; clip_id: string; from_id: string; from_name: string; title: string; game: string; at: number };
+export type FriendsView = {
+  enabled: boolean;
+  ready: boolean;
+  online: boolean;
+  error: string;
+  synced_at: number;
+  me: { id: string; code: string; name: string; avatar: number; show_online: boolean } | null;
+  friends: FriendPerson[];
+  incoming: FriendPerson[];
+  outgoing: FriendPerson[];
+  blocked: FriendPerson[];
+  inbox: FriendIncoming[];
+  sent: FriendSent[];
+  limits: { max_clip: number; daily_bytes: number; used_today: number; part: number; keep_days: number };
+  transfers: FriendTransfer[];
+  received: FriendReceived[];
+};
+
+/** Message lisible pour une erreur du partage (« ami:<code> » renvoyé par Rewind). */
+export function friendError(e: unknown): string {
+  const code = String(e).replace(/^Error:\s*/, "").replace(/^ami:/, "");
+  const known: Record<string, string> = {
+    offline: "Le service de partage est injoignable. Vérifie ta connexion Internet.",
+    clock: "L'horloge de ton PC n'est pas à l'heure : règle-la dans Windows (Date et heure).",
+    code_unknown: "Aucun Rewind n'a ce code ami. Vérifie les lettres.",
+    own_code: "C'est ton propre code.",
+    you_blocked: "Tu as bloqué cette personne : débloque-la d'abord.",
+    friends_full: "Liste d'amis pleine (200 au maximum).",
+    too_many_requests: "Trop de demandes en attente : attends que certaines soient acceptées.",
+    not_friends: "Vous n'êtes plus amis.",
+    clip_too_big: "Clip trop lourd pour le partage (500 Mo au maximum).",
+    daily_quota: "Limite d'envoi du jour atteinte (2 Go). Réessaie demain.",
+    name_invalid: "Choisis un pseudo (24 caractères au maximum).",
+    file_missing: "Le fichier du clip est introuvable.",
+    not_a_video: "Ce n'est pas une vidéo valide.",
+    hash_mismatch: "Le clip reçu est abîmé : il a été supprimé. Réessaie.",
+    size_mismatch: "Le clip reçu est incomplet. Réessaie.",
+    share_unknown: "Ce clip n'est plus disponible.",
+    file_gone: "Ce clip n'est plus disponible.",
+    too_many_registrations: "Trop d'inscriptions depuis cette connexion aujourd'hui. Réessaie demain.",
+    no_identity: "Active d'abord le partage.",
+    busy: "Une réception est déjà en cours.",
+    cancelled: "Envoi annulé.",
+    recovery_invalid: "Clé de secours invalide : vérifie les caractères (une faute est détectée automatiquement).",
+    avatar_unreadable: "Image illisible : choisis une photo JPEG ou PNG.",
+    avatar_too_big: "Image trop lourde.",
+  };
+  return known[code] ? t(known[code]) : t("Erreur du partage : {x}", { x: code });
+}
 
 /** Medal sur ce PC (clips à importer, réglages repris à l'accueil). */
 export type MedalInfo = { found: boolean; installed: boolean; folder: string; folders: string[]; clips: number; size_mb: number; imported: number; hotkey: string | null; clip_seconds: number | null; fps: number | null; resolution: number | null; bitrate: number | null };

@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { Clapperboard, Crosshair, Settings2, Camera, Mic, MicOff, Pause, Play, Film, Scissors, Timer, Ellipsis, History, Send, Download, X, ShieldExclamationPoint } from "@lucide/svelte";
+  import { Clapperboard, Crosshair, Settings2, Users, Camera, Mic, MicOff, Pause, Play, Film, Scissors, Timer, Ellipsis, History, Send, Download, X, ShieldExclamationPoint } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
+  import { friends } from "$lib/friends.svelte";
   import { api, fileUrl, relativeDate } from "$lib/api";
   import { fit } from "$lib/fit";
   import { t } from "$lib/i18n.svelte";
@@ -31,7 +32,7 @@
     api.setMicMuted(micMuted);
   }
 
-  const VIEWS = ["library", "studio", "cs2", "settings"];
+  const VIEWS = ["library", "studio", "friends", "cs2", "settings"];
   const navIndex = $derived(Math.max(0, VIEWS.indexOf(app.view)));
 
   /** Durée en m:ss ou h:mm:ss. */
@@ -107,6 +108,10 @@
     </button>
     <button class:on={app.view === "studio"} onclick={() => { app.openClip = null; app.view = "studio"; }}>
       <Film size={17} strokeWidth={1.75} /> <span>Studio</span>
+    </button>
+    <button class:on={app.view === "friends"} onclick={() => { app.openClip = null; app.view = "friends"; }}>
+      <Users size={17} strokeWidth={1.75} /> <span>{t("Amis")}</span>
+      {#if friends.badge}<em class="new" title={t("Demandes et clips reçus")}>{friends.badge}</em>{/if}
     </button>
     <button class:on={app.view === "cs2"} onclick={() => (app.view = "cs2")}>
       <Crosshair size={17} strokeWidth={1.75} /> <span>Counter-Strike 2</span>
@@ -244,6 +249,8 @@
   nav button em { font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
   nav button:hover { color: var(--text); background: color-mix(in srgb, var(--text) 4%, transparent); }
   nav button.on { color: var(--text); background: transparent; }
+  /* Nouveautés chez les amis : le nombre passe en clair (pas de couleur : ce n'est pas une alerte) */
+  nav button em.new { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; background: var(--hi); color: var(--hi-ink); font-weight: 600; }
   /* Lentille : au-dessus des onglets, ne capte pas les clics, glisse avec un léger ressort */
   .pill { position: absolute; z-index: 2; left: 0; right: 0; top: 0; height: 36px; border-radius: 10px; pointer-events: none; transform: translateY(calc(var(--i) * 38px)); transition: transform 520ms var(--spring); }
   /* Thème clair : la lentille est au-dessus du texte, elle doit rester presque transparente */

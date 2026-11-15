@@ -56,7 +56,7 @@ if (typeof window !== "undefined" && !inTauri) {
     overlay_keys: "standard",
     voice_command: true,
     auto_update: true,
-    language: "auto",
+    language: new URLSearchParams(location.search).get("lang") ?? "auto",
     hotkeys: { clip: "Alt+F10", clip_long: "Alt+Shift+F10", clip_custom: "Alt+F11", session: "Alt+F7", screenshot: "Alt+F12", toggle_recording: "Alt+F9", bookmark: "Alt+F8" },
     sound_on_clip: true, sound_volume: 60, toast_on_clip: true, notify_overlay: true, notify_position: "left-middle", welcome_banner: true,
     cs2: {
@@ -77,7 +77,7 @@ if (typeof window !== "undefined" && !inTauri) {
         ),
       },
     },
-    theme: "dark", accent: "#c8f031", animations: true, density: "comfortable", webhooks: [], discord_max_mb: 20, max_library_gb: 0, first_run_done: true, clip_sound: "shutter", clip_sound_name: "", welcome_done: !new URLSearchParams(location.search).has("welcome"), medal_prompt_dismissed: false,
+    theme: "dark", accent: "#c8f031", animations: true, density: "comfortable", webhooks: [], discord_max_mb: 20, share_enabled: true, share_auto_download: true, max_library_gb: 0, first_run_done: true, clip_sound: "shutter", clip_sound_name: "", welcome_done: !new URLSearchParams(location.search).has("welcome"), medal_prompt_dismissed: false,
   };
   const params = new URLSearchParams(location.search);
   if (params.get("theme") === "light") settings.theme = "light";
@@ -85,6 +85,29 @@ if (typeof window !== "undefined" && !inTauri) {
   if (params.get("accent")) settings.accent = "#" + params.get("accent");
   const empty = params.get("empty") === "1";
   const projects: Record<string, string> = {};
+  const ms = Date.now();
+  let friends: any = {
+    enabled: params.get("amis") !== "0", ready: params.get("amis") !== "0", online: true, error: "", synced_at: ms / 1000,
+    me: params.get("amis") === "0" ? null : { id: "moi", code: "RW-7KQ2-9XZ4", name: "Ethan", avatar: 1, show_online: true },
+    friends: [{ id: "f1", name: "Lucas", since: ms - 9 * 86400e3, avatar: 1, online: true }, { id: "f2", name: "Noah", since: ms - 3 * 86400e3, avatar: 1, online: false }, { id: "f3", name: "Sacha", since: ms - 86400e3, avatar: 0, online: true }],
+    incoming: [{ id: "f4", name: "Inès", since: ms - 2 * 3600e3, avatar: 0, online: false }],
+    outgoing: [{ id: "f5", name: "Tom", since: ms - 20 * 3600e3, avatar: 0, online: false }],
+    blocked: [],
+    inbox: [
+      { id: "i1", sender: "f1", sender_name: "Lucas", title: "CS2 ACE · 2× One Tap", game: "Counter-Strike 2", duration: 34, size: 48_200_000, sha256: "", markers: [], has_thumb: true, created: ms - 25 * 60e3 },
+      { id: "i2", sender: "f2", sender_name: "Noah", title: "Clutch 1v3 Inferno", game: "Counter-Strike 2", duration: 41, size: 61_000_000, sha256: "", markers: [], has_thumb: true, created: ms - 8 * 60e3 },
+    ],
+    sent: [
+      { id: "s1", title: "CS2 4K · 3× Headshot", game: "Counter-Strike 2", size: 52_000_000, state: "done", created: ms - 3 * 3600e3, to: [{ id: "f1", name: "Lucas", state: "received" }, { id: "f2", name: "Noah", state: "received" }] },
+      { id: "s2", title: "Fou rire en vocal", game: "Discord", size: 22_000_000, state: "ready", created: ms - 40 * 60e3, to: [{ id: "f3", name: "Sacha", state: "waiting" }] },
+    ],
+    limits: { max_clip: 500 * 1048576, daily_bytes: 2048 * 1048576, used_today: 74 * 1048576, part: 50 * 1048576, keep_days: 7 },
+    transfers: [{ key: "down-i1", share_id: "i1", kind: "down", title: "CS2 ACE · 2× One Tap", peer: "Lucas", progress: 0.42, state: "running", error: "" }],
+    received: [
+      { share_id: "r1", clip_id: "m4", from_id: "f2", from_name: "Noah", title: "CS2 4K · 3× Headshot", game: "Counter-Strike 2", at: now - 5 * h },
+      { share_id: "r2", clip_id: "m11", from_id: "f1", from_name: "Lucas", title: "CS2 Couteau", game: "Counter-Strike 2", at: now - 26 * h },
+    ],
+  };
   let t = 0;
   mockIPC(
     (cmd, args: any) => {
@@ -187,6 +210,40 @@ if (typeof window !== "undefined" && !inTauri) {
             }, 200);
           });
         case "plugin:window|is_maximized": return false;
+        // Partage entre amis (démo : « ?amis=0 » = pas encore activé)
+        case "friends_view": return friends;
+        case "friends_enable": friends = { ...friends, enabled: true, ready: true, online: true, me: { id: "moi", code: "RW-7KQ2-9XZ4", name: args.name } }; return friends;
+        case "friends_disable": friends = { ...friends, enabled: false }; return null;
+        case "friends_rename": friends = { ...friends, me: { ...friends.me, name: args.name } }; return null;
+        case "friends_add": if (String(args.code).toUpperCase().includes("ZZZZ")) throw "ami:code_unknown"; friends = { ...friends, outgoing: [...friends.outgoing, { id: "n" + Date.now(), name: "Nouveau", since: Date.now() }] }; return "pending";
+        case "friends_answer": { const p = friends.incoming.find((x: any) => x.id === args.user); friends = { ...friends, incoming: friends.incoming.filter((x: any) => x.id !== args.user), friends: args.accept && p ? [...friends.friends, p] : friends.friends }; return null; }
+        case "friends_remove": friends = { ...friends, friends: friends.friends.filter((x: any) => x.id !== args.user), outgoing: friends.outgoing.filter((x: any) => x.id !== args.user), blocked: args.block ? [...friends.blocked, friends.friends.find((x: any) => x.id === args.user)].filter(Boolean) : friends.blocked.filter((x: any) => x.id !== args.user) }; return null;
+        case "friends_refresh": return null;
+        case "friends_avatar": return ({ f1: "/mock/t3.jpg", f2: "/mock/t5.jpg", moi: "/mock/t12.jpg" } as Record<string, string>)[args.id] ?? Promise.reject("ami:not_found");
+        case "friends_set_avatar": friends = { ...friends, me: { ...friends.me, avatar: Date.now() } }; return null;
+        case "friends_remove_avatar": friends = { ...friends, me: { ...friends.me, avatar: 0 } }; return null;
+        case "friends_show_online": friends = { ...friends, me: { ...friends.me, show_online: args.show } }; return null;
+        case "friends_recovery_key": return "RWK-FQ3A-K7MZ-2PLD-WX8N-4HVB-RT6C-YJ2E-9GKU-SM5Q-AZ7D-NP3L-XW4F-B2RT";
+        case "friends_save_recovery": return null;
+        case "friends_restore": if (!String(args.key).toUpperCase().startsWith("RWK")) throw "ami:recovery_invalid"; friends = { ...friends, enabled: true, ready: true, me: { id: "moi", code: "RW-7KQ2-9XZ4", name: "Ethan", avatar: 1, show_online: true } }; return friends;
+        case "friends_delete_identity": friends = { ...friends, enabled: false, ready: false, me: null, friends: [], incoming: [], outgoing: [], blocked: [], inbox: [], sent: [] }; return null;
+        case "share_send": {
+          const key = "local-" + Date.now();
+          const names = (args.to as string[]).map((id) => friends.friends.find((f: any) => f.id === id)?.name).join(", ");
+          let v = 0;
+          const tick = setInterval(() => {
+            v = Math.min(1, v + 0.12);
+            friends = { ...friends, transfers: [{ key, share_id: "s" + key, kind: "up", title: clips.find((c) => c.id === args.id)?.title ?? "Clip", peer: names, progress: v, state: v >= 1 ? "done" : "running", error: "" }, ...friends.transfers.filter((t: any) => t.key !== key)] };
+            (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__?.emit?.("friends-changed", null);
+            if (v >= 1) clearInterval(tick);
+          }, 300);
+          return null;
+        }
+        case "share_cancel": friends = { ...friends, transfers: friends.transfers.filter((t: any) => t.key !== args.key) }; return null;
+        case "share_dismiss": friends = { ...friends, inbox: friends.inbox.filter((i: any) => i.id !== args.id) }; return null;
+        case "share_report": return null;
+        case "share_download": return null;
+        case "share_thumb": return clips[3]?.thumb ?? "";
         // Mode démo : « ?update=1 » simule une version plus récente (pour les captures)
         case "check_update":
           return {

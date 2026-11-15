@@ -344,6 +344,10 @@ pub struct Settings {
     pub webhooks: Vec<Webhook>,
     /// « Copier pour Discord » : taille maximale du fichier (Mo)
     pub discord_max_mb: u32,
+    /// Partage de clips entre amis (rien n'est envoyé tant que ce n'est pas activé)
+    pub share_enabled: bool,
+    /// Clips reçus d'amis : téléchargés tout seuls (sinon au clic)
+    pub share_auto_download: bool,
     // --- Stockage
     /// Taille max de la bibliothèque en Go (0 = pas de limite)
     pub max_library_gb: u32,
@@ -418,6 +422,8 @@ impl Default for Settings {
             density: "comfortable".into(),
             webhooks: Vec::new(),
             discord_max_mb: 20,
+            share_enabled: false,
+            share_auto_download: true,
             max_library_gb: 0,
             first_run_done: false,
             config_version: 6,

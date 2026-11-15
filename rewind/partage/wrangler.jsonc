@@ -1,0 +1,16 @@
+{
+  // Guichet du partage de clips entre amis de Rewind (voir README.md)
+  "name": "rewind-partage",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "d1_databases": [
+    { "binding": "DB", "database_name": "rewind-amis", "database_id": "1215a8f9-f45a-454e-927f-5e44e4b1b689" }
+  ],
+  "r2_buckets": [
+    { "binding": "CLIPS", "bucket_name": "rewind-partage" }
+  ],
+  // Ménage une fois par jour (envois abandonnés, lignes de plus de 7 jours)
+  "triggers": { "crons": ["17 4 * * *"] },
+  "observability": { "enabled": true }
+}

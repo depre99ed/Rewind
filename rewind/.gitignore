@@ -9,3 +9,6 @@ node_modules
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 graphify-out/
+
+# Partage entre amis : simulation locale de Cloudflare (wrangler dev), jamais publiée
+partage/.wrangler/

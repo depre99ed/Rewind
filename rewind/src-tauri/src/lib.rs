@@ -1,6 +1,7 @@
 //! Rewind — application de clips instantanés pour Windows.
 
 mod admin;
+mod amis;
 mod medal;
 mod ram;
 mod audio;
@@ -1134,6 +1135,120 @@ fn voiceover_stop() -> Res<studio::VoiceOver> {
 struct ShareResult {
     url: String,
     compressed: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Partage de clips entre amis (amis.rs, guichet : rewind/partage)
+// ---------------------------------------------------------------------------
+
+#[tauri::command(async)]
+fn friends_view() -> amis::View {
+    amis::snapshot()
+}
+
+#[tauri::command(async)]
+fn friends_enable(app: AppHandle, name: String) -> Res<amis::View> {
+    amis::enable(&app, &name).map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_disable(app: AppHandle) {
+    amis::disable(&app);
+}
+
+#[tauri::command(async)]
+fn friends_rename(app: AppHandle, name: String) -> Res<()> {
+    amis::rename(&app, &name).map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_add(app: AppHandle, code: String) -> Res<String> {
+    amis::add(&app, &code).map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_answer(app: AppHandle, user: String, accept: bool) -> Res<()> {
+    amis::answer(&app, &user, accept).map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_remove(app: AppHandle, user: String, block: bool) -> Res<()> {
+    amis::remove(&app, &user, block).map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_refresh() {
+    amis::wake();
+}
+
+#[tauri::command(async)]
+fn friends_delete_identity(app: AppHandle) -> Res<()> {
+    amis::delete_identity(&app).map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_recovery_key() -> Res<String> {
+    amis::recovery_key().map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_save_recovery(path: String) -> Res<()> {
+    amis::save_recovery(std::path::Path::new(&path)).map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_restore(app: AppHandle, key: String) -> Res<amis::View> {
+    amis::restore(&app, &key).map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_set_avatar(app: AppHandle, path: String) -> Res<()> {
+    amis::set_avatar(&app, std::path::Path::new(&path)).map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_remove_avatar(app: AppHandle) -> Res<()> {
+    amis::remove_avatar(&app).map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_avatar(id: String, version: u64) -> Res<String> {
+    amis::avatar(&id, version).map(|p| p.to_string_lossy().to_string()).map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_show_online(app: AppHandle, show: bool) -> Res<()> {
+    amis::set_show_online(&app, show).map_err(err)
+}
+
+#[tauri::command(async)]
+fn share_send(app: AppHandle, id: String, to: Vec<String>) -> Res<()> {
+    amis::send(&app, &id, to).map_err(err)
+}
+
+#[tauri::command(async)]
+fn share_cancel(app: AppHandle, key: String) -> Res<()> {
+    amis::cancel(&app, &key).map_err(err)
+}
+
+#[tauri::command(async)]
+fn share_dismiss(app: AppHandle, id: String) -> Res<()> {
+    amis::dismiss(&app, &id).map_err(err)
+}
+
+#[tauri::command(async)]
+fn share_report(id: String, reason: String) -> Res<()> {
+    amis::report(&id, &reason).map_err(err)
+}
+
+#[tauri::command(async)]
+fn share_download(app: AppHandle, id: String) -> Res<()> {
+    amis::download_now(&app, &id).map_err(err)
+}
+
+#[tauri::command(async)]
+fn share_thumb(id: String) -> Res<String> {
+    amis::thumb(&id).map(|p| p.to_string_lossy().to_string()).map_err(err)
 }
 
 #[tauri::command]
@@ -2546,6 +2661,8 @@ pub fn run() {
             // Jeux lancés en administrateur : l'assistant (s'il a été autorisé) relaie leurs touches
             inputs::serve_helper();
             admin::watch();
+            // Partage entre amis : relève de la boîte (seulement si l'utilisateur l'a activé)
+            amis::start(handle.clone());
             // Démarrage automatique avec Windows : jamais depuis un test ni une version de développement
             // (un essai avait écrit le chemin du dossier de compilation dans le registre de l'utilisateur).
             let real_install = !cfg!(debug_assertions) && std::env::var_os("REWIND_DATA_DIR").is_none();
@@ -2861,6 +2978,28 @@ pub fn run() {
             edit_merge,
             edit_vertical,
             share_discord,
+            friends_view,
+            friends_enable,
+            friends_disable,
+            friends_rename,
+            friends_add,
+            friends_answer,
+            friends_remove,
+            friends_refresh,
+            friends_delete_identity,
+            friends_recovery_key,
+            friends_save_recovery,
+            friends_restore,
+            friends_set_avatar,
+            friends_remove_avatar,
+            friends_avatar,
+            friends_show_online,
+            share_send,
+            share_cancel,
+            share_dismiss,
+            share_report,
+            share_download,
+            share_thumb,
             get_hardware,
             cs2_info,
             cs2_install,

@@ -56,6 +56,7 @@
       <div class="badges">
         {#if clip.kind === "auto"}<span class="tag"><Zap size={11} />{t("Auto")}</span>{/if}
         {#if clip.kind === "edit"}<span class="tag neutral"><Scissors size={11} />{t("Montage")}</span>{/if}
+        {#if clip.kind === "received"}<span class="tag neutral">{t("Reçu")}</span>{/if}
         {#each b as x}<span class="tag" class:hot={x.hot}>{x.label}</span>{/each}
       </div>
       <button class="sel" class:on={selected} aria-label={t("Sélectionner")} onclick={(e) => { e.stopPropagation(); onselect(); }}>

@@ -1,12 +1,14 @@
 <script lang="ts">
   import {
     ArrowLeft, Play, Pause, Volume2, VolumeX, Maximize, Star, Send, FolderOpen, ExternalLink, Trash2,
-    Film, Gauge, ChevronLeft, ChevronRight, Loader2, Hash, Plus, X, MessageSquare, Keyboard,
+    Film, Gauge, ChevronLeft, ChevronRight, Loader2, Hash, Plus, X, MessageSquare, Keyboard, Users,
   } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
+  import { friends } from "$lib/friends.svelte";
   import { api, fileUrl, formatDuration, formatSize, relativeDate, gameTone, badges, KIND_LABEL, type Clip, type InputEvent } from "$lib/api";
   import KeysOverlay from "./KeysOverlay.svelte";
   import MomentIcon from "./MomentIcon.svelte";
+  import Avatar from "./Avatar.svelte";
   import { momentTone } from "$lib/moments";
   import { t, locale } from "$lib/i18n.svelte";
 
@@ -26,6 +28,24 @@
   let hook = $state(0);
   let message = $state("");
   let sending = $state(false);
+  // Envoi à des amis (partage entre amis)
+  let toFriends = $state(false);
+  let picked = $state<string[]>([]);
+  let friendSending = $state(false);
+  const fv = $derived(friends.view);
+  const canShare = $derived(!!fv?.enabled && !!fv?.ready);
+  async function sendToFriends() {
+    if (!picked.length) return;
+    friendSending = true;
+    const n = picked.length;
+    const ok = await friends.run(() => api.shareSend(clip.id, picked));
+    friendSending = false;
+    if (ok) {
+      app.toast("ok", t(n > 1 ? "Envoi à {n} amis lancé" : "Envoi lancé", { n }), t("Suis l'avancement dans Amis."));
+      picked = [];
+      toFriends = false;
+    }
+  }
   let hoverT = $state<number | null>(null);
   let newTag = $state("");
 
@@ -129,7 +149,7 @@
     } catch (e) { app.toast("err", t("Suppression impossible"), String(e)); }
   }
   const pct = (t: number) => (total > 0 ? (t / total) * 100 : 0);
-  const kindLabel = $derived(t(clip.kind === "auto" ? "Automatique" : clip.kind === "edit" ? "Montage" : clip.kind === "screenshot" ? "Capture" : clip.kind === "session" ? "Session" : "Manuel"));
+  const kindLabel = $derived(t(clip.kind === "auto" ? "Automatique" : clip.kind === "edit" ? "Montage" : clip.kind === "screenshot" ? "Capture" : clip.kind === "session" ? "Session" : clip.kind === "received" ? "Reçu d'un ami" : "Manuel"));
 </script>
 
 <svelte:window onkeydown={key} onpointerup={() => (dragging = false)} />
@@ -237,6 +257,31 @@
       </div>
     {/if}
 
+    {#if !isShot}
+      <button class="btn tofriends" class:on={toFriends} onclick={() => { toFriends = !toFriends; friends.start(); }}><Users size={15} />{t("Envoyer à un ami")}</button>
+      {#if toFriends}
+        <div class="panel appear">
+          {#if !canShare}
+            <p class="muted">{t("Active d'abord le partage entre amis : tes clips arrivent directement dans leur Rewind.")}</p>
+            <button class="btn small" onclick={() => { app.openClip = null; app.view = "friends"; }}>{t("Ouvrir Amis")}</button>
+          {:else if !fv?.friends.length}
+            <p class="muted">{t("Tu n'as pas encore d'amis dans Rewind. Ajoute-les avec leur code ami.")}</p>
+            <button class="btn small" onclick={() => { app.openClip = null; app.view = "friends"; }}>{t("Ouvrir Amis")}</button>
+          {:else}
+            <div class="pick">
+              {#each fv.friends as f (f.id)}
+                <button class="chip who" class:on={picked.includes(f.id)} onclick={() => (picked = picked.includes(f.id) ? picked.filter((x) => x !== f.id) : [...picked, f.id])}><Avatar id={f.id} version={f.avatar} name={f.name} size={18} online={f.online} />{f.name}</button>
+              {/each}
+            </div>
+            {#if clip.size > (fv.limits.max_clip ?? Infinity)}<p class="muted">{t("Clip trop lourd pour le partage (500 Mo au maximum).")}</p>{/if}
+            <button class="btn primary" disabled={!picked.length || friendSending || clip.size > fv.limits.max_clip} onclick={sendToFriends}>
+              {#if friendSending}<Loader2 size={15} class="spin" />{:else}<Send size={15} />{/if}{picked.length > 1 ? t("Envoyer à {n} amis", { n: picked.length }) : t("Envoyer")}
+            </button>
+          {/if}
+        </div>
+      {/if}
+    {/if}
+
     {#if markers.length && !isShot}
       <div class="label">{t("Moments")}</div>
       <div class="moments">
@@ -329,6 +374,10 @@
   .row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
   .row3 .btn { padding: 0 8px; font-size: 13px; }
   .row3 .btn.on { border-color: var(--hi); }
+  .tofriends { width: 100%; }
+  .tofriends.on { border-color: var(--hi); }
+  .pick { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pick .who { padding-left: 4px; }
   .panel { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--line); }
   .panel p { margin: 0; font-size: 13px; }
   .area { height: 64px; padding: 10px 12px; resize: none; }

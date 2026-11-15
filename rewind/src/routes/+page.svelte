@@ -8,6 +8,8 @@
   import Library from "$lib/components/Library.svelte";
   import Viewer from "$lib/components/Viewer.svelte";
   import Cs2View from "$lib/components/Cs2View.svelte";
+  import FriendsView from "$lib/components/FriendsView.svelte";
+  import { friends } from "$lib/friends.svelte";
   import Studio from "$lib/components/Studio.svelte";
   import SettingsView from "$lib/components/SettingsView.svelte";
   import Toasts from "$lib/components/Toasts.svelte";
@@ -16,11 +18,13 @@
   let ready = $state(false);
   onMount(async () => {
     await app.init();
+    // Partage entre amis : pastille de la barre latérale et messages « X t'a envoyé un clip »
+    friends.start();
     // Aperçu navigateur seulement (captures d'écran) : ?view=studio&open=m1&studio=1,3,4
     if ((window as any).__REWIND_MOCK__) {
       const q = new URLSearchParams(location.search);
       const v = q.get("view");
-      if (v === "library" || v === "studio" || v === "cs2" || v === "settings") app.view = v;
+      if (v === "library" || v === "studio" || v === "friends" || v === "cs2" || v === "settings") app.view = v;
       const ids = q.get("studio");
       if (ids) await app.openStudio(ids.split(",").map((i) => app.clips.find((c) => c.id === "m" + i)!).filter(Boolean));
       const open = q.get("open");
@@ -50,6 +54,8 @@
               <Library />
             {:else if app.view === "studio"}
               <Studio />
+            {:else if app.view === "friends"}
+              <FriendsView />
             {:else if app.view === "cs2"}
               <Cs2View />
             {:else}

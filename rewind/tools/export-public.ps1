@@ -11,7 +11,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Clone du depot public impossible' }
 if ($LASTEXITCODE -ne 0) { throw 'Branche de publication impossible' }
 $files = @(& git -C $workspace ls-files --cached --others --exclude-standard -- rewind docs)
 if ($LASTEXITCODE -ne 0) { throw 'Inventaire des sources impossible' }
-$files = @($files | Where-Object { $_ -notmatch '(^|/)(\.claude|\.vscode|node_modules|target|build|\.svelte-kit|gen)/' -and $_ -notmatch '(\.key|\.pem|\.log|\.env)$' })
+$files = @($files | Where-Object { $_ -notmatch '(^|/)(\.claude|\.vscode|\.wrangler|node_modules|target|build|\.svelte-kit|gen)/' -and $_ -notmatch '(\.key|\.pem|\.log|\.env)$' })
 $files += @('README.md', 'README.en.md', '.gitignore', 'PUBLICATION.md')
 $files = @($files | Sort-Object -Unique | Where-Object { Test-Path -LiteralPath (Join-Path $workspace $_) -PathType Leaf })
 # Retirer uniquement les fichiers precedemment publies qui n'existent plus.

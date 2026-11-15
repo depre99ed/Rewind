@@ -21,10 +21,7 @@
       const v = q.get("view");
       if (v === "library" || v === "studio" || v === "cs2" || v === "settings") app.view = v;
       const ids = q.get("studio");
-      if (ids) {
-        app.studio = app.piecesFrom(ids.split(",").map((i) => app.clips.find((c) => c.id === "m" + i)!).filter(Boolean));
-        app.studio[0] && (app.studio[0].transition = "fade");
-      }
+      if (ids) await app.openStudio(ids.split(",").map((i) => app.clips.find((c) => c.id === "m" + i)!).filter(Boolean));
       const open = q.get("open");
       if (open) app.openClip = app.clips.find((c) => c.id === "m" + open) ?? null;
     }

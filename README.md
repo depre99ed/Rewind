@@ -52,8 +52,9 @@ et ce qui vient de se passer est sauvé, avec le son de ton PC, ton micro et Dis
 <td width="50%" valign="top">
 
 ### Monter et partager
-- Studio : frise avec vignettes et forme d'onde, découpe, transitions, musique de fond
-- Formats prêts : 16:9, 9:16 flou ou recadré, fichiers de 10 ou 20 Mo
+- Studio de montage : projets, pistes empilées, texte animé (10 polices), images, GIF, vidéo en incrustation, zone floutée
+- Zoom animé, ralenti progressif, couleurs, arrêt sur image, plusieurs pistes son, voix off, points clés
+- Formats prêts : 16:9, 9:16 ou 1:1 (fond flou ou recadré), fichiers de 10 ou 20 Mo
 - « Copier pour Discord » compresse à la bonne taille et met le clip dans le presse-papiers
 - Touches du clavier et de la souris affichées sur la vidéo, si tu le souhaites
 - Commande vocale « Rewind clip », hors ligne
@@ -97,7 +98,8 @@ Rewind bascule en 720p à 30 images par seconde sur le processeur pour rester l�
 
 ## Raccourcis
 
-Tous les raccourcis se changent dans Réglages → Raccourcis.
+Tous les raccourcis se changent dans Réglages → Raccourcis : une touche seule (<kbd>F8</kbd>), une combinaison ou un bouton de la souris.
+Ils marchent même si tu tiens Ctrl ou Maj en jeu (s'accroupir, marcher).
 
 | Raccourci | Action |
 |---|---|

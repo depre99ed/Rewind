@@ -1,19 +1,49 @@
 <script lang="ts">
+  // Saisie d'un raccourci : touche seule (F8), combinaison (Alt+F10) ou bouton de souris (Souris 4).
+  // Pendant la saisie, les raccourcis de Rewind sont en pause (sinon F8 lancerait un clip au lieu
+  // d'être enregistré) ; le moteur ne réserve rien auprès de Windows, donc toutes les touches arrivent ici.
+  import { onDestroy } from "svelte";
+  import { api } from "../api";
+  import { t } from "../i18n.svelte";
+
   let { value, onchange }: { value: string; onchange: (v: string) => void } = $props();
   let listening = $state(false);
+  let hint = $state("");
 
   const names: Record<string, string> = {
     " ": "Space", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right",
     Escape: "Escape", Enter: "Enter", Backspace: "Backspace", Tab: "Tab", Delete: "Delete", Insert: "Insert",
     Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown", PrintScreen: "PrintScreen", Pause: "Pause",
+    ScrollLock: "ScrollLock",
   };
+  /** Touches acceptées seules : elles ne servent pas à écrire du texte. */
+  const alone = /^(F\d{1,2}|Pause|PrintScreen|Insert|Home|End|PageUp|PageDown|ScrollLock|Num.+|Mouse4|Mouse5|MouseMiddle)$/;
+  const mouseNames: Record<string, string> = { Mouse4: "Souris 4", Mouse5: "Souris 5", MouseMiddle: "Clic molette" };
+
+  function mods(e: KeyboardEvent | MouseEvent) {
+    return [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Win"].filter(Boolean) as string[];
+  }
+
+  function finish(combo: string) {
+    stop();
+    onchange(combo);
+  }
+
+  function accept(e: KeyboardEvent | MouseEvent, k: string) {
+    const m = mods(e);
+    if (m.length === 0 && !alone.test(k)) {
+      hint = t("Ajoute Ctrl, Alt ou Maj : une lettre seule gênerait la frappe");
+      return;
+    }
+    finish([...m, k].join("+"));
+  }
 
   function key(e: KeyboardEvent) {
     if (!listening) return;
     e.preventDefault();
     e.stopPropagation();
-    if (e.key === "Escape") { listening = false; return; }
-    if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+    if (e.key === "Escape" && !e.ctrlKey && !e.altKey && !e.shiftKey) { stop(); return; }
+    if (["Control", "Shift", "Alt", "Meta", "AltGraph"].includes(e.key)) return;
     let k = names[e.key] ?? "";
     if (!k) {
       if (/^F\d{1,2}$/.test(e.key)) k = e.key;
@@ -22,26 +52,57 @@
       else if (e.code.startsWith("Numpad")) k = "Num" + e.code.slice(6);
       else k = e.code;
     }
-    const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift"].filter(Boolean) as string[];
-    if (mods.length === 0 && !/^F\d{1,2}$/.test(k) && !["Pause", "PrintScreen", "Insert"].includes(k)) {
-      return; // une touche seule (lettre) gênerait la frappe : on exige un modificateur
-    }
-    listening = false;
-    onchange([...mods, k].join("+"));
+    if (!k) return;
+    accept(e, k);
   }
+
+  // Boutons de souris : molette (1), latéraux (3 = précédent, 4 = suivant)
+  function mouse(e: MouseEvent) {
+    if (!listening) return;
+    const k = e.button === 1 ? "MouseMiddle" : e.button === 3 ? "Mouse4" : e.button === 4 ? "Mouse5" : "";
+    if (!k) return;
+    e.preventDefault();
+    e.stopPropagation();
+    accept(e, k);
+  }
+  // Empêche « Précédent / Suivant » de la souris de changer de page pendant la saisie
+  function block(e: MouseEvent) {
+    if (listening && (e.button === 1 || e.button === 3 || e.button === 4)) e.preventDefault();
+  }
+
+  function start() {
+    listening = true;
+    hint = "";
+    api.hotkeysPause(true).catch(() => {});
+    window.addEventListener("mousedown", mouse, true);
+    window.addEventListener("mouseup", block, true);
+    window.addEventListener("auxclick", block, true);
+  }
+  function stop() {
+    if (!listening) return;
+    listening = false;
+    hint = "";
+    api.hotkeysPause(false).catch(() => {});
+    window.removeEventListener("mousedown", mouse, true);
+    window.removeEventListener("mouseup", block, true);
+    window.removeEventListener("auxclick", block, true);
+  }
+  onDestroy(stop);
+
+  const label = (k: string) => (mouseNames[k] ? t(mouseNames[k]) : k);
 </script>
 
 <div class="hk" class:on={listening}>
-  <button class="value" onclick={() => (listening = !listening)} onkeydown={key} onblur={() => (listening = false)}>
+  <button class="value" onclick={() => (listening ? stop() : start())} onkeydown={key} onblur={stop}>
     {#if listening}
-      <span class="wait">Appuie sur une combinaison…</span>
+      <span class="wait">{hint || t("Appuie sur une touche ou un bouton de souris…")}</span>
     {:else if value}
-      {#each value.split("+") as k, i}{#if i}<span class="plus">+</span>{/if}<span class="kbd">{k}</span>{/each}
+      {#each value.split("+") as k, i}{#if i}<span class="plus">+</span>{/if}<span class="kbd">{label(k)}</span>{/each}
     {:else}
-      <span class="faint">Aucun</span>
+      <span class="faint">{t("Aucun")}</span>
     {/if}
   </button>
-  {#if value && !listening}<button class="clear faint" onclick={() => onchange("")} aria-label="Effacer">Effacer</button>{/if}
+  {#if value && !listening}<button class="clear faint" onclick={() => onchange("")} aria-label={t("Effacer")}>{t("Effacer")}</button>{/if}
 </div>
 
 <style>

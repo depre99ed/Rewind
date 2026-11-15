@@ -472,6 +472,23 @@ pub fn build(live: Live) -> Report {
 
     section(&mut body, "ÉTAT DE REWIND");
     let _ = writeln!(body, "{}", live.status);
+    // Moteur de touches (Raw Input) : raccourcis et touches à l'écran
+    let alive = crate::inputs::ALIVE.load(std::sync::atomic::Ordering::Relaxed);
+    let _ = writeln!(body, "Moteur de touches : {}", if alive { "reçoit le clavier et la souris" } else { "aucune touche reçue depuis le démarrage" });
+    let _ = writeln!(
+        body,
+        "Commande vocale : {}",
+        match crate::voice::STATE.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => "coupée".to_string(),
+            1 => "démarrage".to_string(),
+            2 => "à l'écoute".to_string(),
+            3 => "indisponible (aucun moteur de reconnaissance)".to_string(),
+            _ => "erreur".to_string(),
+        }
+    );
+    if let Some(h) = crate::voice::last_heard() {
+        let _ = writeln!(body, "Dernière phrase entendue : confiance {:.2}, {}", h.confidence, if h.accepted { "clip lancé" } else { "sous le seuil" });
+    }
 
     section(&mut body, "RÉGLAGES (sans les webhooks)");
     match serde_json::to_value(&live.settings) {

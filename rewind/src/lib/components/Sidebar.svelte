@@ -1,24 +1,27 @@
 <script lang="ts">
-  import { Clapperboard, Crosshair, Settings2, Camera, Mic, MicOff, Pause, Play, Film, Scissors, Timer } from "@lucide/svelte";
+  import { Clapperboard, Crosshair, Settings2, Camera, Mic, MicOff, Pause, Play, Film, Scissors, Timer, Ellipsis, History, Send } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
-  import { api } from "$lib/api";
+  import { api, fileUrl, relativeDate } from "$lib/api";
+  import { fit } from "$lib/fit";
   import { t } from "$lib/i18n.svelte";
+  import { keyParts } from "$lib/keys";
   import { liquid, glint } from "$lib/glass";
 
   let micMuted = $state(false);
+  let menu = $state(false);
+  let menuEl = $state<HTMLDivElement>();
+  let moreBtn = $state<HTMLButtonElement>();
   const s = $derived(app.settings);
   const st = $derived(app.status);
   const fill = $derived(st && st.buffer_target > 0 ? Math.min(1, st.buffered / Math.min(st.buffer_target, s?.clip_seconds ?? 30)) : 0);
   const counts = $derived({
     all: app.clips.filter((c) => c.kind !== "screenshot").length,
   });
-
-  function nice(keys: string) {
-    return keys.split("+").map((k) => k.trim());
-  }
+  const last = $derived([...app.clips].sort((a, b) => b.created - a.created)[0] ?? null);
 
   async function clip(long = false) {
     if (!s) return;
+    menu = false;
     app.clipping = true;
     await api.clipNow(long ? s.clip_long_seconds : s.clip_seconds);
   }
@@ -31,14 +34,43 @@
   const VIEWS = ["library", "studio", "cs2", "settings"];
   const navIndex = $derived(Math.max(0, VIEWS.indexOf(app.view)));
 
-  /** Temps écoulé depuis le début d'un clip sur mesure / d'une session (mm:ss ou h:mm:ss). */
+  /** Durée en m:ss ou h:mm:ss. */
+  function clock(sec: number) {
+    const v = Math.max(0, Math.floor(sec));
+    const h = Math.floor(v / 3600), m = Math.floor((v % 3600) / 60), s2 = v % 60;
+    return h ? `${h}:${String(m).padStart(2, "0")}:${String(s2).padStart(2, "0")}` : `${m}:${String(s2).padStart(2, "0")}`;
+  }
+  /** Temps écoulé depuis le début d'un clip sur mesure / d'une session. */
   function elapsed(since: number) {
     void st; // recalculé à chaque mise à jour de l'état (toutes les 0,4 s)
-    const s = Math.max(0, Math.floor(Date.now() / 1000 - since));
-    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-    return h ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
+    return clock(Date.now() / 1000 - since);
   }
+
+  // État de l'enregistrement en une ligne : la seule couleur est le point rouge quand ça enregistre
+  const rec = $derived.by(() => {
+    if (!s || !st) return { kind: "off", text: "" };
+    if (!s.recording_enabled) return { kind: "paused", text: t("En pause") };
+    if (st.error) return { kind: "error", text: t("Enregistrement arrêté") };
+    if (st.starting || !st.recording) return { kind: "starting", text: t("Démarrage…") };
+    return { kind: "rec", text: clock(Math.min(st.buffered, st.buffer_target)) };
+  });
+
+  function onKey(e: KeyboardEvent) {
+    if (menu && e.key === "Escape") menu = false;
+  }
+  function onDown(e: MouseEvent) {
+    if (!menu) return;
+    const n = e.target as Node;
+    if (menuEl?.contains(n) || moreBtn?.contains(n)) return;
+    menu = false;
+  }
+  const run = (f: () => unknown) => () => {
+    menu = false;
+    f();
+  };
 </script>
+
+<svelte:window onkeydown={onKey} onmousedown={onDown} />
 
 <aside>
   <nav style="--i:{navIndex}">
@@ -46,7 +78,7 @@
       <Clapperboard size={17} strokeWidth={1.75} /> <span>{t("Clips")}</span> <em>{counts.all}</em>
     </button>
     <button class:on={app.view === "studio"} onclick={() => { app.openClip = null; app.view = "studio"; }}>
-      <Film size={17} strokeWidth={1.75} /> <span>Studio</span> {#if app.studio.length}<em>{app.studio.length}</em>{/if}
+      <Film size={17} strokeWidth={1.75} /> <span>Studio</span>
     </button>
     <button class:on={app.view === "cs2"} onclick={() => (app.view = "cs2")}>
       <Crosshair size={17} strokeWidth={1.75} /> <span>Counter-Strike 2</span>
@@ -61,65 +93,94 @@
 
   <div class="dock">
     {#if s}
+      <!-- Clip sur mesure / session en cours : toujours visibles, avec de quoi les finir -->
+      {#if st?.custom_since}
+        <button class="hold" onclick={() => api.holdAction("custom")}>
+          <i class="dot rec"></i><span>{t("Sur mesure")}</span><span class="mono">{elapsed(st.custom_since)}</span><b>{t("Finir")}</b>
+        </button>
+      {/if}
+      {#if st?.session_since}
+        <button class="hold" onclick={() => api.holdAction("session")}>
+          <i class="dot rec"></i><span>{t("Session")}</span><span class="mono">{elapsed(st.session_since)}</span><b>{t("Finir")}</b>
+        </button>
+      {/if}
+
+      <!-- Dernier clip : le retrouver d'un clic après un round -->
+      {#if last}
+        <div class="last" class:fresh={Date.now() / 1000 - last.created < 120}>
+          <button class="lopen" onclick={() => { app.openClip = last; }} title={t("Ouvrir le dernier clip")}>
+            <span class="lthumb">{#if last.thumb}<img use:fit src={fileUrl(last.thumb)} alt="" />{/if}</span>
+            <span class="ltext"><small>{t("Dernier clip")} · {relativeDate(last.created)}</small><strong>{last.title}</strong></span>
+          </button>
+          {#if last.kind !== "screenshot"}
+            <button class="ldisc" onclick={() => app.copyForDiscord(last)} disabled={app.discordBusy === last.id} title={t("Copier pour Discord")} aria-label={t("Copier pour Discord")}><Send size={14} strokeWidth={1.75} /></button>
+          {/if}
+        </div>
+      {/if}
+
       <button use:glint class="big glass" class:busy={app.clipping} onclick={() => clip(false)} disabled={!st?.recording}>
         <span class="ring" style="--p:{fill}"></span>
         <span class="txt">
-          <strong>{t("Clipper")}</strong>
+          <span class="line">
+            <strong>{t("Clipper")}</strong>
+            {#if s.hotkeys.clip}
+              <span class="keys">{#each keyParts(s.hotkeys.clip) as k, i}{#if i}<span class="plus">+</span>{/if}<span class="kbd">{k}</span>{/each}</span>
+            {/if}
+          </span>
           <small>{t("{n} dernières secondes", { n: s.clip_seconds })}</small>
         </span>
       </button>
-      <div class="keys">
-        {#each nice(s.hotkeys.clip) as k, i}{#if i}<span class="plus">+</span>{/if}<span class="kbd">{k}</span>{/each}
-      </div>
 
-      <div class="row">
-        <button use:glint class="mini glass" onclick={() => clip(true)} disabled={!st?.recording} title={t("Clip long ({n} s)", { n: s.clip_long_seconds })}>
-          {s.clip_long_seconds >= 60 ? `${Math.round(s.clip_long_seconds / 60)} min` : `${s.clip_long_seconds} s`}
-        </button>
-        <button use:glint class="mini glass" onclick={() => api.screenshot()} disabled={!st?.recording} title={t("Capture d'écran")}><Camera size={15} strokeWidth={1.75} /></button>
-        <button use:glint class="mini glass" class:off={micMuted} onclick={toggleMic} title={micMuted ? t("Réactiver le micro") : t("Couper le micro dans les clips")}>
-          {#if micMuted}<MicOff size={15} strokeWidth={1.75} />{:else}<Mic size={15} strokeWidth={1.75} />{/if}
-        </button>
-        <button use:glint class="mini glass" onclick={() => app.patch((x) => (x.recording_enabled = !x.recording_enabled))} title={s.recording_enabled ? t("Mettre en pause") : t("Reprendre")}>
-          {#if s.recording_enabled}<Pause size={15} strokeWidth={1.75} />{:else}<Play size={15} strokeWidth={1.75} />{/if}
+      <div class="status">
+        <span class="state {rec.kind}" title={rec.kind === "rec" ? t("{t} en mémoire, prêtes à clipper", { t: rec.text }) : rec.text}>
+          <i class="dot"></i>{#if rec.kind === "rec"}<span class="mono">{rec.text}</span><span class="faint">{t("en mémoire")}</span>{:else}<span>{rec.text}</span>{/if}
+        </span>
+        <button bind:this={moreBtn} class="more" class:on={menu} onclick={() => (menu = !menu)} aria-label={t("Plus d'actions")} aria-expanded={menu}>
+          <Ellipsis size={16} strokeWidth={1.75} />
         </button>
       </div>
 
-      <div class="holds">
-        <button
-          use:glint
-          class="hold glass"
-          class:live={!!st?.custom_since}
-          onclick={() => api.holdAction("custom")}
-          disabled={!st?.recording && !st?.custom_since}
-          title={t("Clip sur mesure ({k}) : un appui pour commencer, un autre pour finir", { k: s.hotkeys.clip_custom })}
-        >
-          {#if st?.custom_since}<i class="rec"></i>{t("Finir")} · <span class="mono">{elapsed(st.custom_since)}</span>{:else}<Scissors size={14} strokeWidth={1.75} />{t("Sur mesure")}{/if}
-        </button>
-        <button
-          use:glint
-          class="hold glass"
-          class:live={!!st?.session_since}
-          onclick={() => api.holdAction("session")}
-          disabled={!st?.recording && !st?.session_since}
-          title={t("Session complète ({k}) : tout est gardé dans un seul fichier, avec tes kills repérés", { k: s.hotkeys.session })}
-        >
-          {#if st?.session_since}<i class="rec"></i>{t("Finir")} · <span class="mono">{elapsed(st.session_since)}</span>{:else}<Timer size={14} strokeWidth={1.75} />{t("Session")}{/if}
-        </button>
-      </div>
-
-      {#if st?.audio?.length}
-        <div class="meters">
-          {#each st.audio as a}
-            <div class="meter" title={a.active ? a.label : `${a.label} (${t("inactif")})`}>
-              <span class="lab" class:faint={!a.active}>{t(a.label)}</span>
-              <span class="bar"><i style="transform:scaleX({Math.min(1, Math.sqrt(a.level) * 1.1)})"></i></span>
+      {#if menu}
+        <div class="menu glass" bind:this={menuEl} role="menu">
+          <button role="menuitem" onclick={() => clip(true)} disabled={!st?.recording}>
+            <History size={15} strokeWidth={1.75} /><span>{t("Clip long ({n} s)", { n: s.clip_long_seconds })}</span>
+            <span class="hint">{keyParts(s.hotkeys.clip_long).join("+")}</span>
+          </button>
+          <button role="menuitem" onclick={run(() => api.screenshot())} disabled={!st?.recording}>
+            <Camera size={15} strokeWidth={1.75} /><span>{t("Capture d'écran")}</span>
+            <span class="hint">{keyParts(s.hotkeys.screenshot).join("+")}</span>
+          </button>
+          <button role="menuitem" onclick={run(() => api.holdAction("custom"))} disabled={!st?.recording && !st?.custom_since}>
+            <Scissors size={15} strokeWidth={1.75} /><span>{st?.custom_since ? t("Finir le clip sur mesure") : t("Clip sur mesure")}</span>
+            <span class="hint">{keyParts(s.hotkeys.clip_custom).join("+")}</span>
+          </button>
+          <button role="menuitem" onclick={run(() => api.holdAction("session"))} disabled={!st?.recording && !st?.session_since}>
+            <Timer size={15} strokeWidth={1.75} /><span>{st?.session_since ? t("Finir la session") : t("Session complète")}</span>
+            <span class="hint">{keyParts(s.hotkeys.session).join("+")}</span>
+          </button>
+          <hr />
+          <button role="menuitem" onclick={run(toggleMic)}>
+            {#if micMuted}<MicOff size={15} strokeWidth={1.75} /><span>{t("Réactiver le micro")}</span>{:else}<Mic size={15} strokeWidth={1.75} /><span>{t("Couper le micro dans les clips")}</span>{/if}
+          </button>
+          <button role="menuitem" onclick={run(() => app.patch((x) => (x.recording_enabled = !x.recording_enabled)))}>
+            {#if s.recording_enabled}<Pause size={15} strokeWidth={1.75} /><span>{t("Mettre en pause")}</span>{:else}<Play size={15} strokeWidth={1.75} /><span>{t("Reprendre")}</span>{/if}
+            <span class="hint">{keyParts(s.hotkeys.toggle_recording).join("+")}</span>
+          </button>
+          {#if st?.audio?.length}
+            <hr />
+            <div class="meters">
+              {#each st.audio as a}
+                <div class="meter" title={a.active ? a.label : `${a.label} (${t("inactif")})`}>
+                  <span class="lab" class:faint={!a.active}>{t(a.label)}</span>
+                  <span class="bar"><i style="transform:scaleX({Math.min(1, Math.sqrt(a.level) * 1.1)})"></i></span>
+                </div>
+              {/each}
             </div>
-          {/each}
+          {/if}
+          {#if st?.encoder}
+            <div class="tech mono">{st.width}×{st.height} · {st.fps} {t("i/s")} · {st.encoder.replace("_", " ")}</div>
+          {/if}
         </div>
-      {/if}
-      {#if st?.encoder}
-        <div class="tech mono">{st.width}×{st.height} · {st.fps} {t("i/s")} · {st.encoder.replace("_", " ")}</div>
       {/if}
     {/if}
   </div>
@@ -140,39 +201,71 @@
   :global(:root[data-theme="light"]) .pill { background: linear-gradient(180deg, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0.1)); }
   .live { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 
-  .dock { display: flex; flex-direction: column; gap: 6px; }
+  .dock { position: relative; display: flex; flex-direction: column; gap: 8px; }
   /* Bouton Clipper : verre plus épais, le seul gros bouton de la colonne */
-  .big { display: flex; align-items: center; gap: 11px; padding: 11px 12px; border-radius: 14px; color: var(--text); text-align: left; transition: transform 140ms var(--ease), opacity var(--dur); }
+  .big { display: flex; align-items: center; gap: 11px; padding: 11px 10px 11px 12px; border-radius: 14px; color: var(--text); text-align: left; transition: transform 140ms var(--ease), opacity var(--dur); }
   .big:active:not(:disabled) { transform: scale(0.975); }
   .big:disabled { opacity: 0.45; }
-  .big .txt { position: relative; z-index: 2; flex: 1; display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+  .big .txt { position: relative; z-index: 2; flex: 1; display: flex; flex-direction: column; gap: 2px; line-height: 1.2; min-width: 0; }
+  .big .line { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
   .big strong { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
-  .big small { font-size: 11.5px; color: var(--text-3); }
-  .keys { display: flex; align-items: center; justify-content: center; gap: 4px; margin: -1px 0 3px; }
-  .plus { color: var(--text-3); font-size: 10.5px; }
+  .big small { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .keys { position: relative; z-index: 2; display: flex; align-items: center; gap: 3px; flex: none; }
+  .plus { color: var(--text-3); font-size: 10px; }
   .ring { position: relative; z-index: 2; width: 26px; height: 26px; border-radius: 50%; flex: none; background: conic-gradient(var(--text) calc(var(--p) * 360deg), color-mix(in srgb, var(--text) 14%, transparent) 0); -webkit-mask: radial-gradient(circle, transparent 9.5px, #000 10px); mask: radial-gradient(circle, transparent 9.5px, #000 10px); }
   .big.busy .ring { animation: spin 0.9s linear infinite; background: conic-gradient(var(--text) 90deg, color-mix(in srgb, var(--text) 14%, transparent) 0); }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  .row { display: grid; grid-template-columns: 1.3fr 1fr 1fr 1fr; gap: 6px; }
-  .mini { height: 32px; border-radius: 10px; display: grid; place-items: center; font-size: 12px; font-weight: 500; color: var(--text-2); transition: color var(--dur) var(--ease), transform 140ms var(--ease), opacity var(--dur); }
-  .mini:hover:not(:disabled) { color: var(--text); }
-  .mini:active:not(:disabled) { transform: scale(0.94); }
-  .mini.off { color: var(--rec); }
-  .mini:disabled { opacity: 0.35; }
-  .holds { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .hold { height: 32px; border-radius: 10px; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--text-2); transition: color var(--dur) var(--ease), transform 140ms var(--ease), opacity var(--dur); white-space: nowrap; }
-  .hold:hover:not(:disabled) { color: var(--text); }
-  .hold:active:not(:disabled) { transform: scale(0.96); }
-  .hold:disabled { opacity: 0.35; }
-  .hold.live { color: var(--rec); }
-  .hold .rec { width: 6px; height: 6px; border-radius: 50%; background: var(--rec); animation: pulse 1.2s infinite; }
+  /* Dernier clip : vignette + titre, discret (pas de carte dans une carte) */
+  .last { display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 12px; transition: background var(--dur) var(--ease); }
+  .last:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+  .lopen { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; text-align: left; }
+  .lthumb { position: relative; width: 58px; height: 34px; flex: none; border-radius: 7px; overflow: hidden; background: #0d0e12; box-shadow: 0 0 0 1px var(--line); }
+  .lthumb img { width: 100%; height: 100%; object-fit: cover; }
+  .fresh .lthumb { box-shadow: 0 0 0 1px var(--line), 0 0 0 3px color-mix(in srgb, var(--rec) 0%, transparent); animation: freshin 600ms var(--ease) both; }
+  @keyframes freshin { from { transform: scale(0.9); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .fresh .lthumb { animation: none; } }
+  .ltext { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+  .ltext small { font-size: 10.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ltext strong { font-size: 12px; font-weight: 500; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ldisc { width: 28px; height: 28px; flex: none; border-radius: 8px; display: grid; place-items: center; color: var(--text-3); opacity: 0; transition: opacity var(--dur) var(--ease), color var(--dur) var(--ease), background var(--dur) var(--ease); }
+  .last:hover .ldisc { opacity: 1; }
+  .ldisc:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+
+  /* Ligne d'état : texte discret, un seul point de couleur */
+  .status { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 0 6px; height: 28px; }
+  .state { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-3); min-width: 0; }
+  .state .mono { color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex: none; }
+  .state.rec .dot, .dot.rec { background: var(--rec); box-shadow: 0 0 0 3px color-mix(in srgb, var(--rec) 16%, transparent); }
+  .state.error { color: var(--rec); }
+  .more { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; color: var(--text-3); transition: color var(--dur) var(--ease), background var(--dur) var(--ease); }
+  .more:hover, .more.on { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+
+  /* Clip sur mesure / session en cours */
+  .hold { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 10px; font-size: 12px; color: var(--text-2); background: color-mix(in srgb, var(--rec) 8%, transparent); border: 1px solid color-mix(in srgb, var(--rec) 22%, transparent); transition: background var(--dur) var(--ease); }
+  .hold:hover { background: color-mix(in srgb, var(--rec) 13%, transparent); }
+  .hold span:first-of-type { flex: 1; text-align: left; }
+  .hold .mono { font-variant-numeric: tabular-nums; color: var(--text); }
+  .hold b { font-weight: 600; color: var(--text); }
+  .hold .rec { animation: pulse 1.2s infinite; }
+
+  /* Menu « … » : flotte au-dessus du contenu (le verre est permis ici) */
+  .menu { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 30; display: flex; flex-direction: column; padding: 6px; border-radius: 14px; transform-origin: bottom center; animation: menuIn 180ms var(--ease); }
+  @keyframes menuIn { from { opacity: 0; transform: translateY(6px) scale(0.98); } }
+  @media (prefers-reduced-motion: reduce) { .menu { animation: none; } }
+  .menu button { position: relative; z-index: 2; display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 9px; border-radius: 9px; font-size: 12.5px; color: var(--text-2); text-align: left; transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
+  .menu button span:not(.hint) { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .menu button:hover:not(:disabled) { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
+  .menu button:disabled { opacity: 0.4; }
+  .hint { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
+  .menu hr { position: relative; z-index: 2; border: 0; height: 1px; background: var(--line); margin: 5px 6px; }
 
   /* Niveaux sonores : sans boîte, filets fins */
-  .meters { display: flex; flex-direction: column; gap: 5px; padding: 8px 4px 2px; }
+  .meters { position: relative; z-index: 2; display: flex; flex-direction: column; gap: 5px; padding: 4px 9px 2px; }
   .meter { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 8px; font-size: 11px; color: var(--text-3); }
   .lab { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .bar { height: 2px; border-radius: 2px; background: var(--panel-3); overflow: hidden; }
   .bar i { display: block; height: 100%; width: 100%; background: var(--text-2); transform-origin: left; transition: transform 120ms linear; }
-  .tech { font-size: 10px; color: var(--text-3); text-align: center; padding-top: 4px; }
+  .tech { position: relative; z-index: 2; font-size: 10px; color: var(--text-3); text-align: center; padding: 6px 0 2px; }
 </style>

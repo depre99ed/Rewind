@@ -301,6 +301,10 @@ pub struct Settings {
     pub mic_denoise: bool,
     /// Touches clavier/souris à l'écran (notées en jeu seulement, gardées avec chaque clip)
     pub input_overlay: bool,
+    /// Lettres de la superposition : "auto" (clavier de Windows), "qwerty" ou "azerty"
+    pub overlay_layout: String,
+    /// Nombre de touches affichées : "compact", "standard" ou "complet"
+    pub overlay_keys: String,
     /// Commande vocale « Rewind clip » (reconnaissance vocale de Windows, hors ligne)
     pub voice_command: bool,
     /// Recherche automatique des mises à jour au démarrage
@@ -380,6 +384,8 @@ impl Default for Settings {
             audio_offset_ms: 0,
             mic_denoise: false,
             input_overlay: false,
+            overlay_layout: "auto".into(),
+            overlay_keys: "standard".into(),
             voice_command: false,
             auto_update: true,
             language: "auto".into(),
@@ -461,6 +467,12 @@ impl Settings {
         }
         self.discord_max_mb = self.discord_max_mb.clamp(5, 500);
         self.audio_offset_ms = self.audio_offset_ms.clamp(-500, 500);
+        if !["auto", "qwerty", "azerty"].contains(&self.overlay_layout.as_str()) {
+            self.overlay_layout = "auto".into();
+        }
+        if !["compact", "standard", "complet"].contains(&self.overlay_keys.as_str()) {
+            self.overlay_keys = "standard".into();
+        }
         for s in &mut self.audio_sources {
             s.volume = s.volume.min(300);
         }

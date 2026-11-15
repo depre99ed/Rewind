@@ -1,0 +1,628 @@
+//! Export du Studio v2 : piste principale + zoom animé + calques (texte, image, GIF, vidéo, flou) +
+//! touches clavier / souris + plusieurs pistes son, en un seul passage FFmpeg.
+//!
+//! L'interface calcule tout ce qui est « temps » et « position » (studio/export.ts) : points clés déjà
+//! échantillonnés, en temps du montage et en pixels de sortie. Ici on traduit en graphe FFmpeg.
+//!
+//! Pièges FFmpeg (testés le 2026-11-15 sur la version fournie) :
+//! - une image dont la TAILLE change d'une image à l'autre (scale eval=frame) casse le filtre suivant
+//!   (« Frame size changed without filter graph reinitialization ») : la taille et la rotation animées
+//!   passent donc par `perspective` (sense=destination, eval=frame) dans un cadre carré fixe ;
+//! - `perspective` n'a pas de variable de temps : temps = début du calque + n° d'image / i/s ;
+//! - le zoom animé de la vidéo principale passe par `zoompan` (taille de sortie fixe, variable `it`).
+
+use crate::editor::{self, Piece, LADDER, STUDIO_AUDIO_KBPS};
+use crate::{ffmpeg, util};
+use anyhow::{Result, bail};
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct ZoomKf {
+    pub t: f64,
+    pub z: f64,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Point clé d'un calque : centre (px), échelle relative à la taille max (≤ 1), rotation (degrés).
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct LayerKf {
+    pub t: f64,
+    pub x: f64,
+    pub y: f64,
+    pub s: f64,
+    pub r: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct LayerSpec {
+    /// image, gif, video, blur
+    pub kind: String,
+    pub path: String,
+    pub at: f64,
+    pub dur: f64,
+    /// Taille du calque à son échelle maximale (pixels de sortie)
+    pub w: f64,
+    pub h: f64,
+    pub kf: Vec<LayerKf>,
+    pub opacity: f64,
+    /// Opacité animée (temps du montage) : seulement si l'utilisateur l'a animée
+    pub op_kf: Vec<(f64, f64)>,
+    pub fade_in: f64,
+    pub fade_out: f64,
+    /// Fenêtres d'affichage en plus (machine à écrire) : [(début, fin)] en temps du montage
+    pub windows: Vec<(f64, f64)>,
+    // Vidéo
+    pub src_start: f64,
+    pub speed: f64,
+    pub volume: f64,
+    // Flou : « blur » ou « pixel », intensité
+    pub mode: String,
+    pub strength: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct AudioSpec {
+    pub path: String,
+    pub at: f64,
+    pub src_start: f64,
+    pub dur: f64,
+    pub volume: f64,
+    /// Volume dans le temps (temps local de l'élément)
+    pub kf: Vec<(f64, f64)>,
+    pub fade_in: f64,
+    pub fade_out: f64,
+    pub duck: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct KeySprite {
+    pub key: u16,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct KeysSpec {
+    pub base: String,
+    pub sprites: Vec<KeySprite>,
+    /// Coin haut gauche (pixels de sortie)
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct RenderSpec {
+    pub title: String,
+    /// Taille de composition (paire) ; la sortie peut être réduite pour tenir une taille maximale
+    pub w: u32,
+    pub h: u32,
+    /// fit, blur, crop : comment un clip remplit un cadre d'un autre format
+    pub fit: String,
+    /// Petit côté voulu en sortie (1080, 720)
+    pub short: u32,
+    pub fps: u32,
+    pub max_mb: f64,
+    pub total: f64,
+    pub pieces: Vec<Piece>,
+    pub zoom: Vec<ZoomKf>,
+    pub layers: Vec<LayerSpec>,
+    pub audio: Vec<AudioSpec>,
+    pub keys: Option<KeysSpec>,
+}
+
+const AFMT: &str = "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+
+fn n(v: f64) -> String {
+    let s = format!("{v:.4}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() || s == "-" || s == "-0" { "0".into() } else { s.into() }
+}
+
+/// Courbe linéaire par morceaux (points triés) en expression FFmpeg de la variable `var`.
+/// Forme « somme de segments » (pas d'imbrication profonde) ; avant le 1er point / après le dernier : constante.
+pub fn piecewise(points: &[(f64, f64)], var: &str) -> String {
+    match points.len() {
+        0 => return "0".into(),
+        1 => return n(points[0].1),
+        _ => {}
+    }
+    if points.iter().all(|p| (p.1 - points[0].1).abs() < 1e-6) {
+        return n(points[0].1);
+    }
+    let (t0, v0) = points[0];
+    let mut s = format!("{}*lt({var}\\,{})", n(v0), n(t0));
+    for w in points.windows(2) {
+        let ((a, va), (b, vb)) = (w[0], w[1]);
+        if b - a < 1e-6 {
+            continue;
+        }
+        s.push_str(&format!(
+            "+gte({var}\\,{})*lt({var}\\,{})*({}+{}*({var}-{})/{})",
+            n(a), n(b), n(va), n(vb - va), n(a), n(b - a)
+        ));
+    }
+    let (tn, vn) = points[points.len() - 1];
+    s.push_str(&format!("+gte({var}\\,{})*{}", n(tn), n(vn)));
+    s
+}
+
+/// Cadre d'un morceau vers la taille de composition (fit : bandes noires ; blur : fond flou ; crop : recadré).
+fn frame_filter(fit: &str, w: u32, h: u32, i: usize) -> String {
+    match fit {
+        "crop" => format!("scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}"),
+        "blur" => format!(
+            "split[b{i}][f{i}];[b{i}]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=24:2[bg{i}];[f{i}]scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos[fg{i}];[bg{i}][fg{i}]overlay=(W-w)/2:(H-h)/2"
+        ),
+        _ => format!("scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"),
+    }
+}
+
+/// Réglages couleur, mêmes formules que les filtres CSS brightness / contrast / saturate de l'aperçu.
+fn color_filter(c: &[f64]) -> Option<String> {
+    if c.len() < 3 {
+        return None;
+    }
+    let (b, k, s) = (c[0].clamp(0.0, 3.0), c[1].clamp(0.0, 3.0), c[2].clamp(0.0, 3.0));
+    if (b - 1.0).abs() < 0.005 && (k - 1.0).abs() < 0.005 && (s - 1.0).abs() < 0.005 {
+        return None;
+    }
+    let mut f = vec!["format=rgb24".to_string()];
+    if (b - 1.0).abs() >= 0.005 {
+        f.push(format!("lutrgb=r='clip(val*{b:.4}\\,0\\,255)':g='clip(val*{b:.4}\\,0\\,255)':b='clip(val*{b:.4}\\,0\\,255)'"));
+    }
+    if (k - 1.0).abs() >= 0.005 {
+        f.push(format!("lutrgb=r='clip((val-127.5)*{k:.4}+127.5\\,0\\,255)':g='clip((val-127.5)*{k:.4}+127.5\\,0\\,255)':b='clip((val-127.5)*{k:.4}+127.5\\,0\\,255)'"));
+    }
+    if (s - 1.0).abs() >= 0.005 {
+        // Matrice de saturation du W3C (filtre CSS saturate)
+        f.push(format!(
+            "colorchannelmixer=rr={:.4}:rg={:.4}:rb={:.4}:gr={:.4}:gg={:.4}:gb={:.4}:br={:.4}:bg={:.4}:bb={:.4}",
+            0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s,
+            0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s,
+            0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s
+        ));
+    }
+    f.push("format=yuv420p".into());
+    Some(f.join(","))
+}
+
+/// Points clés d'un calque → expressions (temps du montage) : x, y, échelle relative, rotation (radians).
+fn layer_exprs(l: &LayerSpec, var: &str) -> (String, String, String, String) {
+    let kf: Vec<&LayerKf> = l.kf.iter().collect();
+    let pts = |f: &dyn Fn(&LayerKf) -> f64| kf.iter().map(|k| (k.t, f(k))).collect::<Vec<_>>();
+    if kf.is_empty() {
+        return ("0".into(), "0".into(), "1".into(), "0".into());
+    }
+    (
+        piecewise(&pts(&|k| k.x), var),
+        piecewise(&pts(&|k| k.y), var),
+        piecewise(&pts(&|k| k.s.clamp(0.01, 1.0)), var),
+        piecewise(&pts(&|k| k.r.to_radians()), var),
+    )
+}
+
+fn animated(l: &LayerSpec) -> (bool, bool) {
+    let first = l.kf.first();
+    let scale_or_rot = l.kf.iter().any(|k| first.is_some_and(|f| (k.s - f.s).abs() > 1e-4 || (k.r - f.r).abs() > 1e-3)) || first.is_some_and(|f| f.r.abs() > 1e-3 || f.s < 0.999);
+    let moves = l.kf.iter().any(|k| first.is_some_and(|f| (k.x - f.x).abs() > 0.01 || (k.y - f.y).abs() > 0.01));
+    (scale_or_rot, moves)
+}
+
+/// Fenêtre d'affichage d'un calque (enable) : sa durée, ou ses fenêtres propres (machine à écrire).
+fn enable_of(l: &LayerSpec) -> String {
+    if !l.windows.is_empty() {
+        return l.windows.iter().map(|(a, b)| format!("between(t\\,{}\\,{})", n(*a), n(*b))).collect::<Vec<_>>().join("+");
+    }
+    format!("between(t\\,{}\\,{})", n(l.at), n(l.at + l.dur))
+}
+
+/// Construit les arguments FFmpeg. `out_short` : petit côté de sortie (réduction finale éventuelle).
+pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64>, graph_file: &Path) -> Result<Vec<String>> {
+    let (w, h) = (spec.w.max(2) / 2 * 2, spec.h.max(2) / 2 * 2);
+    let total = spec.total.max(0.1);
+    let mut args: Vec<String> = Vec::new();
+    let mut g = String::new();
+    let mut inputs = 0usize;
+    let mut input = |args: &mut Vec<String>, pre: Vec<String>, path: &str| -> usize {
+        args.extend(pre);
+        args.extend(["-i".into(), path.to_string()]);
+        inputs += 1;
+        inputs - 1
+    };
+
+    // ---- Piste principale ----
+    let pieces = &spec.pieces;
+    let trans = editor::transition_durations(pieces);
+    let mut main_len = 0.0;
+    let (mut cur_v, mut cur_a) = (String::new(), String::new());
+    for (i, p) in pieces.iter().enumerate() {
+        let speed = p.speed.clamp(0.25, 4.0);
+        let olen = editor::out_len(p);
+        let frame = frame_filter(&spec.fit, w, h, i);
+        let color = color_filter(&p.color).map(|c| format!(",{c}")).unwrap_or_default();
+        if p.freeze > 0.0 {
+            let k = input(&mut args, vec!["-ss".into(), n(p.start.max(0.0)), "-t".into(), "0.5".into()], &p.path);
+            g.push_str(&format!(
+                "[{k}:v]trim=end_frame=1,setpts=PTS-STARTPTS,{frame}{color},fps={fps},format=yuv420p,setsar=1,tpad=stop_mode=clone:stop_duration={},trim=duration={},setpts=PTS-STARTPTS,settb=AVTB[v{i}];",
+                n(olen + 0.5), n(olen)
+            ));
+            g.push_str(&format!("anullsrc=r=48000:cl=stereo,atrim=0:{}[a{i}];", n(olen)));
+        } else {
+            let len = (p.end - p.start).max(0.05);
+            let k = input(&mut args, vec!["-ss".into(), n(p.start.max(0.0)), "-t".into(), n(len)], &p.path);
+            g.push_str(&format!(
+                "[{k}:v]setpts=(PTS-STARTPTS)/{speed:.5},{frame}{color},fps={fps},format=yuv420p,setsar=1,tpad=stop_mode=clone:stop_duration=1,trim=duration={},setpts=PTS-STARTPTS,settb=AVTB[v{i}];",
+                n(olen)
+            ));
+            // Son : piste de mixage, ou pistes séparées avec leur volume
+            let n_audio = ffmpeg::streams(Path::new(&p.path)).iter().filter(|s| s.kind == "audio").count();
+            let vol = p.volume.clamp(0.0, 2.0);
+            let tail = format!("asetpts=PTS-STARTPTS,{},volume={vol:.3},apad,atrim=0:{},asetpts=PTS-STARTPTS[a{i}];", editor::atempo(speed), n(olen));
+            let separate = n_audio > 1 && !p.track_volumes.is_empty() && n_audio > p.track_volumes.len();
+            let used: Vec<(usize, f64)> = if separate {
+                p.track_volumes.iter().enumerate().map(|(t, v)| (t + 1, v.clamp(0.0, 2.0))).filter(|(_, v)| *v > 0.001).collect()
+            } else {
+                Vec::new()
+            };
+            if n_audio == 0 || vol <= 0.001 || (separate && used.is_empty()) {
+                g.push_str(&format!("anullsrc=r=48000:cl=stereo,atrim=0:{}[a{i}];", n(olen)));
+            } else if separate {
+                let mut labels = String::new();
+                for (s, v) in &used {
+                    g.push_str(&format!("[{k}:a:{s}]{AFMT},volume={v:.3}[t{i}x{s}];"));
+                    labels.push_str(&format!("[t{i}x{s}]"));
+                }
+                if used.len() == 1 {
+                    g.push_str(&format!("{labels}{tail}"));
+                } else {
+                    g.push_str(&format!("{labels}amix=inputs={}:normalize=0:duration=longest,{tail}", used.len()));
+                }
+            } else {
+                g.push_str(&format!("[{k}:a:0]{AFMT},{tail}"));
+            }
+        }
+        if i == 0 {
+            cur_v = "v0".into();
+            cur_a = "a0".into();
+            main_len = olen;
+        } else {
+            let d = trans[i];
+            let (nv, na) = (format!("xv{i}"), format!("xa{i}"));
+            if d > 0.0 {
+                g.push_str(&format!(
+                    "[{cur_v}][v{i}]xfade=transition={}:duration={}:offset={}[{nv}];[{cur_a}][a{i}]acrossfade=d={}:c1=tri:c2=tri[{na}];",
+                    editor::xfade_name(&pieces[i - 1].transition), n(d), n((main_len - d).max(0.0)), n(d)
+                ));
+                main_len += olen - d;
+            } else {
+                g.push_str(&format!("[{cur_v}][{cur_a}][v{i}][a{i}]concat=n=2:v=1:a=1[{nv}][{na}];"));
+                main_len += olen;
+            }
+            cur_v = nv;
+            cur_a = na;
+        }
+    }
+    if pieces.is_empty() {
+        g.push_str(&format!("color=c=black:s={w}x{h}:r={fps}:d={},format=yuv420p,settb=AVTB[vbase];anullsrc=r=48000:cl=stereo,atrim=0:{}[abase];", n(total), n(total)));
+        cur_v = "vbase".into();
+        cur_a = "abase".into();
+    } else if total > main_len + 0.02 {
+        // Des calques ou du son dépassent la piste principale : on prolonge en noir / silence
+        g.push_str(&format!("[{cur_v}]tpad=stop_mode=add:stop_duration={}:color=black[vpad];[{cur_a}]apad,atrim=0:{}[apad];", n(total - main_len + 0.1), n(total)));
+        cur_v = "vpad".into();
+        cur_a = "apad".into();
+    }
+
+    // ---- Zoom animé de la vidéo principale ----
+    if spec.zoom.iter().any(|k| k.z > 1.001) {
+        let z = piecewise(&spec.zoom.iter().map(|k| (k.t, k.z.clamp(1.0, 5.0))).collect::<Vec<_>>(), "it");
+        let x = piecewise(&spec.zoom.iter().map(|k| (k.t, k.x.clamp(0.0, 1.0))).collect::<Vec<_>>(), "it");
+        let y = piecewise(&spec.zoom.iter().map(|k| (k.t, k.y.clamp(0.0, 1.0))).collect::<Vec<_>>(), "it");
+        g.push_str(&format!("[{cur_v}]zoompan=z='{z}':x='(iw-iw/zoom)*({x})':y='(ih-ih/zoom)*({y})':d=1:s={w}x{h}:fps={fps},setsar=1[vzoom];"));
+        cur_v = "vzoom".into();
+    }
+
+    // ---- Calques (du plus bas au plus haut) ----
+    let mut extra_audio: Vec<String> = Vec::new();
+    for (li, l) in spec.layers.iter().enumerate() {
+        if l.dur <= 0.01 {
+            continue;
+        }
+        let en = enable_of(l);
+        let (x, y, s, r) = layer_exprs(l, "t");
+        let fade = {
+            let mut f = String::new();
+            if l.fade_in > 0.01 {
+                f.push_str(&format!(",fade=t=in:st={}:d={}:alpha=1", n(l.at), n(l.fade_in.min(l.dur))));
+            }
+            if l.fade_out > 0.01 {
+                let d = l.fade_out.min(l.dur);
+                f.push_str(&format!(",fade=t=out:st={}:d={}:alpha=1", n(l.at + l.dur - d), n(d)));
+            }
+            f
+        };
+        if l.kind == "blur" {
+            // Zone floutée ou pixelisée : on découpe l'image du dessous, on la floute, on la remet
+            let (bw, bh) = ((l.w.max(4.0) as u32) / 2 * 2, (l.h.max(4.0) as u32) / 2 * 2);
+            let cx = format!("max(0\\,min(iw-{bw}\\,({x})-{bw}/2))");
+            let cy = format!("max(0\\,min(ih-{bh}\\,({y})-{bh}/2))");
+            let blur = if l.mode == "pixel" {
+                let cell = (l.strength.clamp(2.0, 60.0)) as u32;
+                format!("scale=max(1\\,iw/{cell}):max(1\\,ih/{cell}):flags=area,scale={bw}:{bh}:flags=neighbor")
+            } else {
+                let rr = (l.strength.clamp(1.0, 60.0) as u32).min(bw.min(bh) / 2).max(1);
+                format!("boxblur={rr}:3")
+            };
+            g.push_str(&format!(
+                "[{cur_v}]split[bl{li}a][bl{li}b];[bl{li}b]crop={bw}:{bh}:x='{cx}':y='{cy}',{blur}[bl{li}c];[bl{li}a][bl{li}c]overlay=x='{}':y='{}':enable='{en}'[L{li}];",
+                cx.replace("iw", &w.to_string()).replace("ih", &h.to_string()),
+                cy.replace("iw", &w.to_string()).replace("ih", &h.to_string())
+            ));
+            cur_v = format!("L{li}");
+            continue;
+        }
+        if !Path::new(&l.path).is_file() {
+            bail!("Fichier introuvable pour un calque : {}", l.path);
+        }
+        let (lw, lh) = ((l.w.max(2.0).round() as u32) / 2 * 2, (l.h.max(2.0).round() as u32) / 2 * 2);
+        let k = match l.kind.as_str() {
+            "video" => {
+                let len = l.dur * l.speed.clamp(0.25, 4.0);
+                input(&mut args, vec!["-ss".into(), n(l.src_start.max(0.0)), "-t".into(), n(len + 0.1)], &l.path)
+            }
+            "gif" => input(&mut args, vec!["-ignore_loop".into(), "0".into(), "-t".into(), n(l.dur + 0.2)], &l.path),
+            _ => input(&mut args, vec!["-loop".into(), "1".into(), "-framerate".into(), fps.to_string(), "-t".into(), n(l.dur + 0.2)], &l.path),
+        };
+        let speed = if l.kind == "video" { l.speed.clamp(0.25, 4.0) } else { 1.0 };
+        let (scale_rot, _) = animated(l);
+        let mut chain = format!("[{k}:v]setpts=(PTS-STARTPTS)/{speed:.5}+{}/TB,fps={fps},format=rgba,scale={lw}:{lh}:flags=lanczos", n(l.at));
+        let opacity = l.opacity.clamp(0.0, 1.0);
+        if l.op_kf.len() > 1 {
+            let e = piecewise(&l.op_kf, "T");
+            chain.push_str(&format!(",geq=r='r(X\\,Y)':g='g(X\\,Y)':b='b(X\\,Y)':a='alpha(X\\,Y)*clip({e}\\,0\\,1)'"));
+        } else if opacity < 0.999 {
+            chain.push_str(&format!(",colorchannelmixer=aa={opacity:.4}"));
+        }
+        chain.push_str(&fade);
+        let (ox, oy);
+        if scale_rot {
+            // Cadre carré fixe assez grand pour la rotation ; la taille et l'angle animés passent par perspective
+            let side = ((lw as f64).hypot(lh as f64).ceil() as u32 + 4) / 2 * 2;
+            let tt = format!("({}+in/{fps})", n(l.at));
+            let (sx, rx) = (layer_exprs(l, &tt).2, layer_exprs(l, &tt).3);
+            let (hw, hh, c) = (lw as f64 / 2.0, lh as f64 / 2.0, side as f64 / 2.0);
+            let corner = |dx: f64, dy: f64, axis: char| -> String {
+                // Point (dx, dy) × échelle, tourné de l'angle, autour du centre du cadre
+                if axis == 'x' {
+                    format!("{}+(({})*({}*cos({rx})-({})*sin({rx})))", n(c), sx, n(dx), n(dy))
+                } else {
+                    format!("{}+(({})*({}*sin({rx})+({})*cos({rx})))", n(c), sx, n(dx), n(dy))
+                }
+            };
+            chain.push_str(&format!(
+                ",format=yuva444p,pad={side}:{side}:(ow-iw)/2:(oh-ih)/2:color=black@0,perspective=x0='{}':y0='{}':x1='{}':y1='{}':x2='{}':y2='{}':x3='{}':y3='{}':sense=destination:eval=frame:interpolation=linear",
+                corner(-hw, -hh, 'x'), corner(-hw, -hh, 'y'), corner(hw, -hh, 'x'), corner(hw, -hh, 'y'),
+                corner(-hw, hh, 'x'), corner(-hw, hh, 'y'), corner(hw, hh, 'x'), corner(hw, hh, 'y')
+            ));
+            ox = format!("({x})-{}", side / 2);
+            oy = format!("({y})-{}", side / 2);
+        } else {
+            ox = format!("({x})-{}", lw / 2);
+            oy = format!("({y})-{}", lh / 2);
+        }
+        let _ = (s, r);
+        g.push_str(&format!("{chain}[o{li}];[{cur_v}][o{li}]overlay=x='{ox}':y='{oy}':eof_action=pass:enable='{en}'[L{li}];"));
+        cur_v = format!("L{li}");
+        // Son d'une vidéo en incrustation
+        if l.kind == "video" && l.volume > 0.001 && ffmpeg::streams(Path::new(&l.path)).iter().any(|s| s.kind == "audio") {
+            let delay = (l.at * 1000.0).round() as u64;
+            g.push_str(&format!(
+                "[{k}:a:0]{AFMT},asetpts=PTS-STARTPTS,{},volume={:.3},atrim=0:{},adelay={delay}:all=1,apad,atrim=0:{}[pa{li}];",
+                editor::atempo(speed), l.volume.clamp(0.0, 2.0), n(l.dur), n(total)
+            ));
+            extra_audio.push(format!("pa{li}"));
+        }
+    }
+
+    // ---- Touches clavier / souris ----
+    if let Some(keys) = &spec.keys
+        && Path::new(&keys.base).is_file()
+    {
+        let intervals = editor::key_intervals(pieces);
+        if !intervals.is_empty() {
+            let k = input(&mut args, vec!["-loop".into(), "1".into(), "-framerate".into(), fps.to_string(), "-t".into(), n(total)], &keys.base);
+            g.push_str(&format!("[{k}:v]format=rgba[kb];[{cur_v}][kb]overlay=x={}:y={}:eof_action=pass[K];", n(keys.x.round()), n(keys.y.round())));
+            cur_v = "K".into();
+            for sp in &keys.sprites {
+                let Some(list) = intervals.get(&sp.key) else { continue };
+                if !Path::new(&sp.path).is_file() {
+                    continue;
+                }
+                let en = list.iter().map(|(a, b)| format!("between(t\\,{}\\,{})", n(*a), n(*b))).collect::<Vec<_>>().join("+");
+                let k = input(&mut args, vec!["-loop".into(), "1".into(), "-framerate".into(), fps.to_string(), "-t".into(), n(total)], &sp.path);
+                g.push_str(&format!("[{k}:v]format=rgba[ks{}];[{cur_v}][ks{}]overlay=x={}:y={}:eof_action=pass:enable='{en}'[K{}];", sp.key, sp.key, n(keys.x.round()), n(keys.y.round()), sp.key));
+                cur_v = format!("K{}", sp.key);
+            }
+        }
+    }
+
+    // ---- Sortie vidéo : taille finale ----
+    let vertical = h > w;
+    let final_scale = if out_short < w.min(h) {
+        if vertical { format!(",scale={out_short}:-2:flags=lanczos") } else { format!(",scale=-2:{out_short}:flags=lanczos") }
+    } else {
+        String::new()
+    };
+    g.push_str(&format!("[{cur_v}]trim=duration={}{final_scale},format=yuv420p,setsar=1[vout];", n(total)));
+
+    // ---- Son : principal + incrustations + éléments (musique, bruitages, voix off) ----
+    let mut plain: Vec<String> = vec![cur_a.clone()];
+    plain.extend(extra_audio);
+    let mut ducked: Vec<String> = Vec::new();
+    for (ai, a) in spec.audio.iter().enumerate() {
+        if a.dur <= 0.01 || a.volume <= 0.0001 && a.kf.iter().all(|k| k.1 <= 0.0001) {
+            continue;
+        }
+        if !Path::new(&a.path).is_file() {
+            bail!("Son introuvable : {}", a.path);
+        }
+        let k = input(&mut args, vec!["-ss".into(), n(a.src_start.max(0.0)), "-t".into(), n(a.dur + 0.1)], &a.path);
+        let vol = if a.kf.len() > 1 {
+            format!("volume='{}':eval=frame", piecewise(&a.kf, "t"))
+        } else {
+            format!("volume={:.3}", a.kf.first().map(|k| k.1).unwrap_or(a.volume).clamp(0.0, 2.0))
+        };
+        let mut chain = format!("[{k}:a:0]asetpts=PTS-STARTPTS,{AFMT},atrim=0:{},{vol}", n(a.dur));
+        if a.fade_in > 0.01 {
+            chain.push_str(&format!(",afade=t=in:st=0:d={}", n(a.fade_in.min(a.dur / 2.0))));
+        }
+        if a.fade_out > 0.01 {
+            let fo = a.fade_out.min(a.dur / 2.0);
+            chain.push_str(&format!(",afade=t=out:st={}:d={}", n(a.dur - fo), n(fo)));
+        }
+        let delay = (a.at.max(0.0) * 1000.0).round() as u64;
+        chain.push_str(&format!(",adelay={delay}:all=1,apad,atrim=0:{}[au{ai}];", n(total)));
+        g.push_str(&chain);
+        if a.duck { ducked.push(format!("au{ai}")) } else { plain.push(format!("au{ai}")) }
+    }
+    let limiter = "alimiter=limit=0.97:level=0:latency=1";
+    let mix = |list: &[String], out: &str, g: &mut String| {
+        if list.len() == 1 {
+            g.push_str(&format!("[{}]anull[{out}];", list[0]));
+        } else {
+            let ins: String = list.iter().map(|l| format!("[{l}]")).collect();
+            g.push_str(&format!("{ins}amix=inputs={}:duration=first:normalize=0[{out}];", list.len()));
+        }
+    };
+    if ducked.is_empty() {
+        mix(&plain, "amx", &mut g);
+    } else {
+        // La musique baisse quand le jeu ou la voix sont forts (le son principal sert de déclencheur)
+        mix(&ducked, "mus", &mut g);
+        g.push_str(&format!("[{}]asplit=2[amain][asc];[mus][asc]sidechaincompress=threshold=0.04:ratio=8:attack=30:release=400[musd];", plain[0]));
+        let mut rest = vec!["amain".to_string()];
+        rest.extend(plain.iter().skip(1).cloned());
+        rest.push("musd".into());
+        mix(&rest, "amx", &mut g);
+    }
+    g.push_str(&format!("[amx]{limiter},atrim=0:{}[aout]", n(total)));
+
+    // Le graphe passe par un fichier (ligne de commande Windows limitée à 32 767 caractères)
+    std::fs::write(graph_file, &g)?;
+    args.extend(["-/filter_complex".into(), graph_file.to_string_lossy().to_string()]);
+    args.extend(["-map".into(), "[vout]".into(), "-map".into(), "[aout]".into(), "-t".into(), n(total), "-r".into(), fps.to_string()]);
+    match kbps {
+        Some(v) => {
+            let enc = ffmpeg::pick_encoder("auto");
+            args.extend(["-c:v".into(), enc.clone()]);
+            if enc.contains("nvenc") {
+                args.extend(["-preset", "p6", "-tune", "hq", "-rc", "cbr", "-multipass", "fullres"].map(String::from));
+            } else if enc == "libx264" {
+                args.extend(["-preset", "medium"].map(String::from));
+            }
+            args.extend([
+                "-b:v".into(), format!("{v:.0}k"), "-maxrate".into(), format!("{v:.0}k"), "-bufsize".into(), format!("{:.0}k", v * 2.0),
+                "-pix_fmt".into(), "yuv420p".into(), "-c:a".into(), "aac".into(), "-b:a".into(), format!("{STUDIO_AUDIO_KBPS:.0}k"),
+                "-movflags".into(), "+faststart".into(),
+            ]);
+        }
+        None => args.extend(editor::encoder_args()),
+    }
+    args.extend(["-metadata".into(), format!("title={}", spec.title)]);
+    Ok(args)
+}
+
+/// Exporte le montage dans un nouveau fichier (les originaux ne sont jamais modifiés).
+pub fn render(spec: &RenderSpec, folder: &Path, progress: &dyn Fn(f64)) -> Result<PathBuf> {
+    if spec.pieces.is_empty() && spec.layers.is_empty() {
+        bail!("Le montage est vide.");
+    }
+    // Chaque morceau doit rester dans son clip (un morceau vide bloquerait toute la suite de l'image)
+    let mut spec = spec.clone();
+    for p in &mut spec.pieces {
+        if !Path::new(&p.path).is_file() {
+            bail!("Clip introuvable : {} (déplacé ou supprimé ?)", p.path);
+        }
+        let dur = ffmpeg::duration(Path::new(&p.path)).unwrap_or(f64::MAX);
+        p.start = p.start.clamp(0.0, (dur - 0.1).max(0.0));
+        p.end = p.end.min(dur);
+        if p.freeze <= 0.0 && p.end - p.start < 0.05 {
+            bail!("Un morceau est en dehors de son clip ({:.1} s pour un clip de {dur:.1} s).", p.start);
+        }
+    }
+    crate::studio::clean_cache();
+    let total = spec.total.max(0.1);
+    let src_fps = spec.pieces.first().map(|p| editor::frame_rate(Path::new(&p.path)) as u32).unwrap_or(60);
+    let mut fps = if spec.fps > 0 { spec.fps.clamp(24, 60) } else { src_fps };
+    let mut short = if spec.short >= 1080 { 1080 } else { 720 }.min(spec.w.min(spec.h).max(2));
+    let mut target_kbps: Option<f64> = None;
+    if spec.max_mb > 0.0 {
+        let (sh, f, kbps) = editor::size_plan(total, spec.max_mb, short, fps)?;
+        short = sh;
+        fps = f;
+        target_kbps = Some(kbps);
+    }
+    let _ = LADDER;
+    std::fs::create_dir_all(folder)?;
+    let stamp = chrono::Local::now().format("%Y-%m-%d %Hh%M-%S");
+    let out = util::reserve_file(folder, &util::safe_name(&format!("{} {stamp}", spec.title)), "mp4")?;
+    let graph = util::data_dir().join("cache").join(format!("graphe-{}.txt", crate::library::new_id()));
+    let _ = std::fs::create_dir_all(graph.parent().unwrap_or(Path::new(".")));
+    let factors: &[f64] = if target_kbps.is_some() { &[1.0, 0.85] } else { &[1.0] };
+    let mut last_err = None;
+    for &factor in factors {
+        let args = render_args(&spec, short, fps, target_kbps.map(|k| k * factor), &graph)?;
+        let result = editor::run(args, &out, total, progress);
+        match result {
+            Ok(()) => {
+                let mb = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0;
+                if spec.max_mb <= 0.0 || mb <= spec.max_mb {
+                    let _ = std::fs::remove_file(&graph);
+                    return Ok(out);
+                }
+                log::warn!("montage de {mb:.1} Mo pour {} Mo max : nouvel essai", spec.max_mb);
+                last_err = Some(anyhow::anyhow!("Impossible de passer sous {:.0} Mo : raccourcis le montage.", spec.max_mb));
+            }
+            Err(e) => {
+                // Le graphe est gardé pour comprendre l'erreur (rapport de diagnostic)
+                log::warn!("export du Studio : {e:#} (graphe : {})", graph.display());
+                last_err = Some(e);
+                break;
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&out);
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Export impossible")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn courbe_par_morceaux() {
+        assert_eq!(piecewise(&[], "t"), "0");
+        assert_eq!(piecewise(&[(1.0, 0.5)], "t"), "0.5");
+        assert_eq!(piecewise(&[(0.0, 2.0), (3.0, 2.0)], "t"), "2", "constante : pas d'expression");
+        let e = piecewise(&[(0.0, 0.0), (2.0, 1.0)], "t");
+        assert!(e.contains("gte(t\\,0)*lt(t\\,2)*(0+1*(t-0)/2)"), "{e}");
+        assert!(e.ends_with("+gte(t\\,2)*1"), "{e}");
+    }
+
+    #[test]
+    fn couleur_comme_le_css() {
+        assert!(color_filter(&[1.0, 1.0, 1.0]).is_none());
+        let f = color_filter(&[1.2, 1.0, 0.0]).unwrap();
+        assert!(f.contains("val*1.2000"));
+        // Saturation 0 : niveaux de gris (chaque ligne de la matrice = 0.213, 0.715, 0.072)
+        assert!(f.contains("rr=0.2130:rg=0.7150:rb=0.0720"), "{f}");
+    }
+}

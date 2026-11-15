@@ -70,15 +70,9 @@
     },
   ];
   const profile = $derived<Profile>(s?.cs2.profile === "hvh" ? "hvh" : "legit");
-  // Menus déroulants : celui du profil utilisé est ouvert au départ
+  // Menus déroulants : réduits au départ (demande du 2026-11-15 : ils prenaient trop de place) ;
+  // le résumé de chaque profil reste visible sur sa ligne.
   let open = $state<Record<Profile, boolean>>({ legit: false, hvh: false });
-  let openedOnce = false;
-  $effect(() => {
-    if (s && !openedOnce) {
-      openedOnce = true;
-      open[s.cs2.profile === "hvh" ? "hvh" : "legit"] = true;
-    }
-  });
   const rulesOf = (x: Settings, p: Profile): Cs2Rules => (p === "hvh" ? x.cs2.hvh : x.cs2);
   function edit(p: Profile, f: (r: Cs2Rules) => void) {
     app.patch((x) => f(rulesOf(x, p)));
@@ -86,7 +80,6 @@
   function setProfile(p: Profile) {
     if (profile === p) return;
     app.patch((x) => (x.cs2.profile = p));
-    open[p] = true;
     app.toast("ok", t("Profil {p} utilisé", { p: t(PROFILES.find((x) => x.id === p)!.label) }), t("Les clips automatiques suivent maintenant ces règles."));
   }
 

@@ -73,6 +73,10 @@ export type Settings = {
   audio_offset_ms: number;
   mic_denoise: boolean;
   input_overlay: boolean;
+  /** Lettres de la superposition : "auto" (clavier de Windows), "qwerty", "azerty" */
+  overlay_layout: string;
+  /** Nombre de touches : "compact", "standard", "complet" */
+  overlay_keys: string;
   voice_command: boolean;
   auto_update: boolean;
   language: "auto" | "fr" | "en" | string;
@@ -193,6 +197,8 @@ export type Cs2Event =
   | { Moment: Moment }
   | { Clip: { title: string } };
 
+export type VoiceHeard = { at: number; confidence: number; accepted: boolean };
+
 export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) => invoke<{ hotkey_errors: string[]; cs2_files: string[] }>("save_settings", { settings }),
@@ -203,6 +209,12 @@ export const api = {
   /** "custom" (clip sur mesure), "session" (session complète) ou "bookmark" (repère) : comme les raccourcis */
   holdAction: (action: "custom" | "session" | "bookmark") => invoke<void>("hold_action", { action }),
   clipInputs: (id: string) => invoke<InputEvent[]>("clip_inputs", { id }),
+  /** Pendant la saisie d'un raccourci : rien ne se déclenche (se rouvre seul après 60 s). */
+  hotkeysPause: (on: boolean) => invoke<void>("hotkeys_pause", { on }),
+  /** Dernière fois que « Rewind clip » a été entendu (null si jamais). */
+  voiceLast: () => invoke<VoiceHeard | null>("voice_last"),
+  /** Lettres de l'overlay dans la disposition du clavier (code QWERTY → lettre, ex. 0x57 → « Z » en AZERTY). */
+  keyLabels: () => invoke<Record<string, string>>("key_labels"),
   checkUpdate: () => invoke<UpdateInfo>("check_update"),
   installUpdate: () => invoke<void>("install_update"),
   screenshot: () => invoke<void>("take_screenshot"),
@@ -218,6 +230,16 @@ export const api = {
   copyForDiscord: (id: string) => invoke<{ compressed: boolean; size_mb: number; height: number; max_mb: number }>("copy_for_discord", { id }),
   studioExport: (pieces: StudioExportPiece[], options: StudioExportOptions, game: string) =>
     invoke<Clip>("studio_export", { pieces, options, game }),
+  /** Export du Studio v2 (spec calculée par studio/export.ts). */
+  studioRender: (spec: unknown, game: string) => invoke<Clip>("studio_render", { spec, game }),
+  projectsList: () => invoke<{ id: string; name: string; updated: number; duration: number; thumb: string; pieces: number }[]>("projects_list"),
+  projectLoad: (id: string) => invoke<string>("project_load", { id }),
+  projectSave: (id: string, json: string) => invoke<void>("project_save", { id, json }),
+  projectDelete: (id: string) => invoke<void>("project_delete", { id }),
+  /** Image PNG (base64) → fichier pour l'export. */
+  studioPng: (b64: string) => invoke<string>("studio_png", { b64 }),
+  voiceoverStart: () => invoke<void>("voiceover_start"),
+  voiceoverStop: () => invoke<{ path: string; duration: number }>("voiceover_stop"),
   mediaInfo: (path: string) => invoke<MediaInfo>("media_info", { path }),
   mediaFilmstrip: (path: string) => invoke<Filmstrip>("media_filmstrip", { path }),
   mediaWaveform: (path: string) => invoke<Waveform>("media_waveform", { path }),

@@ -52,6 +52,8 @@ if (typeof window !== "undefined" && !inTauri) {
     audio_offset_ms: 0,
     mic_denoise: false,
     input_overlay: true,
+    overlay_layout: "auto",
+    overlay_keys: "standard",
     voice_command: true,
     auto_update: true,
     language: "auto",
@@ -82,6 +84,7 @@ if (typeof window !== "undefined" && !inTauri) {
   if (params.get("lang")) settings.language = params.get("lang")!;
   if (params.get("accent")) settings.accent = "#" + params.get("accent");
   const empty = params.get("empty") === "1";
+  const projects: Record<string, string> = {};
   let t = 0;
   mockIPC(
     (cmd, args: any) => {
@@ -121,6 +124,30 @@ if (typeof window !== "undefined" && !inTauri) {
           return { ...c };
         }
         case "engine_log": return "";
+        case "hotkeys_pause": return null;
+        case "key_labels": return params.get("azerty") ? { "87": "Z", "65": "Q", "81": "A" } : {};
+        case "voice_last": return { at: Date.now() / 1000 - 2, confidence: 0.91, accepted: true };
+        // Studio v2 : projets gardés en mémoire pendant l'aperçu
+        case "projects_list":
+          return Object.values(projects).map((j: string) => {
+            const p = JSON.parse(j);
+            return { id: p.id, name: p.name, updated: p.updated, duration: (p.pieces ?? []).reduce((a: number, x: any) => a + (x.end - x.start) / (x.speed || 1), 0), thumb: p.pieces?.[0]?.thumb ?? "", pieces: p.pieces?.length ?? 0 };
+          }).sort((a, b) => b.updated - a.updated);
+        case "project_load": return projects[args.id] ?? Promise.reject("projet introuvable");
+        case "project_save": projects[args.id] = args.json; return null;
+        case "project_delete": delete projects[args.id]; return null;
+        case "studio_png": return "/mock/png.png";
+        case "voiceover_start": return null;
+        case "voiceover_stop": return { path: "/mock/voix.wav", duration: 3.2 };
+        case "studio_render":
+          return new Promise((r) => {
+            let v = 0;
+            const id = setInterval(() => {
+              v += 0.1;
+              (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__?.emit?.("edit-progress", { op: "studio", value: Math.min(1, v) });
+              if (v >= 1) { clearInterval(id); r({ ...clips[0], id: "export2", title: args.spec.title, kind: "edit", size: 21_000_000 }); }
+            }, 150);
+          });
         case "diagnostic_report": return new Promise((r) => setTimeout(() => r({ text: "REWIND · RAPPORT DE DIAGNOSTIC (démo)", problems: 3, path: null, copied: true }), 700));
         case "copy_for_discord": return new Promise((r) => setTimeout(() => r({ compressed: true, size_mb: 17.9, height: 1080, max_mb: 20 }), 900));
         case "clip_inputs": {

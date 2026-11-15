@@ -29,7 +29,7 @@ pub fn output_next_to(source: &Path, suffix: &str) -> PathBuf {
     unique(source.with_file_name(format!("{} {suffix}.mp4", util::safe_name(&stem))))
 }
 
-fn encoder_args() -> Vec<String> {
+pub(crate) fn encoder_args() -> Vec<String> {
     let enc = ffmpeg::pick_encoder("auto");
     let mut a: Vec<String> = vec!["-c:v".into(), enc.clone()];
     if enc.contains("nvenc") {
@@ -46,7 +46,7 @@ fn encoder_args() -> Vec<String> {
 }
 
 /// Lance FFmpeg en suivant l'avancement (0..1) sur la durée attendue.
-fn run(args: Vec<String>, out: &Path, total: f64, progress: &dyn Fn(f64)) -> Result<()> {
+pub(crate) fn run(args: Vec<String>, out: &Path, total: f64, progress: &dyn Fn(f64)) -> Result<()> {
     let tools = ffmpeg::tools()?;
     let partial = out.with_extension("partial.mp4");
     let mut child = util::command(&tools.ffmpeg)
@@ -282,11 +282,17 @@ pub struct Piece {
     pub transition_dur: f64,
     /// Identifiant du clip d'origine (pour retrouver ses touches clavier / souris)
     pub clip_id: String,
+    /// Arrêt sur image : durée tenue (l'image est celle de `start`) ; 0 = morceau normal
+    pub freeze: f64,
+    /// Réglages couleur [luminosité, contraste, saturation] (1 = neutre, mêmes formules que les filtres CSS)
+    pub color: Vec<f64>,
 }
 
 impl Default for Piece {
     fn default() -> Self {
         Self {
+            freeze: 0.0,
+            color: Vec::new(),
             clip_id: String::new(),
             path: String::new(),
             start: 0.0,
@@ -342,7 +348,7 @@ impl Default for StudioOptions {
 }
 
 /// Intervalles d'appui de chaque touche, en temps du montage (vitesse et transitions comprises).
-fn key_intervals(pieces: &[Piece]) -> std::collections::BTreeMap<u16, Vec<(f64, f64)>> {
+pub(crate) fn key_intervals(pieces: &[Piece]) -> std::collections::BTreeMap<u16, Vec<(f64, f64)>> {
     let trans = transition_durations(pieces);
     let mut out: std::collections::BTreeMap<u16, Vec<(f64, f64)>> = Default::default();
     let mut offset = 0.0;
@@ -462,7 +468,7 @@ fn keys_filters(pieces: &[Piece], w: u32, h: u32, english: bool) -> Option<Strin
     Some(f.join(","))
 }
 
-fn atempo(speed: f64) -> String {
+pub(crate) fn atempo(speed: f64) -> String {
     // atempo accepte 0,5 à 2 : on enchaîne pour aller au-delà
     let mut parts = Vec::new();
     let mut s = speed;
@@ -482,7 +488,7 @@ fn atempo(speed: f64) -> String {
 
 /// Cadence de sortie du Studio : la vraie cadence de la source (images comptées), ramenée à 60 i/s
 /// au plus par un diviseur exact (100 → 50, 144 → 48, 120 → 60) pour garder un mouvement régulier.
-fn frame_rate(path: &Path) -> f64 {
+pub(crate) fn frame_rate(path: &Path) -> f64 {
     let Ok(tools) = ffmpeg::tools() else { return 60.0 };
     let out = util::command(&tools.ffprobe)
         .args(["-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries", "stream=avg_frame_rate,nb_read_packets:format=duration", "-of", "json"])
@@ -512,8 +518,11 @@ pub fn studio_fps(real: f64) -> u32 {
     (2..=10).map(|k| src / k).find(|&f| f <= 60 && f >= 24 && src % (src / f).max(1) == 0).unwrap_or(60)
 }
 
-/// Durée de sortie d'un morceau (après vitesse).
+/// Durée de sortie d'un morceau (après vitesse ; arrêt sur image : durée tenue).
 pub fn out_len(p: &Piece) -> f64 {
+    if p.freeze > 0.0 {
+        return p.freeze.max(0.1);
+    }
     (p.end - p.start).max(0.05) / p.speed.clamp(0.25, 4.0)
 }
 
@@ -539,7 +548,7 @@ pub fn total_duration(pieces: &[Piece]) -> f64 {
     pieces.iter().map(out_len).sum::<f64>() - d.iter().sum::<f64>()
 }
 
-fn xfade_name(t: &str) -> &'static str {
+pub(crate) fn xfade_name(t: &str) -> &'static str {
     match t {
         "black" => "fadeblack",
         "white" => "fadewhite",
@@ -551,8 +560,8 @@ fn xfade_name(t: &str) -> &'static str {
 }
 
 /// Débits minimaux pour une image correcte (H.264) selon la hauteur.
-const LADDER: [(u32, f64); 3] = [(1080, 4500.0), (720, 2000.0), (480, 850.0)];
-const STUDIO_AUDIO_KBPS: f64 = 128.0;
+pub(crate) const LADDER: [(u32, f64); 3] = [(1080, 4500.0), (720, 2000.0), (480, 850.0)];
+pub(crate) const STUDIO_AUDIO_KBPS: f64 = 128.0;
 
 /// Pour une taille maximale : (hauteur, i/s, débit vidéo en kb/s) ou une erreur claire.
 pub fn size_plan(total: f64, max_mb: f64, max_height: u32, fps: u32) -> Result<(u32, u32, f64)> {

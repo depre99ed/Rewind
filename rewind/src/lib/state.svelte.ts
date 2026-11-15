@@ -1,71 +1,10 @@
 import { listen } from "@tauri-apps/api/event";
-import { api, logFront, type Clip, type Settings, type Status, type Cs2Event, type Moment, type Marker, type UpdateInfo } from "./api";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { api, logFront, type Clip, type Settings, type Status, type Cs2Event, type Moment, type UpdateInfo } from "./api";
 import { installErrorLog } from "./errlog";
 import { t } from "./i18n.svelte";
 
-export type Transition = "none" | "fade" | "black" | "white" | "zoom" | "slide" | "wipe";
-
-export type StudioPiece = {
-  uid: string;
-  clipId: string;
-  path: string;
-  title: string;
-  game: string;
-  thumb: string;
-  srcDur: number;
-  start: number;
-  end: number;
-  speed: number;
-  /** Volume général (1 = 100 %, jusqu'à 2) */
-  volume: number;
-  /** Volume de chaque piste séparée (son du PC, micro, Discord…) ; vide = piste de mixage */
-  trackVolumes: number[];
-  /** Transition vers le morceau suivant */
-  transition: Transition;
-  transitionDur: number;
-  /** Repères du clip d'origine (kills…), en temps du clip */
-  markers: Marker[];
-};
-
-export type StudioMusic = {
-  path: string;
-  name: string;
-  duration: number;
-  volume: number;
-  /** Début dans le fichier de musique */
-  offset: number;
-  /** Position de départ dans le montage */
-  at: number;
-  fadeIn: number;
-  fadeOut: number;
-  /** Baisse la musique quand le jeu ou la voix sont forts */
-  duck: boolean;
-};
-
-export type StudioFormat = "16:9" | "9:16-blur" | "9:16-crop";
-
-const STUDIO_KEY = "rewind.studio.v2";
-
-/** Complète un morceau venu d'une ancienne version (champs manquants). */
-export function normalizePiece(p: Partial<StudioPiece> & { path: string }): StudioPiece {
-  return {
-    uid: p.uid ?? Math.random().toString(36).slice(2),
-    clipId: p.clipId ?? "",
-    path: p.path,
-    title: p.title ?? "Clip",
-    game: p.game ?? "",
-    thumb: p.thumb ?? "",
-    srcDur: p.srcDur ?? Math.max(p.end ?? 0, 0.1),
-    start: p.start ?? 0,
-    end: p.end ?? p.srcDur ?? 1,
-    speed: p.speed ?? 1,
-    volume: p.volume ?? 1,
-    trackVolumes: p.trackVolumes ?? [],
-    transition: p.transition ?? "none",
-    transitionDur: p.transitionDur ?? 0.5,
-    markers: p.markers ?? [],
-  };
-}
+// Le Studio (montage) vit dans studio/store.svelte.ts depuis la 0.3.0 (projets, calques, pistes son).
 
 type Toast = { id: number; kind: "ok" | "err" | "info"; title: string; text?: string; clip?: Clip };
 
@@ -76,12 +15,6 @@ class AppState {
   toasts = $state<Toast[]>([]);
   view = $state<"library" | "studio" | "cs2" | "settings">("library");
   settingsSection = $state("video");
-  studio = $state<StudioPiece[]>([]);
-  studioMusic = $state<StudioMusic | null>(null);
-  studioTitle = $state("Montage");
-  studioFormat = $state<StudioFormat>("16:9");
-  /** Touches clavier/souris affichées dans l'aperçu et incrustées à l'export */
-  studioKeys = $state(true);
   openClip = $state<Clip | null>(null);
   progress = $state<{ op: string; value: number } | null>(null);
   cs2Feed = $state<{ at: number; text: string; kind: string }[]>([]);
@@ -96,7 +29,6 @@ class AppState {
     this.settings = await api.getSettings();
     this.applyLook();
     this.clips = await api.clips();
-    this.restoreStudio();
     this.poll();
     await listen<Clip>("clip-saved", (e) => {
       this.clipping = false;
@@ -124,6 +56,25 @@ class AppState {
     });
     await listen<Cs2Event>("cs2-event", (e) => this.onCs2(e.payload));
     await listen<UpdateInfo>("update-available", (e) => (this.update = e.payload));
+    // Pause automatique : retour au jeu, fenêtre réduite ou cachée (jamais de reprise toute seule)
+    await listen("game-front", () => this.pauseMedia());
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) this.pauseMedia();
+    });
+    try {
+      const win = getCurrentWindow();
+      await win.onResized(async () => {
+        if (await win.isMinimized()) this.pauseMedia();
+      });
+    } catch {}
+  }
+
+  /** Met en pause tout ce qui joue (lecteur, Studio) : on ne relance jamais tout seul. */
+  pauseMedia() {
+    document.querySelectorAll<HTMLMediaElement>("video, audio").forEach((m) => {
+      if (!m.paused) m.pause();
+    });
+    window.dispatchEvent(new CustomEvent("rewind-pause"));
   }
 
   private onCs2(ev: Cs2Event) {
@@ -217,47 +168,12 @@ class AppState {
     this.discordBusy = null;
   }
 
-  /** Transforme des clips en morceaux de montage (clip entier, réglages par défaut). */
-  piecesFrom(clips: Clip[]): StudioPiece[] {
-    return clips
-      .filter((c) => c.kind !== "screenshot" && c.duration > 0.2)
-      .map((c) =>
-        normalizePiece({
-          clipId: c.id, path: c.path, title: c.title, game: c.game, thumb: c.thumb,
-          srcDur: c.duration, start: 0, end: c.duration, markers: c.markers,
-        }),
-      );
-  }
-
-  /** Ajoute des clips au Studio (morceaux entiers) et y va. */
-  openStudio(clips: Clip[], replace = false) {
-    const pieces = this.piecesFrom(clips);
-    this.studio = replace ? pieces : [...this.studio, ...pieces];
-    if (replace || this.studio.length === pieces.length) this.studioTitle = pieces[0]?.title ?? "Montage";
+  /** Ouvre le Studio avec ces clips : dans le projet ouvert s'il est vide, sinon dans un nouveau projet. */
+  async openStudio(clips: Clip[]) {
     this.openClip = null;
     this.view = "studio";
-  }
-
-  /** Le montage en cours survit à la fermeture de l'appli (sauvegarde locale). */
-  saveStudio() {
-    try {
-      localStorage.setItem(
-        STUDIO_KEY,
-        JSON.stringify({ pieces: this.studio, music: this.studioMusic, title: this.studioTitle, format: this.studioFormat }),
-      );
-    } catch {}
-  }
-
-  private restoreStudio() {
-    try {
-      const raw = localStorage.getItem(STUDIO_KEY);
-      if (!raw) return;
-      const s = JSON.parse(raw);
-      if (Array.isArray(s.pieces)) this.studio = s.pieces.filter((p: any) => p && typeof p.path === "string").map(normalizePiece);
-      if (s.music && typeof s.music.path === "string") this.studioMusic = s.music;
-      if (typeof s.title === "string") this.studioTitle = s.title;
-      if (["16:9", "9:16-blur", "9:16-crop"].includes(s.format)) this.studioFormat = s.format;
-    } catch {}
+    const { openInStudio } = await import("./studio/store.svelte");
+    await openInStudio(clips);
   }
 
   updateClip(c: Clip) {

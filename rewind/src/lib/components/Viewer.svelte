@@ -6,7 +6,8 @@
   import { app } from "$lib/state.svelte";
   import { api, fileUrl, formatDuration, formatSize, relativeDate, gameTone, badges, KIND_LABEL, type Clip, type InputEvent } from "$lib/api";
   import KeysOverlay from "./KeysOverlay.svelte";
-  import { momentStyle } from "$lib/moments";
+  import MomentIcon from "./MomentIcon.svelte";
+  import { momentTone } from "$lib/moments";
   import { t, locale } from "$lib/i18n.svelte";
 
   let { clip }: { clip: Clip } = $props();
@@ -43,7 +44,7 @@
       .sort((a, b) => a.time - b.time)
       .map((m) => {
         const x = (total > 0 ? m.time / total : 0) * trackW;
-        let lane = lastX.findIndex((l) => x - l >= 24);
+        let lane = lastX.findIndex((l) => x - l >= 20);
         if (lane < 0) lane = lastX.indexOf(Math.min(...lastX));
         lastX[lane] = x;
         return { m, lane };
@@ -179,8 +180,7 @@
         <div class="track" bind:this={track} bind:clientWidth={trackW} role="slider" tabindex="-1" aria-valuenow={time} onpointerdown={down} onpointermove={move} onpointerleave={() => (hoverT = null)}>
           <div class="rail"><div class="played" style="width:{pct(time)}%"></div></div>
           {#each placed as { m, lane }}
-            {@const S = momentStyle(m.kind)}
-            <button class="marker" class:past={time >= m.time - 0.05} style="left:{pct(m.time)}%; --mc:{S.color}; --lane:{lane}" title="{m.label || KIND_LABEL[m.kind] || m.kind} · {formatDuration(m.time)}" aria-label={m.label || KIND_LABEL[m.kind] || m.kind} onpointerdown={(e) => { e.stopPropagation(); seek(Math.max(0, m.time - 2)); }}><S.icon size={12} strokeWidth={2.4} /></button>
+            <button class="marker {momentTone(m.kind)}" class:past={time >= m.time - 0.05} style="left:{pct(m.time)}%; --lane:{lane}" title="{m.label || KIND_LABEL[m.kind] || m.kind} · {formatDuration(m.time)}" aria-label={m.label || KIND_LABEL[m.kind] || m.kind} onpointerdown={(e) => { e.stopPropagation(); seek(Math.max(0, m.time - 2)); }}><MomentIcon kind={m.kind} size={16} /></button>
           {/each}
           <div class="knob" style="left:{pct(time)}%"></div>
           {#if hoverT !== null}<span class="tip mono" style="left:{pct(hoverT)}%">{formatDuration(hoverT)}</span>{/if}
@@ -241,9 +241,8 @@
       <div class="label">{t("Moments")}</div>
       <div class="moments">
         {#each [...markers].sort((a, b) => a.time - b.time) as m}
-          {@const S = momentStyle(m.kind)}
           <button class="moment" onclick={() => seek(Math.max(0, m.time - 2))}>
-            <i class="mico" style="--mc:{S.color}"><S.icon size={12} strokeWidth={2.4} /></i><span>{m.label || KIND_LABEL[m.kind] || m.kind}</span><span class="mono faint">{formatDuration(m.time)}</span>
+            <i class="mico {momentTone(m.kind)}"><MomentIcon kind={m.kind} size={16} /></i><span>{m.label || KIND_LABEL[m.kind] || m.kind}</span><span class="mono faint">{formatDuration(m.time)}</span>
           </button>
         {/each}
       </div>
@@ -288,27 +287,28 @@
   .controls { display: flex; align-items: center; gap: 6px; }
   .btn.play { width: 40px; height: 40px; border-radius: 50%; background: var(--hi); color: var(--hi-ink); border: 0; }
   .time { font-size: 12.5px; min-width: 92px; margin-left: 4px; }
-  .track { position: relative; flex: 1; height: 36px; cursor: pointer; touch-action: none; }
-  .rail { position: absolute; left: 0; right: 0; top: 50%; height: 6px; margin-top: -3px; border-radius: 6px; background: var(--panel-3); overflow: hidden; transition: height 120ms; }
-  .track:hover .rail { height: 8px; margin-top: -4px; }
+  /* Barre centrée sur la même ligne que le bouton lecture et le temps (elle était 6 px plus bas) */
+  .track { position: relative; flex: 1; height: 40px; cursor: pointer; touch-action: none; }
+  .rail { position: absolute; left: 0; right: 0; top: 50%; height: 4px; margin-top: -2px; border-radius: 4px; background: var(--panel-3); overflow: hidden; transition: height 120ms, margin 120ms; }
+  .track:hover .rail { height: 6px; margin-top: -3px; }
   .played { height: 100%; background: var(--hi); }
-  .knob { position: absolute; top: calc(50% + 6px); width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--hi) 40%, transparent); pointer-events: none; }
-  .tip { position: absolute; bottom: 30px; translate: -50% 0; padding: 2px 6px; border-radius: 6px; background: var(--panel-3); font-size: 11px; pointer-events: none; }
-  .track { height: 44px; }
-  .rail { top: calc(50% + 6px); }
-  /* Repère : pastille colorée à l'icône de l'action ; pleine une fois passée, en contour avant. Les repères trop
-     proches (ou simultanés : collateral) s'empilent en voies au-dessus de la barre. */
+  .knob { position: absolute; top: 50%; z-index: 4; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--hi) 40%, transparent), 0 1px 4px rgba(0, 0, 0, 0.5); pointer-events: none; }
+  .tip { position: absolute; bottom: 34px; translate: -50% 0; padding: 2px 6px; border-radius: 6px; background: var(--panel-3); font-size: 11px; pointer-events: none; }
+  /* Repère : picto CS2 posé sur la barre, blanc (or pour 2K/3K/ACE, vert pour un clutch). Un liseré de la couleur
+     du fond le détache de la barre ; avant d'être lu il est atténué. Deux repères trop proches (collateral) :
+     le second monte d'un cran au-dessus de la barre. */
   .marker {
-    position: absolute; top: calc(50% + 6px); width: 22px; height: 22px; margin: 0; padding: 0;
-    translate: -50% calc(-50% - var(--lane, 0) * 26px);
-    display: grid; place-items: center; border-radius: 50%; z-index: 2;
-    color: var(--mc); background: color-mix(in srgb, var(--mc) 16%, var(--bg-2));
-    box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--mc) 85%, transparent), 0 3px 8px -2px rgba(0, 0, 0, 0.7);
-    transition: scale 200ms var(--spring), background 240ms var(--ease), color 240ms var(--ease);
+    position: absolute; top: 50%; z-index: 2; height: 22px; min-width: 22px; margin: 0; padding: 0 2px;
+    translate: -50% calc(-50% - var(--lane, 0) * 20px);
+    display: grid; place-items: center; color: #f2f3f5; opacity: 0.6;
+    filter: drop-shadow(0 0 1.2px var(--bg)) drop-shadow(0 0 1.2px var(--bg)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+    transition: scale 200ms var(--spring), opacity 240ms var(--ease);
   }
-  .marker.past { background: var(--mc); color: #0b0c0f; }
-  .marker::before { content: ""; position: absolute; left: 50%; top: 100%; width: 1.5px; height: max(0px, calc(var(--lane, 0) * 26px - 11px)); translate: -50% 0; background: var(--mc); opacity: 0.55; }
-  .marker:hover { scale: 1.22; z-index: 5; }
+  .marker.gold { color: #ffd25a; }
+  .marker.green { color: #3ddc97; }
+  .marker.dim { color: #9aa3b5; }
+  .marker.past { opacity: 1; }
+  .marker:hover { scale: 1.2; opacity: 1; z-index: 5; }
   .vol { width: 80px; }
   .hints { font-size: 11.5px; text-align: center; }
 
@@ -336,7 +336,10 @@
   .moments { display: flex; flex-direction: column; gap: 2px; }
   .moment { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; text-align: left; font-size: 13px; }
   .moment:hover { background: var(--panel-2); }
-  .mico { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; color: var(--mc); background: color-mix(in srgb, var(--mc) 16%, var(--bg-2)); box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--mc) 70%, transparent); }
+  .mico { width: 22px; height: 22px; display: grid; place-items: center; color: var(--text); }
+  .mico.gold { color: #ffd25a; }
+  .mico.green { color: #3ddc97; }
+  .mico.dim { color: var(--text-3); }
   .tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .ctag { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 6px 0 9px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--line); font-size: 12.5px; }
   .ctag button { display: grid; color: var(--text-3); }

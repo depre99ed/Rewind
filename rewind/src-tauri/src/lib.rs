@@ -9,8 +9,10 @@ mod inputs;
 mod library;
 mod media;
 mod recorder;
+mod render;
 mod settings;
 mod share;
+mod studio;
 mod toast;
 mod update;
 mod util;
@@ -33,7 +35,6 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use tauri_plugin_autostart::ManagerExt as _;
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 pub struct AppState {
     recorder: Arc<Mutex<Recorder>>,
@@ -476,12 +477,12 @@ fn off_ui(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) {
     std::thread::spawn(move || f(&app));
 }
 
-fn register_hotkeys(app: &AppHandle, settings: &Settings) -> Vec<String> {
-    let gs = app.global_shortcut();
-    let _ = gs.unregister_all();
-    let mut errors = Vec::new();
+/// Raccourcis lus par le moteur d'entrées (Raw Input, inputs.rs) : rien n'est réservé auprès de
+/// Windows, la touche n'est jamais avalée (elle reste saisissable dans les Réglages), une touche seule
+/// (F8) ou un bouton de souris marche, et Ctrl/Maj tenus en plus (s'accroupir, marcher) n'empêchent rien.
+fn register_hotkeys(_app: &AppHandle, settings: &Settings) -> Vec<String> {
     let h = &settings.hotkeys;
-    let entries: Vec<(String, &'static str)> = vec![
+    inputs::set_bindings(&[
         (h.clip.clone(), "clip"),
         (h.clip_long.clone(), "clip_long"),
         (h.clip_custom.clone(), "clip_custom"),
@@ -489,36 +490,24 @@ fn register_hotkeys(app: &AppHandle, settings: &Settings) -> Vec<String> {
         (h.bookmark.clone(), "bookmark"),
         (h.screenshot.clone(), "screenshot"),
         (h.toggle_recording.clone(), "toggle"),
-    ];
-    for (keys, action) in entries {
-        if keys.trim().is_empty() {
-            continue;
+    ])
+}
+
+/// Action d'un raccourci (appelée depuis le fil des entrées : le travail part dans un fil à lui).
+fn run_hotkey(app: &AppHandle, action: &'static str) {
+    off_ui(app, move |app| {
+        let s = app.state::<AppState>().settings.lock().clone();
+        match action {
+            "clip" => clip_last(app, s.clip_seconds),
+            "clip_long" => clip_last(app, s.clip_long_seconds),
+            "clip_custom" => toggle_custom(app),
+            "session" => toggle_session(app),
+            "bookmark" => bookmark(app),
+            "screenshot" => screenshot(app),
+            "toggle" => toggle_recording(app),
+            _ => {}
         }
-        let result = gs.on_shortcut(keys.as_str(), move |app, _shortcut, event| {
-            if event.state != ShortcutState::Pressed {
-                return;
-            }
-            // Ce rappel tourne sur le fil de l'interface : le travail (verrous, notifications) part
-            // dans un fil à lui, pour que la fenêtre ne puisse jamais attendre le moteur.
-            off_ui(app, move |app| {
-                let s = app.state::<AppState>().settings.lock().clone();
-                match action {
-                    "clip" => clip_last(app, s.clip_seconds),
-                    "clip_long" => clip_last(app, s.clip_long_seconds),
-                    "clip_custom" => toggle_custom(app),
-                    "session" => toggle_session(app),
-                    "bookmark" => bookmark(app),
-                    "screenshot" => screenshot(app),
-                    "toggle" => toggle_recording(app),
-                    _ => {}
-                }
-            });
-        });
-        if let Err(e) = result {
-            errors.push(format!("{keys} : {e}"));
-        }
-    }
-    errors
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +517,29 @@ fn register_hotkeys(app: &AppHandle, settings: &Settings) -> Vec<String> {
 #[tauri::command(async)]
 fn get_settings(state: State<AppState>) -> Settings {
     state.settings.lock().clone()
+}
+
+/// Micro écouté par la commande vocale : celui choisi dans les sources audio de Rewind.
+fn voice_mic(settings: &Settings) -> String {
+    settings.audio_sources.iter().find(|s| s.kind == "mic").map(|s| s.device.clone()).unwrap_or_default()
+}
+
+/// Dernière fois que « Rewind clip » a été entendu (bouton « Tester » des Réglages).
+#[tauri::command(async)]
+fn voice_last() -> Option<voice::Heard> {
+    voice::last_heard()
+}
+
+/// Pendant la saisie d'un raccourci dans les Réglages : les raccourcis ne se déclenchent pas.
+#[tauri::command(async)]
+fn hotkeys_pause(on: bool) {
+    inputs::pause_hotkeys(on);
+}
+
+/// Nom des touches de l'overlay dans la disposition du clavier (Z Q S D sur un AZERTY).
+#[tauri::command(async)]
+fn key_labels() -> std::collections::HashMap<u16, String> {
+    inputs::key_labels()
 }
 
 #[derive(Serialize)]
@@ -544,8 +556,9 @@ fn save_settings(app: AppHandle, state: State<AppState>, mut settings: Settings)
     state.recorder.lock().apply_settings(settings.clone());
     let hotkey_errors = register_hotkeys(&app, &settings);
     if old.input_overlay != settings.input_overlay {
-        inputs::set_enabled(settings.input_overlay);
+        inputs::set_overlay(settings.input_overlay);
     }
+    voice::set_mic(&voice_mic(&settings));
     voice::set_enabled(settings.voice_command);
     if old.launch_at_startup != settings.launch_at_startup {
         let al = app.autolaunch();
@@ -897,6 +910,67 @@ async fn studio_export(app: AppHandle, pieces: Vec<editor::Piece>, options: edit
     .await
     .map_err(err)?
     .map_err(err)
+}
+
+/// Export du Studio v2 (calques, zoom, plusieurs pistes son…) : voir render.rs.
+#[tauri::command]
+async fn studio_render(app: AppHandle, spec: render::RenderSpec, game: String) -> Res<Clip> {
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Clip> {
+        let settings = app.state::<AppState>().settings.lock().clone();
+        let folder = recorder::clip_folder(&settings, if game.is_empty() { "Montages" } else { &game });
+        let out = render::render(&spec, &folder, &progress_fn(&app, "studio"))?;
+        let source = Clip { title: spec.title.clone(), game: game.clone(), ..Default::default() };
+        let mut clip = add_edit_result(&app, &source, out, "")?;
+        clip.title = spec.title.clone();
+        let state = app.state::<AppState>();
+        if let Some(c) = state.library.lock().get_mut(&clip.id) {
+            c.title = spec.title.clone();
+        }
+        let _ = state.library.lock().save();
+        log::info!("montage exporté : {}", clip.path);
+        Ok(clip)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
+}
+
+#[tauri::command(async)]
+fn projects_list() -> Vec<studio::Meta> {
+    studio::list()
+}
+
+#[tauri::command(async)]
+fn project_load(id: String) -> Res<String> {
+    studio::load(&id).map_err(err)
+}
+
+#[tauri::command(async)]
+fn project_save(id: String, json: String) -> Res<()> {
+    studio::save(&id, &json).map_err(err)
+}
+
+#[tauri::command(async)]
+fn project_delete(id: String) -> Res<()> {
+    studio::delete(&id).map_err(err)
+}
+
+/// Image dessinée par l'interface (texte, touches) → fichier PNG pour l'export.
+#[tauri::command(async)]
+fn studio_png(b64: String) -> Res<String> {
+    studio::save_png(&b64).map_err(err)
+}
+
+/// Voix off : enregistre le micro choisi dans Rewind.
+#[tauri::command(async)]
+fn voiceover_start(state: State<AppState>) -> Res<()> {
+    let mic = voice_mic(&state.settings.lock());
+    studio::voiceover_start(mic).map_err(err)
+}
+
+#[tauri::command(async)]
+fn voiceover_stop() -> Res<studio::VoiceOver> {
+    studio::voiceover_stop().map_err(err)
 }
 
 #[derive(Serialize)]
@@ -1514,6 +1588,45 @@ pub fn keys_test() -> i32 {
     inputs::self_test()
 }
 
+/// Test de l'export du Studio v2 : `rewind.exe --render <spec.json> <dossier>` (REWIND_DATA_DIR vers un dossier de test).
+pub fn render_test(spec: PathBuf, out: PathBuf) -> i32 {
+    init_logging();
+    let text = match std::fs::read_to_string(&spec) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("spec illisible : {e}");
+            return 2;
+        }
+    };
+    let spec: render::RenderSpec = match serde_json::from_str(&text) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("spec invalide : {e}");
+            return 2;
+        }
+    };
+    let started = std::time::Instant::now();
+    match render::render(&spec, &out, &|p| {
+        if (p * 100.0) as u32 % 25 == 0 {
+            println!("{:.0} %", p * 100.0);
+        }
+    }) {
+        Ok(path) => {
+            println!("OK : {} en {:.1} s", path.display(), started.elapsed().as_secs_f64());
+            0
+        }
+        Err(e) => {
+            println!("ÉCHEC : {e:#}");
+            1
+        }
+    }
+}
+
+/// Diagnostic des touches reçues et de l'appareil qui les envoie : `rewind.exe --watch-keys <secondes>`.
+pub fn watch_keys(seconds: u64) -> i32 {
+    inputs::watch(seconds)
+}
+
 /// Test de la session complète : `rewind.exe --hold <dossier>` (avec REWIND_DATA_DIR vers un dossier de test).
 /// Tampon réduit à 13 s, session tenue 40 s avec un FFmpeg tué au milieu : le fichier doit faire ~40 s
 /// (sans la session il ferait au plus 13 s) et les repères doivent être aux bons endroits.
@@ -2104,7 +2217,6 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--tray"])))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -2115,10 +2227,15 @@ pub fn run() {
             recorder::clean_buffer();
             build_tray(&handle)?;
             toast::create(&handle);
+            // Moteur d'entrées (Raw Input) : raccourcis toujours, touches à l'écran selon l'option
+            let hk = handle.clone();
+            inputs::on_hotkey(move |action| run_hotkey(&hk, action));
             let errors = register_hotkeys(&handle, &settings);
             if !errors.is_empty() {
                 log::warn!("raccourcis : {errors:?}");
             }
+            inputs::set_overlay(settings.input_overlay);
+            inputs::start();
             // Démarrage automatique avec Windows : jamais depuis un test ni une version de développement
             // (un essai avait écrit le chemin du dossier de compilation dans le registre de l'utilisateur).
             let real_install = !cfg!(debug_assertions) && std::env::var_os("REWIND_DATA_DIR").is_none();
@@ -2197,9 +2314,6 @@ pub fn run() {
                 std::thread::sleep(Duration::from_millis(250));
             })?;
 
-            // Touches à l'écran (option)
-            inputs::set_enabled(settings.input_overlay);
-
             // Recherche au démarrage puis toutes les 4 h, même en arrière-plan.
             {
                 let hu = handle.clone();
@@ -2234,18 +2348,25 @@ pub fn run() {
                     clip_last(&hv, s.clip_seconds);
                 }
             });
+            voice::set_mic(&voice_mic(&settings));
             voice::set_enabled(settings.voice_command);
 
             // Lancement d'un jeu : bandeau de 6 s avec les raccourcis (une fois par lancement)
             let h5 = handle.clone();
             std::thread::Builder::new().name("jeux".into()).spawn(move || {
                 let mut announced: Vec<(u32, f64)> = Vec::new();
+                let mut was_game = false;
                 loop {
                     std::thread::sleep(Duration::from_millis(500));
                     let fg = util::foreground();
                     let game = fg.as_ref().is_some_and(|f| util::is_game(&f.exe, f.fullscreen));
                     // Les touches ne sont notées que quand un jeu est devant (jamais du texte ailleurs)
-                    inputs::GAME_FOCUSED.store(game, std::sync::atomic::Ordering::Relaxed);
+                    inputs::set_game(if game { fg.as_ref().map_or(0, |f| f.pid) } else { 0 });
+                    // Retour au jeu : l'interface met en pause le clip qu'on regardait
+                    if game && !was_game {
+                        let _ = h5.emit("game-front", ());
+                    }
+                    was_game = game;
                     let Some(fg) = fg else { continue };
                     if !game {
                         continue;
@@ -2387,6 +2508,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
+            hotkeys_pause,
+            key_labels,
+            voice_last,
             get_status,
             hold_action,
             clip_inputs,
@@ -2405,6 +2529,14 @@ pub fn run() {
             copy_clip,
             copy_for_discord,
             studio_export,
+            studio_render,
+            projects_list,
+            project_load,
+            project_save,
+            project_delete,
+            studio_png,
+            voiceover_start,
+            voiceover_stop,
             media_info,
             media_filmstrip,
             media_waveform,

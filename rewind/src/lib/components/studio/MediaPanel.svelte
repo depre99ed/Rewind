@@ -1,207 +1,213 @@
 <script lang="ts">
-  import { Search, Plus, Music, Upload, X, Blend, Film, Clock3 } from "@lucide/svelte";
+  // Colonne de gauche du Studio : tout ce qu'on peut ajouter au montage.
+  import { Clapperboard, Type, Image as ImageIcon, Music, Sparkles, Plus, Search, Layers, Mic, Square, Upload, Droplets, Snowflake, ZoomIn, Gauge } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
-  import { studio, TRANSITIONS, pickMusic, useMusic, recentMusic, fmtTime } from "$lib/studio.svelte";
+  import { studio, fmtTime } from "$lib/studio/store.svelte";
+  import { fileUrl, formatDuration, api } from "$lib/api";
   import { fit } from "$lib/fit";
-  import { fileUrl, formatDuration, gameTone, badges, type Clip } from "$lib/api";
   import { t } from "$lib/i18n.svelte";
 
-  let tab = $state<"clips" | "music" | "transitions">("clips");
-  let query = $state("");
-  let game = $state<string | null>(null);
-  let recent = $state(recentMusic());
+  type Tab = "clips" | "text" | "media" | "audio" | "fx";
+  let tab = $state<Tab>("clips");
+  const TABS: { id: Tab; icon: typeof Clapperboard; label: string }[] = [
+    { id: "clips", icon: Clapperboard, label: "Clips" },
+    { id: "text", icon: Type, label: "Texte" },
+    { id: "media", icon: ImageIcon, label: "Médias" },
+    { id: "audio", icon: Music, label: "Son" },
+    { id: "fx", icon: Sparkles, label: "Effets" },
+  ];
+  let q = $state("");
+  let game = $state("");
 
-  const usable = $derived(app.clips.filter((c) => c.kind !== "screenshot" && c.duration > 0.5));
-  const games = $derived.by(() => {
-    const m = new Map<string, number>();
-    for (const c of usable) m.set(c.game || "Bureau", (m.get(c.game || "Bureau") ?? 0) + 1);
-    return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([g]) => g);
-  });
-  const list = $derived(
-    usable.filter(
-      (c) =>
-        (!game || (c.game || "Bureau") === game) &&
-        (!query || `${c.title} ${c.game}`.toLowerCase().includes(query.toLowerCase())),
-    ),
-  );
-  const inMontage = $derived(new Set(app.studio.map((p) => p.clipId)));
+  const clips = $derived(app.clips.filter((c) => c.kind !== "screenshot" && c.duration > 0.3));
+  const games = $derived([...new Set(clips.map((c) => c.game || t("Bureau")))]);
+  const shown = $derived(clips.filter((c) => (!game || (c.game || t("Bureau")) === game) && (!q || c.title.toLowerCase().includes(q.toLowerCase()))));
 
-  function dragStart(e: DragEvent, c: Clip) {
-    if (!e.dataTransfer) return;
-    e.dataTransfer.setData("application/x-rewind-clip", c.id);
-    e.dataTransfer.effectAllowed = "copy";
+  function dragClip(e: DragEvent, id: string) {
+    e.dataTransfer?.setData("application/x-rewind-clip", id);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
   }
 
-  /** Jonction visée : celle choisie sur la frise, sinon celle après le morceau sélectionné. */
-  const target = $derived(
-    studio.junction ?? (studio.selIndex >= 0 && studio.selIndex < app.studio.length - 1 ? studio.selIndex + 1 : null),
-  );
-
-  async function importMusic() {
-    await pickMusic();
-    recent = recentMusic();
+  async function pick(kind: "media" | "music" | "sfx") {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const filters =
+      kind === "media"
+        ? [{ name: t("Images, GIF et vidéos"), extensions: ["png", "jpg", "jpeg", "webp", "gif", "mp4", "mkv", "mov", "webm"] }]
+        : [{ name: t("Son"), extensions: ["mp3", "wav", "ogg", "m4a", "aac", "flac", "opus", "wma"] }];
+    const path = await open({ multiple: false, directory: false, filters }).catch(() => null);
+    if (typeof path !== "string") return;
+    if (kind === "media") await studio.addMedia(path);
+    else await studio.addAudio(path, kind);
+    rememberSound(path, kind);
   }
+
+  // Sons récents (musique, bruitages)
+  const RECENT = "rewind.studio.sounds";
+  type Recent = { path: string; name: string; kind: "music" | "sfx" };
+  let recent = $state<Recent[]>(load());
+  function load(): Recent[] {
+    try {
+      const l = JSON.parse(localStorage.getItem(RECENT) || localStorage.getItem("rewind.music.recent") || "[]");
+      return Array.isArray(l) ? l.filter((x) => x && typeof x.path === "string").map((x) => ({ path: x.path, name: x.name ?? x.path.split(/[\\/]/).pop(), kind: x.kind ?? "music" })) : [];
+    } catch {
+      return [];
+    }
+  }
+  function rememberSound(path: string, kind: "media" | "music" | "sfx") {
+    if (kind === "media") return;
+    const name = (path.split(/[\\/]/).pop() ?? "").replace(/\.[^.]+$/, "");
+    recent = [{ path, name, kind }, ...recent.filter((r) => r.path !== path)].slice(0, 10);
+    try { localStorage.setItem(RECENT, JSON.stringify(recent)); } catch {}
+  }
+
+  // Voix off : enregistre le micro choisi dans Rewind pendant que le montage défile
+  let recTimer: ReturnType<typeof setInterval> | undefined;
+  let recSecs = $state(0);
+  async function toggleRecord() {
+    if (studio.recording) {
+      clearInterval(recTimer);
+      const at = studio.recording.at;
+      studio.recording = null;
+      studio.playing = false;
+      try {
+        const r = await api.voiceoverStop();
+        await studio.addAudio(r.path, "voice", at);
+      } catch (e) {
+        studio.say(t("Voix off impossible : {e}", { e: String(e) }));
+      }
+      return;
+    }
+    try {
+      await api.voiceoverStart();
+      studio.recording = { at: studio.t, since: Date.now() };
+      recSecs = 0;
+      recTimer = setInterval(() => (recSecs = (Date.now() - (studio.recording?.since ?? Date.now())) / 1000), 200);
+      studio.playing = studio.total > 0;
+    } catch (e) {
+      studio.say(t("Micro indisponible : {e}", { e: String(e) }));
+    }
+  }
+
+  const TEXTS: { id: "title" | "subtitle" | "caption" | "gothic"; label: string; hint: string }[] = [
+    { id: "gothic", label: "Edit", hint: "Gothique, comme sur les edits TikTok" },
+    { id: "title", label: "TITRE", hint: "Gros titre avec contour, entrée « pop »" },
+    { id: "subtitle", label: "Sous-titre", hint: "Texte sur un fond sombre, en bas" },
+    { id: "caption", label: "Légende", hint: "Petit texte qui glisse" },
+  ];
 </script>
 
-<aside class="panel">
-  <nav class="tabs">
-    <button class:on={tab === "clips"} onclick={() => (tab = "clips")}><Film size={15} />{t("Clips")}</button>
-    <button class:on={tab === "music"} onclick={() => { tab = "music"; recent = recentMusic(); }}><Music size={15} />{t("Musique")}</button>
-    <button class:on={tab === "transitions"} onclick={() => (tab = "transitions")}><Blend size={15} />{t("Transitions")}</button>
-  </nav>
+<aside class="media">
+  <div class="tabs" role="tablist">
+    {#each TABS as tb}
+      <button role="tab" class:on={tab === tb.id} aria-selected={tab === tb.id} onclick={() => (tab = tb.id)} title={t(tb.label)}><tb.icon size={16} /><span>{t(tb.label)}</span></button>
+    {/each}
+  </div>
 
-  {#if tab === "clips"}
-    <div class="head">
-      <label class="search"><Search size={14} /><input placeholder={t("Rechercher un clip…")} bind:value={query} /></label>
+  <div class="body">
+    {#if tab === "clips"}
+      <label class="search"><Search size={14} /><input placeholder={t("Chercher un clip")} bind:value={q} /></label>
       {#if games.length > 1}
-        <div class="games">
-          <button class="g" class:on={!game} onclick={() => (game = null)}>{t("Tous")}</button>
-          {#each games as g}
-            <button class="g" class:on={game === g} onclick={() => (game = game === g ? null : g)}><i style="background:{gameTone(g)}"></i>{g}</button>
-          {/each}
+        <div class="chips">
+          <button class="chip" class:on={!game} onclick={() => (game = "")}>{t("Tous")}</button>
+          {#each games as g}<button class="chip" class:on={game === g} onclick={() => (game = g)}>{g}</button>{/each}
         </div>
       {/if}
-    </div>
-    <div class="grid">
-      {#each list as c (c.id)}
-        <div class="card" draggable="true" ondragstart={(e) => dragStart(e, c)} role="listitem" title={t("Glisse sur la frise, ou clique sur +")}>
-          <div class="thumb" style="--c:{gameTone(c.game)}">
-            {#if c.thumb}<img use:fit src={fileUrl(c.thumb)} alt="" loading="lazy" draggable="false" />{/if}
-            <em class="mono">{formatDuration(c.duration)}</em>
-            {#if inMontage.has(c.id)}<span class="used">{t("Dans le montage")}</span>{/if}
-            <button class="add" onclick={() => studio.insertClips([c])} aria-label={t("Ajouter au montage")}><Plus size={16} /></button>
+      <div class="grid">
+        {#each shown as c (c.id)}
+          <div class="card" draggable="true" ondragstart={(e) => dragClip(e, c.id)} role="listitem" title={t("Glisse sur la frise, ou + pour ajouter à la fin")}>
+            <div class="thumb">
+              {#if c.thumb}<img use:fit src={fileUrl(c.thumb)} alt="" loading="lazy" draggable="false" />{/if}
+              <span class="dur mono">{formatDuration(c.duration)}</span>
+              <div class="acts">
+                <button onclick={() => studio.insertClips([c])} title={t("Ajouter à la suite")} aria-label={t("Ajouter à la suite")}><Plus size={15} /></button>
+                <button onclick={() => studio.addMedia(c.path)} title={t("Ajouter par-dessus (incrustation)")} aria-label={t("Ajouter par-dessus (incrustation)")}><Layers size={14} /></button>
+              </div>
+            </div>
+            <span class="ctitle">{c.title}</span>
           </div>
-          <strong>{c.title}</strong>
-          <small>
-            <i style="background:{gameTone(c.game)}"></i>{c.game || t("Bureau")}
-            {#each badges(c).slice(0, 2) as b}<span class="tag" class:hot={b.hot}>{b.label}</span>{/each}
-          </small>
-        </div>
-      {:else}
-        <p class="empty faint">{t("Aucun clip trouvé.")}</p>
-      {/each}
-    </div>
-  {:else if tab === "music"}
-    <div class="pad">
-      <button class="btn primary wide" onclick={importMusic}><Upload size={16} />{t("Importer une musique…")}</button>
-      <p class="faint note">{t("MP3, WAV, OGG, M4A, FLAC. Elle se répète si elle est plus courte que le montage, et baisse toute seule quand le jeu ou la voix sont forts (réglable).")}</p>
-      {#if app.studioMusic}
-        <div class="current">
-          <span class="disc"><Music size={16} /></span>
-          <div class="ctext"><strong>{app.studioMusic.name}</strong><small class="faint mono">{fmtTime(app.studioMusic.duration)} · {Math.round(app.studioMusic.volume * 100)} %</small></div>
-          <button class="btn small ghost" onclick={() => { studio.musicSelected = true; studio.selected = null; }}>{t("Régler")}</button>
-          <button class="btn small icon ghost" onclick={() => studio.setMusic(null)} aria-label={t("Retirer la musique")}><X size={15} /></button>
-        </div>
-      {/if}
-      {#if recent.length}
-        <h4><Clock3 size={13} />{t("Récentes")}</h4>
-        {#each recent as m (m.path)}
-          <button class="recent" class:on={app.studioMusic?.path === m.path} onclick={() => useMusic(m.path)}>
-            <Music size={14} /><span>{m.name}</span><small class="mono faint">{fmtTime(m.duration)}</small>
-          </button>
-        {/each}
-      {/if}
-    </div>
-  {:else}
-    <div class="pad">
-      <p class="faint note">
-        {#if target !== null}
-          {t("Choisis la transition entre les morceaux {a} et {b}.", { a: target, b: target + 1 })}
         {:else}
-          {t("Sélectionne un morceau sur la frise (ou clique sur un rond entre deux morceaux), puis choisis une transition.")}
-        {/if}
-      </p>
-      <div class="tgrid">
-        {#each TRANSITIONS as tr}
-          <button
-            class="tcard"
-            class:on={target !== null && app.studio[target - 1]?.transition === tr.id}
-            disabled={target === null}
-            onclick={() => target !== null && studio.setTransition(target, tr.id)}
-          >
-            <span class="tp {tr.id}"><i></i><i></i></span>
-            <b>{t(tr.label)}</b>
-            <small>{t(tr.hint)}</small>
-          </button>
+          <p class="note">{t("Aucun clip ici pour l'instant.")}</p>
         {/each}
       </div>
-      {#if app.studio.length > 1}
-        <div class="all">
-          <span class="faint">{t("Partout :")}</span>
-          {#each TRANSITIONS.slice(0, 4) as tr}
-            <button class="chip small" onclick={() => studio.setTransitionAll(tr.id)}>{t(tr.label)}</button>
-          {/each}
-        </div>
+
+    {:else if tab === "text"}
+      <p class="note">{t("Le texte s'ajoute à la tête de lecture. Place-le ensuite directement sur l'aperçu.")}</p>
+      {#each TEXTS as tx}
+        <button class="preset {tx.id}" onclick={() => studio.addText(tx.id)}>
+          <span class="sample">{t(tx.label)}</span>
+          <small>{t(tx.hint)}</small>
+        </button>
+      {/each}
+
+    {:else if tab === "media"}
+      <button class="big" onclick={() => pick("media")}><Upload size={18} /><span><b>{t("Importer")}</b><small>{t("Image, GIF ou vidéo, posée par-dessus")}</small></span></button>
+      <p class="note">{t("Astuce : dans l'onglet Clips, le bouton calques met un de tes clips par-dessus (réaction, autre angle).")}</p>
+
+    {:else if tab === "audio"}
+      <button class="big" onclick={() => pick("music")}><Music size={18} /><span><b>{t("Musique")}</b><small>{t("Démarre au début, baisse quand le jeu est fort")}</small></span></button>
+      <button class="big" onclick={() => pick("sfx")}><Plus size={18} /><span><b>{t("Bruitage")}</b><small>{t("Posé à la tête de lecture")}</small></span></button>
+      <button class="big rec" class:live={!!studio.recording} onclick={toggleRecord}>
+        {#if studio.recording}<Square size={16} fill="currentColor" /><span><b>{t("Arrêter")} · <span class="mono">{fmtTime(recSecs)}</span></b><small>{t("La voix off sera posée à sa place")}</small></span>
+        {:else}<Mic size={18} /><span><b>{t("Voix off")}</b><small>{t("Enregistre ton micro pendant la lecture")}</small></span>{/if}
+      </button>
+      {#if recent.length}
+        <span class="mini">{t("Récents")}</span>
+        {#each recent as r}
+          <button class="recent" onclick={() => studio.addAudio(r.path, r.kind)} title={r.path}><Music size={13} /><span>{r.name}</span></button>
+        {/each}
       {/if}
-    </div>
-  {/if}
+
+    {:else}
+      <button class="big" onclick={() => studio.addBlur()}><Droplets size={18} /><span><b>{t("Zone floutée")}</b><small>{t("Cache un pseudo, le chat, une notification")}</small></span></button>
+      <button class="big" onclick={() => studio.freezeFrame()} disabled={studio.indexAt(studio.t) < 0}><Snowflake size={18} /><span><b>{t("Arrêt sur image")}</b><small>{t("Fige l'image à la tête de lecture pendant 2 s")}</small></span></button>
+      <div class="tip"><ZoomIn size={16} /><span>{t("Zoom animé : choisis un morceau, puis « Zoom » à droite.")}</span></div>
+      <div class="tip"><Gauge size={16} /><span>{t("Ralenti progressif : choisis un morceau, puis « Ralenti progressif » à droite.")}</span></div>
+    {/if}
+  </div>
 </aside>
 
 <style>
-  .panel { display: flex; flex-direction: column; min-height: 0; background: var(--bg-2); border-right: 1px solid var(--line); }
-  .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 8px; border-bottom: 1px solid var(--line); }
-  .tabs button { height: 34px; border-radius: 9px; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--text-3); transition: all var(--dur); }
-  .tabs button:hover { color: var(--text); background: var(--panel-2); }
+  .media { display: flex; min-height: 0; border-right: 1px solid var(--line); background: var(--bg-2); }
+  .tabs { width: 62px; flex: none; display: flex; flex-direction: column; gap: 2px; padding: 8px 6px; border-right: 1px solid var(--line); }
+  .tabs button { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 0 6px; border-radius: 9px; color: var(--text-3); font-size: 10.5px; }
+  .tabs button:hover { color: var(--text); }
   .tabs button.on { color: var(--text); background: var(--panel-3); }
-  .head { padding: 10px 10px 6px; display: flex; flex-direction: column; gap: 8px; }
-  .search { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line); color: var(--text-3); }
-  .search input { flex: 1; border: 0; outline: 0; background: transparent; user-select: text; min-width: 0; }
-  .games { display: flex; flex-wrap: wrap; gap: 4px; }
-  .g { height: 24px; padding: 0 8px; border-radius: 99px; font-size: 11.5px; color: var(--text-2); border: 1px solid var(--line); display: inline-flex; align-items: center; gap: 5px; max-width: 140px; overflow: hidden; white-space: nowrap; }
-  .g i { display: none; }
-  .g.on { background: var(--text); color: var(--bg); border-color: var(--text); }
-  .grid { flex: 1; overflow-y: auto; padding: 4px 10px 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 8px; align-content: start; }
-  .card { display: flex; flex-direction: column; gap: 4px; min-width: 0; cursor: grab; }
-  .card:active { cursor: grabbing; }
-  .thumb { position: relative; aspect-ratio: 16/9; border-radius: 9px; overflow: hidden; background: var(--panel-3); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 30%, transparent); }
-  .thumb img { width: 100%; height: 100%; object-fit: cover; transition: transform 300ms var(--ease); }
-  .card:hover .thumb img { transform: scale(1.05); }
-  .thumb em { position: absolute; right: 5px; bottom: 4px; font-style: normal; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: rgba(0,0,0,.72); color: #fff; }
-  .used { position: absolute; left: 5px; top: 5px; font-size: 9.5px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: var(--hi); color: var(--hi-ink); }
-  .add { position: absolute; right: 5px; top: 5px; width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: var(--hi); color: var(--hi-ink); opacity: 0; transform: scale(.85); transition: all 160ms var(--ease); box-shadow: 0 4px 12px rgba(0,0,0,.4); }
-  .card:hover .add { opacity: 1; transform: none; }
-  .card strong { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .card small { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-3); overflow: hidden; white-space: nowrap; }
-  .card small i { display: none; }
-  .card .tag { height: 16px; font-size: 9.5px; padding: 0 4px; }
-  .empty { grid-column: 1 / -1; padding: 12px 2px; font-size: 13px; }
-  .pad { padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
-  .wide { width: 100%; }
-  .note { font-size: 12px; margin: 0; line-height: 1.5; }
-  .current { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 12px; background: color-mix(in srgb, #7b86ff 12%, var(--panel)); border: 1px solid color-mix(in srgb, #7b86ff 40%, transparent); }
-  .disc { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: #7b86ff; color: #fff; flex: none; }
-  .ctext { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-  .ctext strong { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ctext small { font-size: 11px; }
-  h4 { margin: 6px 0 0; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-3); display: flex; align-items: center; gap: 6px; }
-  .recent { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px; text-align: left; font-size: 12.5px; color: var(--text-2); }
-  .recent span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .recent:hover { background: var(--panel-2); color: var(--text); }
-  .recent.on { background: color-mix(in srgb, #7b86ff 14%, transparent); color: var(--text); }
-  .tgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .tcard { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px; border-radius: 12px; border: 1px solid var(--line); text-align: left; transition: all var(--dur); }
-  .tcard:hover:not(:disabled) { border-color: var(--line-2); background: var(--panel-2); }
-  .tcard.on { border-color: var(--hi); background: color-mix(in srgb, var(--hi) 8%, transparent); }
-  .tcard:disabled { opacity: .5; cursor: default; }
-  .tcard b { font-size: 12.5px; }
-  .tcard small { font-size: 11px; color: var(--text-3); line-height: 1.3; }
-  .tp { position: relative; width: 100%; aspect-ratio: 16/8; border-radius: 7px; overflow: hidden; margin-bottom: 4px; }
-  .tp i { position: absolute; inset: 0; }
-  .tp i:first-child { background: linear-gradient(135deg, #f0a23b, #b8612a); }
-  .tp i:last-child { background: linear-gradient(135deg, #5a9bff, #2b4f8f); opacity: 0; }
-  .tcard:hover .tp.fade i:last-child { animation: tfade 1.3s ease-in-out infinite; }
-  .tcard:hover .tp.black i:last-child { animation: tblack 1.3s ease-in-out infinite; }
-  .tcard:hover .tp.white i:last-child { animation: twhite 1.3s ease-in-out infinite; }
-  .tcard:hover .tp.zoom i:first-child { animation: tzoom 1.3s ease-in infinite; }
-  .tcard:hover .tp.zoom i:last-child { animation: tfade 1.3s ease-in-out infinite; }
-  .tcard:hover .tp.slide i:last-child { opacity: 1; animation: tslide 1.3s ease-in-out infinite; }
-  .tcard:hover .tp.wipe i:last-child { opacity: 1; animation: twipe 1.3s ease-in-out infinite; }
-  @keyframes tfade { 0%, 20% { opacity: 0; } 70%, 100% { opacity: 1; } }
-  @keyframes tblack { 0%, 15% { opacity: 0; background: #000; } 45% { opacity: 1; background: #000; } 50% { opacity: 0; background: linear-gradient(135deg, #5a9bff, #2b4f8f); } 100% { opacity: 1; background: linear-gradient(135deg, #5a9bff, #2b4f8f); } }
-  @keyframes twhite { 0%, 15% { opacity: 0; background: #fff; } 45% { opacity: 1; background: #fff; } 50% { opacity: 1; background: linear-gradient(135deg, #5a9bff, #2b4f8f); } 100% { opacity: 1; background: linear-gradient(135deg, #5a9bff, #2b4f8f); } }
-  @keyframes tzoom { 0% { transform: scale(1); } 100% { transform: scale(2.2); } }
-  @keyframes tslide { 0% { transform: translateX(100%); } 70%, 100% { transform: translateX(0); } }
-  @keyframes twipe { 0% { clip-path: inset(0 0 0 100%); } 70%, 100% { clip-path: inset(0 0 0 0); } }
-  .all { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 12px; }
-  .chip.small { height: 26px; padding: 0 10px; font-size: 12px; }
+  .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 12px; overflow-y: auto; }
+  .body > :global(*) { flex-shrink: 0; }
+  .search { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); color: var(--text-3); }
+  .search input { flex: 1; min-width: 0; background: transparent; border: 0; outline: none; color: var(--text); font-size: 12.5px; user-select: text; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { height: 24px; padding: 0 9px; border-radius: 7px; font-size: 11.5px; color: var(--text-2); background: var(--panel); border: 1px solid var(--line); }
+  .chip.on { color: var(--text); border-color: #fff; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .card { display: flex; flex-direction: column; gap: 4px; cursor: grab; min-width: 0; }
+  .thumb { position: relative; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: #0d0e12; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .dur { position: absolute; right: 4px; bottom: 4px; padding: 1px 5px; border-radius: 4px; background: rgba(0, 0, 0, 0.7); color: #fff; font-size: 10px; }
+  .acts { position: absolute; left: 4px; top: 4px; display: flex; gap: 3px; opacity: 0; transition: opacity var(--dur) var(--ease); }
+  .card:hover .acts { opacity: 1; }
+  .acts button { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; background: rgba(0, 0, 0, 0.7); color: #fff; }
+  .acts button:hover { background: #fff; color: #0b0c0f; }
+  .ctitle { font-size: 11.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .note { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-3); }
+  .mini { font-size: 11px; color: var(--text-3); margin-top: 6px; }
+  .preset { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 16px 10px 12px; border-radius: 12px; background: #0d0e12; border: 1px solid var(--line); transition: border-color var(--dur) var(--ease); }
+  .preset:hover { border-color: var(--line-2); }
+  .preset small { font-size: 11px; color: var(--text-3); }
+  .sample { color: #fff; }
+  .preset.gothic .sample { font: 400 34px "UnifrakturMaguntia"; text-shadow: 0 0 10px rgba(255, 255, 255, 0.35), 0 2px 6px rgba(0, 0, 0, 0.7); }
+  .preset.title .sample { font: 400 30px "Anton"; letter-spacing: 0.02em; -webkit-text-stroke: 1.2px #000; paint-order: stroke fill; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6); }
+  .preset.subtitle .sample { font: 900 15px "Montserrat"; padding: 4px 10px; border-radius: 5px; background: rgba(0, 0, 0, 0.55); }
+  .preset.caption .sample { font: 800 14px "Inter"; text-shadow: 0 0 2px #000, 0 0 2px #000; }
+  .big { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 12px; text-align: left; background: var(--panel); border: 1px solid var(--line); color: var(--text-2); transition: border-color var(--dur) var(--ease); }
+  .big:hover:not(:disabled) { border-color: var(--line-2); color: var(--text); }
+  .big:disabled { opacity: 0.4; }
+  .big span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .big b { font-size: 13px; font-weight: 600; color: var(--text); }
+  .big small { font-size: 11px; color: var(--text-3); }
+  .big.rec.live { border-color: var(--rec); color: var(--rec); }
+  .recent { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border-radius: 7px; font-size: 12px; color: var(--text-2); text-align: left; }
+  .recent:hover { background: var(--panel); color: var(--text); }
+  .recent span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tip { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; font-size: 12px; line-height: 1.45; color: var(--text-3); border: 1px dashed var(--line-2); }
 </style>

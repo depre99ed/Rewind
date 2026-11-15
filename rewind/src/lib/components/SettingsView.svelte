@@ -2,9 +2,24 @@
   import { t } from "$lib/i18n.svelte";
   import { onMount } from "svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
-  import { Video, AudioLines, Keyboard, HardDrive, Share2, Palette, Power, Stethoscope, Plus, Trash2, FolderOpen, MonitorUp } from "@lucide/svelte";
+  import { Video, AudioLines, Keyboard, HardDrive, Share2, Palette, Power, Stethoscope, Plus, Trash2, FolderOpen, MonitorUp, Layers } from "@lucide/svelte";
+  import KeysOverlay from "./KeysOverlay.svelte";
+  import type { KeysPreset } from "$lib/studio/render";
+
+  // Superposition : petite démo qui joue en boucle (avance, saut, tirs, accroupi)
+  const DEMO = [
+    [0x57, 0, 2.6], [0x41, 0.5, 0.9], [0x44, 1.3, 1.7], [0x20, 1.9, 2.1], [0x01, 2.3, 2.4], [0x01, 2.6, 2.7],
+    [0xa0, 3.0, 3.8], [0xa2, 3.4, 3.9], [0x02, 3.1, 3.6], [0x31, 0.2, 0.4], [0x58, 1.0, 1.2], [0x46, 2.8, 3.0],
+  ].flatMap(([key, a, b]) => [{ t: a, key, down: true }, { t: b, key, down: false }]);
+  let demoT = $state(0);
+  $effect(() => {
+    if (section !== "overlay") return;
+    const start = performance.now();
+    const id = setInterval(() => (demoT = ((performance.now() - start) / 1000) % 4), 80);
+    return () => clearInterval(id);
+  });
   import { app } from "$lib/state.svelte";
-  import { api, type Hardware, type AudioSource } from "$lib/api";
+  import { api, type Hardware, type AudioSource, type VoiceHeard } from "$lib/api";
   import HotkeyInput from "./HotkeyInput.svelte";
 
   let section = $derived((typeof window !== "undefined" && (window as any).__REWIND_MOCK__ && new URLSearchParams(location.search).get("section")) || app.settingsSection);
@@ -13,11 +28,24 @@
   let newApp = $state("");
   onMount(async () => (hw = await api.hardware()));
 
+  // Commande vocale : dernière fois que « Rewind clip » a été entendu (pour tester sa voix)
+  let heard = $state<VoiceHeard | null>(null);
+  let nowSec = $state(Date.now() / 1000);
+  $effect(() => {
+    if (!s?.voice_command || section !== "keys") return;
+    const id = setInterval(async () => {
+      nowSec = Date.now() / 1000;
+      heard = await api.voiceLast().catch(() => null);
+    }, 1000);
+    return () => clearInterval(id);
+  });
+
   const s = $derived(app.settings!);
   const sections = [
     ["video", "Enregistrement", Video],
     ["audio", "Audio", AudioLines],
     ["keys", "Raccourcis", Keyboard],
+    ["overlay", "Superposition", Layers],
     ["storage", "Stockage", HardDrive],
     ["share", "Partage", Share2],
     ["look", "Apparence", Palette],
@@ -227,10 +255,6 @@
                 <span class="switch"><input type="checkbox" checked={s.separate_tracks} onchange={(e) => app.patch((x) => (x.separate_tracks = e.currentTarget.checked))} /><span></span></span>
               </div>
               <div class="item">
-                <div class="lbl"><strong>{t("Touches clavier / souris à l'écran")}</strong><span>{t("Garde avec chaque clip les touches de jeu (ZQSD, espace, clics…) pour les afficher sur la vidéo. Notées seulement quand un jeu est au premier plan, jamais le texte que tu tapes ailleurs.")}</span></div>
-                <span class="switch"><input type="checkbox" checked={s.input_overlay} onchange={(e) => app.patch((x) => (x.input_overlay = e.currentTarget.checked))} /><span></span></span>
-              </div>
-              <div class="item">
                 <div class="lbl"><strong>{t("Suppression du bruit du micro")}</strong><span>{t("Enlève le souffle, le ventilateur et les bruits de fond légers de ton micro.")}</span></div>
                 <span class="switch"><input type="checkbox" checked={s.mic_denoise} onchange={(e) => app.patch((x) => (x.mic_denoise = e.currentTarget.checked))} /><span></span></span>
               </div>
@@ -240,6 +264,34 @@
               </div>
             </div>
             <p class="faint note">{t("Quand une application a sa propre piste (Discord par défaut), « Son du PC » l'exclut automatiquement : elle n'est jamais entendue deux fois.")}</p>
+          {:else if section === "overlay"}
+            <h2>{t("Superposition")}</h2>
+            <p class="lead muted">{t("Les touches du clavier et de la souris affichées sur tes clips, dans le lecteur, le Studio et les vidéos exportées.")}</p>
+            <div class="group">
+              <div class="item">
+                <div class="lbl"><strong>{t("Touches clavier / souris à l'écran")}</strong><span>{t("Garde avec chaque clip les touches de jeu (ZQSD, espace, clics…) pour les afficher sur la vidéo. Notées seulement quand un jeu est au premier plan, jamais le texte que tu tapes ailleurs.")}</span></div>
+                <span class="switch"><input type="checkbox" checked={s.input_overlay} onchange={(e) => app.patch((x) => (x.input_overlay = e.currentTarget.checked))} /><span></span></span>
+              </div>
+              <div class="item">
+                <div class="lbl"><strong>{t("Lettres")}</strong><span>{t("« Mon clavier » suit la disposition de Windows ; sinon force QWERTY ou AZERTY.")}</span></div>
+                <div class="seg">
+                  {#each [["auto", "Mon clavier"], ["qwerty", "QWERTY"], ["azerty", "AZERTY"]] as [id, label]}
+                    <button class:on={s.overlay_layout === id} onclick={() => app.patch((x) => (x.overlay_layout = id))}>{t(label)}</button>
+                  {/each}
+                </div>
+              </div>
+            </div>
+            <h3>{t("Nombre de touches")}</h3>
+            <div class="presets">
+              {#each [["compact", "Compact", "ZQSD, espace, Maj, Ctrl et souris"], ["standard", "Standard", "En plus : Tab, A, E, R, F, C"], ["complet", "Complet", "En plus : 1 à 5, T, G, W, X, V, B, Alt"]] as [id, label, hint]}
+                <button class="preset" class:on={s.overlay_keys === id} onclick={() => app.patch((x) => (x.overlay_keys = id))}>
+                  <span class="pv"><KeysOverlay events={DEMO} time={demoT} preset={id as KeysPreset} width={id === "complet" ? 190 : id === "compact" ? 150 : 190} floating={false} /></span>
+                  <b>{t(label)}</b>
+                  <small>{t(hint)}</small>
+                </button>
+              {/each}
+            </div>
+            <p class="faint note">{t("Dans le Studio, déplace et redimensionne les touches directement sur l'aperçu.")}</p>
           {:else if section === "keys"}
             <h2>{t("Raccourcis")}</h2>
             <p class="lead muted">{t("Fonctionnent partout, même en jeu. Clique sur un raccourci puis appuie sur la nouvelle combinaison.")}</p>
@@ -257,11 +309,20 @@
               <div class="item">
                 <div class="lbl">
                   <strong>{t("Dire « Rewind clip » pour clipper")}</strong>
-                  <span>{t("Garde les {n} dernières secondes, comme le raccourci. Reconnaissance vocale de Windows, entièrement hors ligne : une seule phrase est reconnue, rien n'est enregistré ni envoyé. Utilise le micro par défaut de Windows. Prononce-le à l'anglaise : « ri-waïnd clip ».", { n: s.clip_seconds })}</span>
+                  <span>{t("Garde les {n} dernières secondes, comme le raccourci. Reconnaissance vocale de Windows, entièrement hors ligne : une seule phrase est reconnue, rien n'est enregistré ni envoyé. Écoute le micro choisi dans Audio. Prononce-le à l'anglaise : « ri-waïnd clip ».", { n: s.clip_seconds })}</span>
                   {#if s.voice_command}
                     <span class="vstate" class:ok={app.status?.voice === 2} class:bad={(app.status?.voice ?? 0) >= 3}>
                       {t(app.status?.voice === 2 ? "● À l'écoute" : app.status?.voice === 1 ? "Démarrage…" : app.status?.voice === 3 ? "Indisponible : ajoute la reconnaissance vocale anglaise (Paramètres Windows › Heure et langue › Langue › Anglais › Options › Reconnaissance vocale)" : app.status?.voice === 4 ? "Erreur : nouvel essai automatique" : "")}
                     </span>
+                    {#if app.status?.voice === 2}
+                      <span class="vtest">
+                        {#if heard && nowSec - heard.at < 30}
+                          {t(heard.accepted ? "Entendu il y a {s} s · sûr à {c} % · clip lancé" : "Entendu il y a {s} s · sûr à {c} % seulement : pas de clip (articule « ri-waïnd clip »)", { s: Math.max(0, Math.round(nowSec - heard.at)), c: Math.round(heard.confidence * 100) })}
+                        {:else}
+                          {t("Pour tester, dis « Rewind clip » : le résultat s'affiche ici.")}
+                        {/if}
+                      </span>
+                    {/if}
                   {/if}
                 </div>
                 <span class="switch"><input type="checkbox" checked={s.voice_command} onchange={(e) => app.patch((x) => (x.voice_command = e.currentTarget.checked))} /><span></span></span>
@@ -451,9 +512,18 @@
   .add { display: flex; gap: 8px; }
   .add .field { flex: 1; }
   .note { font-size: 12.5px; margin: 0; }
+  /* Superposition : trois tailles de clavier, chacune avec son aperçu animé */
+  .presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .preset { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; border-radius: var(--radius-l); background: var(--panel); border: 1px solid var(--line); text-align: left; transition: border-color var(--dur) var(--ease); }
+  .preset:hover { border-color: var(--line-2); }
+  .preset.on { border-color: #fff; }
+  .preset .pv { width: 100%; height: 150px; display: grid; place-items: center; margin-bottom: 6px; border-radius: 10px; background: linear-gradient(160deg, #23262e, #121318); }
+  .preset b { font-size: 13.5px; font-weight: 600; }
+  .preset small { font-size: 12px; color: var(--text-3); line-height: 1.4; }
   .vstate { margin-top: 4px; font-size: 12px; font-weight: 600; color: var(--text-3); }
   .vstate.ok { color: var(--accent); }
   .vstate.bad { color: var(--rec); }
+  .vtest { margin-top: 2px; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
   .tip { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: var(--radius-l); background: color-mix(in srgb, var(--hi) 8%, var(--panel)); border: 1px solid color-mix(in srgb, var(--hi) 35%, var(--line)); }
   .tip :global(svg) { color: var(--hi); flex: none; margin-top: 2px; }
   .tip div { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }

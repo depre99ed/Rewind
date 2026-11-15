@@ -63,6 +63,42 @@ pub fn devices(input: bool) -> Vec<Device> {
     thread::spawn(run).join().ok().and_then(Result::ok).unwrap_or_default()
 }
 
+/// Son du micro choisi dans Rewind (vide = micro par défaut de Windows) en PCM mono 16 bits à `rate` Hz,
+/// par paquets d'environ 20 ms (commande vocale : 16 kHz ; voix off du Studio : 48 kHz). S'arrête quand
+/// `sink` renvoie false ou que `stop` passe à vrai. Micro ouvert en mode partagé : l'enregistrement continue à côté.
+pub fn mic_stream(device: &str, rate: u32, stop: &AtomicBool, mut sink: impl FnMut(&[u8]) -> bool) -> Result<()> {
+    let _ = wasapi::initialize_mta().ok();
+    let enumerator = DeviceEnumerator::new()?;
+    let dev = if device.is_empty() { enumerator.get_default_device(Direction::Capture)? } else { enumerator.get_device(device)? };
+    let mut client = dev.get_iaudioclient()?;
+    // Windows convertit lui-même vers mono 16 bits à la bonne fréquence (autoconvert)
+    let format = WaveFormat::new(16, 16, SampleType::Int, rate as usize, 1, None);
+    let mode = StreamMode::PollingShared { autoconvert: true, buffer_duration_hns: 2_000_000 };
+    client.initialize_client(&format, Direction::Capture, mode, None)?;
+    let packets = client.get_audiocaptureclient()?;
+    client.start_stream()?;
+    let mut queue: VecDeque<u8> = VecDeque::with_capacity(16_000);
+    let mut out = Vec::with_capacity(1280);
+    let result = (|| -> Result<()> {
+        while !stop.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(20));
+            while packets.get_next_packet_size()?.unwrap_or_default() > 0 {
+                packets.read_from_device_to_deque(&mut queue)?;
+            }
+            if queue.len() >= 640 {
+                out.clear();
+                out.extend(queue.drain(..queue.len() / 2 * 2));
+                if !sink(&out) {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    })();
+    let _ = client.stop_stream();
+    result
+}
+
 pub struct Pipe {
     pub name: String,
     pub label: String,

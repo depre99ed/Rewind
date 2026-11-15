@@ -52,8 +52,9 @@ is saved, with your PC sound, your microphone and Discord.
 <td width="50%" valign="top">
 
 ### Edit and share
-- Studio: timeline with thumbnails and waveform, trimming, transitions, background music
-- Ready-made formats: 16:9, 9:16 blurred or cropped, 10 or 20 MB files
+- Editing Studio: projects, stacked tracks, animated text (10 fonts), images, GIFs, picture-in-picture video, blurred area
+- Animated zoom, speed ramps, colors, freeze frames, several audio tracks, voice-over, keyframes
+- Ready-made formats: 16:9, 9:16 or 1:1 (blurred background or cropped), 10 or 20 MB files
 - "Copy for Discord" compresses to the right size and puts the clip on the clipboard
 - Keyboard and mouse presses shown on the video, if you want them
 - Offline voice command "Rewind clip"
@@ -99,7 +100,8 @@ Rewind falls back to 720p at 30 frames per second on the CPU to stay light.
 
 ## Hotkeys
 
-All hotkeys can be changed in Settings → Hotkeys.
+All hotkeys can be changed in Settings → Hotkeys: a single key (<kbd>F8</kbd>), a combination or a mouse button.
+They work even while you hold Ctrl or Shift in game (crouching, walking).
 
 | Hotkey | Action |
 |---|---|

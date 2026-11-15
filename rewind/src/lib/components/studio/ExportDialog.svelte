@@ -1,29 +1,32 @@
 <script lang="ts">
   import { Smartphone, MonitorPlay, MessageCircle, SlidersHorizontal, Download, X, Check, FolderOpen, Play, Clipboard, TriangleAlert } from "@lucide/svelte";
-  import { app, type StudioFormat } from "$lib/state.svelte";
-  import { studio, media, clampSpeed, fmtTime } from "$lib/studio.svelte";
+  import { app } from "$lib/state.svelte";
+  import { studio, media, fmtTime } from "$lib/studio/store.svelte";
+  import { compile, mainGame } from "$lib/studio/export";
+  import { frameSize } from "$lib/studio/model";
   import { fit } from "$lib/fit";
   import { api, fileUrl, formatSize, type Clip } from "$lib/api";
-  import { t, lang } from "$lib/i18n.svelte";
+  import { t } from "$lib/i18n.svelte";
 
   let { onClose }: { onClose: () => void } = $props();
 
-  type Preset = { id: string; label: string; desc: string; format: StudioFormat; height: number; fps: number; maxMb: number };
+  const P = $derived(studio.project);
+  type Preset = { id: string; label: string; desc: string; vertical: boolean | null; height: number; fps: number; maxMb: number };
   const PRESETS: Preset[] = [
-    { id: "tiktok", label: "TikTok · Shorts · Reels", desc: "Vertical 1080×1920, fluide", format: "9:16-blur", height: 1080, fps: 0, maxMb: 0 },
-    { id: "youtube", label: "YouTube", desc: "16:9 en 1080p, qualité maximale", format: "16:9", height: 1080, fps: 0, maxMb: 0 },
-    { id: "discord10", label: "Discord 10 Mo", desc: "Compte gratuit : passe partout", format: "16:9", height: 1080, fps: 0, maxMb: 10 },
-    { id: "discord20", label: "Discord 20 Mo", desc: "Plus net, si ton serveur l'accepte", format: "16:9", height: 1080, fps: 0, maxMb: 20 },
-    { id: "custom", label: "Personnalisé", desc: "Tu choisis tout", format: "16:9", height: 1080, fps: 0, maxMb: 0 },
+    { id: "tiktok", label: "TikTok · Shorts · Reels", desc: "Vertical 1080×1920, fluide", vertical: true, height: 1080, fps: 0, maxMb: 0 },
+    { id: "youtube", label: "YouTube", desc: "16:9 en 1080p, qualité maximale", vertical: false, height: 1080, fps: 0, maxMb: 0 },
+    { id: "discord10", label: "Discord 10 Mo", desc: "Compte gratuit : passe partout", vertical: null, height: 1080, fps: 0, maxMb: 10 },
+    { id: "discord20", label: "Discord 20 Mo", desc: "Plus net, si ton serveur l'accepte", vertical: null, height: 1080, fps: 0, maxMb: 20 },
+    { id: "custom", label: "Personnalisé", desc: "Tu choisis tout", vertical: null, height: 1080, fps: 0, maxMb: 0 },
   ];
 
-  let presetId = $state(app.studioFormat !== "16:9" ? "tiktok" : "youtube");
-  let title = $state(app.studioTitle || "Montage");
-  let format = $state<StudioFormat>(app.studioFormat);
+  let presetId = $state(studio.project.format === "9:16" ? "tiktok" : "youtube");
+  let title = $state(studio.project.name || "Montage");
   let height = $state(1080);
   let fps = $state(0);
   let maxMb = $state(0);
   let busy = $state(false);
+  let step = $state("");
   let error = $state("");
   let done = $state<Clip | null>(null);
   let started = 0;
@@ -32,16 +35,19 @@
   function choose(p: Preset) {
     presetId = p.id;
     if (p.id === "custom") return;
-    // Le vertical garde le choix flou / recadré de l'aperçu
-    format = p.format.startsWith("9:16") && app.studioFormat.startsWith("9:16") ? app.studioFormat : p.format;
     height = p.height;
     fps = p.fps;
     maxMb = p.maxMb;
+    // TikTok / YouTube : le format du projet suit (annulable avec Ctrl+Z)
+    if (p.vertical === true && P.format !== "9:16") studio.setFormat("9:16");
+    if (p.vertical === false && P.format !== "16:9") studio.setFormat("16:9");
   }
   choose(PRESETS.find((p) => p.id === presetId)!);
 
-  const total = $derived(studio.lay.total);
-  const hasKeys = $derived(app.studio.some((p) => (media.inputs[p.clipId]?.length ?? 0) > 0));
+  const total = $derived(studio.total);
+  const hasKeys = $derived(P.pieces.some((p) => (media.inputs[p.clipId]?.length ?? 0) > 0));
+  const music = $derived(P.tracks.some((tr) => tr.kind === "audio" && tr.items.length));
+  const layersCount = $derived(P.tracks.reduce((a, tr) => a + (tr.kind === "layer" ? tr.items.length : 0), 0));
   /** Même règle que le moteur (editor.rs, size_plan). */
   const plan = $derived.by(() => {
     if (maxMb <= 0) return null;
@@ -51,51 +57,24 @@
     if (!hit) return { ok: false as const, maxSecs: Math.floor((maxMb * 8192 * 0.92) / (850 + 128)) };
     return { ok: true as const, height: hit[0], fps: v < 3500 ? 30 : fps || 60 };
   });
-  const vertical = $derived(format.startsWith("9:16"));
   const outRes = $derived.by(() => {
-    const h = plan?.ok ? plan.height : height;
-    const long = Math.floor((h * 16) / 9 / 2) * 2;
-    return vertical ? `${h}×${long}` : `${long}×${h}`;
+    const s = frameSize(P.format, plan?.ok ? plan.height : height);
+    return `${s.w}×${s.h}`;
   });
 
   async function run() {
-    if (!app.studio.length || busy) return;
-    if (plan && !plan.ok) return;
+    if (busy || (plan && !plan.ok)) return;
     busy = true;
     error = "";
     started = Date.now();
     const timer = setInterval(() => (elapsed = (Date.now() - started) / 1000), 250);
     try {
-      const pieces = app.studio.map((p) => ({
-        path: p.path,
-        start: p.start,
-        end: p.end,
-        speed: clampSpeed(p.speed),
-        volume: p.volume,
-        track_volumes: media.separateTracks(p.path).length ? p.trackVolumes : [],
-        transition: p.transition,
-        transition_dur: p.transitionDur,
-        clip_id: p.clipId,
-      }));
-      const m = app.studioMusic;
-      const games = new Map<string, number>();
-      for (const p of app.studio) games.set(p.game, (games.get(p.game) ?? 0) + (p.end - p.start));
-      const game = [...games.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
-      const clip = await api.studioExport(
-        pieces,
-        {
-          title: title.trim() || "Montage",
-          format,
-          height,
-          fps,
-          max_mb: maxMb,
-          music: m ? { path: m.path, volume: m.volume, offset: m.offset, at: m.at, fade_in: m.fadeIn, fade_out: m.fadeOut, duck: m.duck } : null,
-          keys: hasKeys && app.studioKeys,
-          lang: lang(),
-        },
-        game,
-      );
-      app.studioTitle = title.trim() || "Montage";
+      await studio.saveNow();
+      const name = title.trim() || "Montage";
+      const spec = await compile($state.snapshot(P) as any, { title: name, short: height, fps, maxMb }, (s) => (step = s));
+      step = "";
+      const clip = await api.studioRender(spec, mainGame(P));
+      if (name !== P.name) studio.rename(name);
       app.clips = [clip, ...app.clips.filter((c) => c.id !== clip.id)];
       done = clip;
     } catch (e) {
@@ -113,7 +92,7 @@
   <div class="dialog appear" role="dialog" aria-modal="true" aria-label={t("Exporter le montage")}>
     <header>
       <h2>{done ? t("Montage prêt") : t("Exporter le montage")}</h2>
-      <span class="faint mono">{fmtTime(total, true)} · {t(app.studio.length > 1 ? "{n} morceaux" : "{n} morceau", { n: app.studio.length })}</span>
+      <span class="faint mono">{fmtTime(total, true)} · {P.format}{layersCount ? ` · ${t("{n} calques", { n: layersCount })}` : ""}</span>
       <button class="x" onclick={onClose} disabled={busy} aria-label={t("Fermer")}><X size={18} /></button>
     </header>
 
@@ -146,16 +125,6 @@
 
       <div class="opts">
         <label class="fld wide"><span>{t("Titre")}</span><input class="field" bind:value={title} disabled={busy} /></label>
-        {#if presetId === "tiktok" || presetId === "custom"}
-          <div class="fld">
-            <span>{t("Cadrage")}</span>
-            <div class="seg">
-              {#if presetId === "custom"}<button class:on={format === "16:9"} onclick={() => (format = "16:9")}>16:9</button>{/if}
-              <button class:on={format === "9:16-blur"} onclick={() => (format = "9:16-blur")}>{t("Vertical flou")}</button>
-              <button class:on={format === "9:16-crop"} onclick={() => (format = "9:16-crop")}>{t("Vertical recadré")}</button>
-            </div>
-          </div>
-        {/if}
         {#if presetId === "custom"}
           <div class="fld">
             <span>{t("Qualité")}</span>
@@ -174,15 +143,15 @@
 
       {#if hasKeys}
         <label class="keysopt">
-          <span><b>{t("Touches clavier / souris")}</b><small class="faint">{t("Incrustées en bas à gauche, comme dans l'aperçu")}</small></span>
-          <span class="switch"><input type="checkbox" bind:checked={app.studioKeys} disabled={busy} /><span></span></span>
+          <span><b>{t("Touches clavier / souris")}</b><small class="faint">{t("Incrustées à l'endroit choisi dans l'aperçu")}</small></span>
+          <span class="switch"><input type="checkbox" checked={P.keys.on} onchange={(e) => studio.setKeys({ on: e.currentTarget.checked })} disabled={busy} /><span></span></span>
         </label>
       {/if}
       <div class="summary">
         <div><span class="faint">{t("Sortie")}</span><b class="mono">{outRes}</b></div>
         <div><span class="faint">{t("Images / s")}</span><b class="mono">{plan?.ok ? plan.fps : fps || t("source")}</b></div>
         <div><span class="faint">{t("Taille")}</span><b class="mono">{maxMb ? `≤ ${maxMb} ${t("Mo")}` : t("libre")}</b></div>
-        <div><span class="faint">{t("Musique")}</span><b>{app.studioMusic ? t("oui") : t("non")}</b></div>
+        <div><span class="faint">{t("Musique")}</span><b>{music ? t("oui") : t("non")}</b></div>
       </div>
       {#if plan && !plan.ok}
         <p class="warn"><TriangleAlert size={15} />{t("Trop long pour {mb} Mo avec une image correcte : raccourcis le montage à {s} s maximum, ou choisis une taille plus grande.", { mb: maxMb, s: plan.maxSecs })}</p>
@@ -194,12 +163,12 @@
       {#if busy}
         <div class="prog">
           <div class="bar"><i style="transform:scaleX({Math.max(0.02, progress)})"></i></div>
-          <span class="mono">{Math.round(progress * 100)} %{eta !== null ? ` · ${t("encore ~{n} s", { n: Math.ceil(eta) })}` : ""}</span>
+          <span class="mono">{step || `${Math.round(progress * 100)} %${eta !== null ? ` · ${t("encore ~{n} s", { n: Math.ceil(eta) })}` : ""}`}</span>
         </div>
       {/if}
       <footer>
         <span class="faint">{t("Un nouveau fichier est créé ; tes clips d'origine ne bougent pas.")}</span>
-        <button class="btn primary go" onclick={run} disabled={busy || !app.studio.length || (plan !== null && !plan.ok)}>
+        <button class="btn primary go" onclick={run} disabled={busy || (!P.pieces.length && !P.tracks.length) || (plan !== null && !plan.ok)}>
           <Download size={16} />{busy ? t("Export en cours…") : t("Exporter")}
         </button>
       </footer>

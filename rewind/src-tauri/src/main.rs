@@ -37,6 +37,15 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("--keys") {
         std::process::exit(rewind_lib::keys_test());
     }
+    if args.get(1).map(String::as_str) == Some("--render") {
+        let spec = std::path::PathBuf::from(args.get(2).cloned().unwrap_or_default());
+        let out = args.get(3).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        std::process::exit(rewind_lib::render_test(spec, out));
+    }
+    if args.get(1).map(String::as_str) == Some("--watch-keys") {
+        let seconds = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
+        std::process::exit(rewind_lib::watch_keys(seconds));
+    }
     if args.get(1).map(String::as_str) == Some("--hold") {
         let out = args.get(2).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
         std::process::exit(rewind_lib::hold_test(out));

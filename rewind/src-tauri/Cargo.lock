@@ -3153,7 +3153,7 @@ dependencies = [
 
 [[package]]
 name = "rewind"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3174,6 +3174,8 @@ dependencies = [
  "tiny_http",
  "ureq",
  "wasapi",
+ "windows",
+ "windows-core",
  "windows-sys 0.59.0",
 ]
 

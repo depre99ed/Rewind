@@ -800,14 +800,9 @@ pub fn cs2_cfg_dirs() -> Vec<PathBuf> {
 }
 
 fn steam_path() -> Option<PathBuf> {
-    let out = util::command(std::path::Path::new("reg"))
-        .args(["query", r"HKCU\Software\Valve\Steam", "/v", "SteamPath"])
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text.lines().find(|l| l.contains("SteamPath"))?;
-    let value = line.split("REG_SZ").nth(1)?.trim().replace('/', "\\");
-    Some(PathBuf::from(value))
+    let value = util::reg_values(r"HKCU\Software\Valve\Steam").remove("SteamPath")?;
+    let value = value.trim().replace('/', "\\");
+    (!value.is_empty()).then(|| PathBuf::from(value))
 }
 
 /// Écrit `gamestate_integration_rewind.cfg` dans chaque installation. Renvoie les dossiers modifiés.
@@ -928,6 +923,16 @@ pub fn serve(port: u16, mut cs2: Cs2, settings_rx: std::sync::mpsc::Receiver<Cs2
 
 #[cfg(test)]
 mod tests {
+
+    /// Dossier de Steam lu directement dans le registre : identique à l'ancien `reg query`.
+    #[test]
+    fn dossier_steam_lu_comme_avant() {
+        let out = util::command(std::path::Path::new("reg")).args(["query", r"HKCU\Software\Valve\Steam", "/v", "SteamPath"]).output().expect("reg.exe");
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let old = text.lines().find(|l| l.contains("SteamPath")).and_then(|l| l.split("REG_SZ").nth(1)).map(|v| PathBuf::from(v.trim().replace('/', "\\")));
+        assert_eq!(steam_path(), old);
+    }
+
     use super::*;
     use std::sync::mpsc;
     use std::thread::sleep;

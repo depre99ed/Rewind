@@ -4,6 +4,7 @@
     Scissors, Trash2, CopyPlus, Undo2, Redo2, Magnet, ZoomIn, ZoomOut, Maximize2, Snowflake, Eye, EyeOff, Lock, LockOpen,
     ChevronUp, ChevronDown, Volume2, VolumeX, Type, Image as ImageIcon, Film, Music, Mic, Droplets, Video, Blend, AudioLines, Sparkles, FileX,
   } from "@lucide/svelte";
+  import { untrack } from "svelte";
   import { studio, media, fmtTime } from "$lib/studio/store.svelte";
   import { outLen, localAt, fxInfo, isFullBlur, type Layer, type AudioItem, type Piece, type Track } from "$lib/studio/model";
   import { momentTone } from "$lib/moments";
@@ -335,15 +336,28 @@
       const before = X(anchor) - scroller.scrollLeft;
       studio.zoom = Math.min(60, Math.max(1, studio.zoom * (e.deltaY < 0 ? 1.18 : 1 / 1.18)));
       requestAnimationFrame(() => scroller && (scroller.scrollLeft = X(anchor) - before));
-    } else if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && !e.shiftKey) {
-      // Défilement vertical laissé aux pistes ; Maj + molette = horizontal
+    } else if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && !e.shiftKey && scroller.scrollHeight <= scroller.clientHeight + 1) {
+      // Pas de pistes à faire défiler verticalement : la molette fait défiler la frise de gauche à droite
+      // (la barre de défilement est masquée, c'était le seul moyen de revenir au début)
+      e.preventDefault();
+      scroller.scrollLeft += e.deltaY;
     }
+    // Sinon : défilement vertical laissé aux pistes ; Maj + molette = horizontal
   }
-  // La tête de lecture reste visible pendant la lecture
+  // La tête de lecture reste visible, dans les deux sens : en lecture, après un saut (Début, clic, retour à 0
+  // en fin de lecture). Avant, la frise ne suivait que vers la droite : le début restait caché sous les noms
+  // de pistes (« Vidéo ») et on ne pouvait plus y revenir. Seul le temps déclenche ce suivi (pas le zoom ni
+  // un défilement à la main).
   $effect(() => {
-    if (!scroller || !studio.playing) return;
-    const x = X(studio.t);
-    if (x > scroller.scrollLeft + width - 80) scroller.scrollLeft = x - HEAD - 40;
+    const at = studio.t;
+    untrack(() => {
+      if (!scroller) return;
+      const x = X(at);
+      const left = scroller.scrollLeft + HEAD + 4; // bord gauche visible, à droite des noms de pistes
+      const right = scroller.scrollLeft + width - 40;
+      if (x < left) scroller.scrollLeft = Math.max(0, x - HEAD - 40);
+      else if (x > right) scroller.scrollLeft = x - HEAD - 40;
+    });
   });
 
   const kindIcon = { text: Type, image: ImageIcon, gif: ImageIcon, video: Video, blur: Droplets, fx: Sparkles } as const;

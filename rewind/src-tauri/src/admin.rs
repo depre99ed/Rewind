@@ -378,14 +378,45 @@ pub fn enable_main() -> Result<()> {
     }
     create_task(MAIN_TASK, "", "Rewind : clips instantanés, lancé en administrateur pour voir les touches des jeux")?;
     log::info!("Rewind sera lancé en administrateur (tâche « {MAIN_TASK} ») : relance");
-    // Ce Rewind se ferme d'abord (une seule instance), puis la tâche lance le nouveau
-    let cmd = format!("ping -n 3 127.0.0.1 >nul & \"{}\" /Run /TN \"{MAIN_TASK}\"", schtasks().display());
-    util::command(std::path::Path::new("cmd.exe")).args(["/C", &cmd]).spawn()?;
+    // Le nouveau Rewind (administrateur) attend que celui-ci soit fermé (`wait_previous`), puis démarre.
+    // Avant la 0.3.7 : `cmd /C ping -n 3 127.0.0.1 >nul & schtasks /Run…`, une temporisation que les
+    // antivirus connaissent bien chez les logiciels malveillants.
+    std::fs::write(relaunch_flag(), std::process::id().to_string())?;
+    if !task_run(MAIN_TASK) {
+        let _ = std::fs::remove_file(relaunch_flag());
+        bail!("tâche créée, mais lancement impossible");
+    }
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_millis(400));
         std::process::exit(0);
     });
     Ok(())
+}
+
+fn relaunch_flag() -> PathBuf {
+    util::data_dir().join("relance-admin.txt")
+}
+
+/// Au lancement, avant tout : si un Rewind vient de se fermer pour laisser la place à celui-ci
+/// (passage en administrateur), on attend qu'il soit vraiment parti (10 s au plus).
+pub fn wait_previous() {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+    let f = relaunch_flag();
+    let Ok(text) = std::fs::read_to_string(&f) else { return };
+    let fresh = std::fs::metadata(&f).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a.as_secs() < 30);
+    let _ = std::fs::remove_file(&f);
+    let Ok(pid) = text.trim().parse::<u32>() else { return };
+    if !fresh || pid == std::process::id() {
+        return;
+    }
+    unsafe {
+        let h = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if !h.is_null() {
+            WaitForSingleObject(h, 10_000);
+            CloseHandle(h);
+        }
+    }
 }
 
 /// Réglages : ne plus lancer Rewind en administrateur (une invite). Effet au prochain lancement.
@@ -394,3 +425,31 @@ pub fn disable_main() -> Result<()> {
     log::info!("Rewind ne sera plus lancé en administrateur");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Passage en administrateur : le nouveau Rewind attend la fin de l'ancien (sans cmd ni ping).
+    #[test]
+    fn relance_attend_la_fin_de_l_ancien() {
+        // Un petit programme qui dure ~1,5 s joue le rôle de l'ancien Rewind
+        let mut old = std::process::Command::new(std::env::var("SystemRoot").unwrap_or(r"C:\Windows".into()) + r"\System32\PING.EXE")
+            .args(["-n", "3", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("programme de test");
+        let _ = std::fs::create_dir_all(util::data_dir());
+        std::fs::write(relaunch_flag(), old.id().to_string()).unwrap();
+        let t = std::time::Instant::now();
+        wait_previous();
+        assert!(t.elapsed().as_secs_f64() > 1.0, "doit attendre la fin de l'ancien");
+        assert!(old.try_wait().unwrap().is_some(), "l'ancien est bien terminé");
+        assert!(!relaunch_flag().exists(), "le mot est effacé");
+        // Sans mot : aucune attente
+        let t = std::time::Instant::now();
+        wait_previous();
+        assert!(t.elapsed().as_millis() < 200);
+    }
+}
+

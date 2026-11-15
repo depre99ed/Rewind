@@ -18,6 +18,8 @@
   let projectsOpen = $state(false);
   let menuEl = $state<HTMLDivElement>();
   let menuBtn = $state<HTMLButtonElement>();
+  /** Miniatures de projet introuvables (clip déplacé ou supprimé) : icône à la place de l'image cassée */
+  let badThumbs: Record<string, boolean> = $state({});
   const P = $derived(studio.project);
 
   onMount(() => {
@@ -124,7 +126,7 @@
           {#each studio.projects as pr (pr.id)}
             <div class="pitem" class:on={pr.id === P.id}>
               <button class="popen" onclick={() => { studio.open(pr.id); projectsOpen = false; }}>
-                <span class="pthumb">{#if pr.thumb}<img use:fit src={fileUrl(pr.thumb)} alt="" />{:else}<Film size={16} />{/if}</span>
+                <span class="pthumb">{#if pr.thumb && !badThumbs[pr.id]}<img use:fit src={fileUrl(pr.thumb)} alt="" onerror={() => (badThumbs[pr.id] = true)} />{:else}<Film size={16} />{/if}</span>
                 <span class="ptext"><strong>{pr.name}</strong><small class="faint">{fmtTime(pr.duration)} · {relativeDate(pr.updated)}</small></span>
               </button>
               <button class="pdel" onclick={() => del(pr.id, pr.name)} aria-label={t("Supprimer le projet")} title={t("Supprimer le projet")}><Trash2 size={14} /></button>
@@ -166,9 +168,11 @@
   .spacer { flex: 1; }
   .dur { font-size: 12px; }
   .exp { height: 34px; padding: 0 16px; }
-  .work { display: grid; grid-template-columns: 300px minmax(0, 1fr) 290px; min-height: 0; }
+  /* isolation : les z-index internes (aperçu jusqu'à 90 : « clip introuvable », cadres, repères) restent
+     dans leur zone et ne passent plus jamais au-dessus de la liste des projets (bug du 2026-11-15) */
+  .work { display: grid; grid-template-columns: 300px minmax(0, 1fr) 290px; min-height: 0; isolation: isolate; }
   @media (max-width: 1280px) { .work { grid-template-columns: 270px minmax(0, 1fr) 260px; } }
-  .bottom { position: relative; min-height: 0; }
+  .bottom { position: relative; min-height: 0; isolation: isolate; }
   /* Poignée invisible sur la bordure du haut de la frise : un filet clair apparaît au survol */
   .sizer { position: absolute; left: 0; right: 0; top: -4px; height: 8px; z-index: 10; cursor: ns-resize; }
   .sizer::after { content: ""; position: absolute; left: 0; right: 0; top: 3px; height: 2px; background: var(--text-3); opacity: 0; transition: opacity var(--dur) var(--ease); }

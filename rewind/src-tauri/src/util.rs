@@ -47,6 +47,57 @@ pub fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// Valeurs d'une clé du registre (`HKLM\…` ou `HKCU\…`), lues directement, au même format texte que
+/// `reg query` (nombres en `0x…` hexadécimal). Remplace le lancement de reg.exe (2026-11-15) : un
+/// programme qui lance reg.exe en cachette ressemble à un logiciel malveillant pour les antivirus.
+pub fn reg_values(key: &str) -> std::collections::HashMap<String, String> {
+    use windows_sys::Win32::System::Registry::*;
+    let mut map = std::collections::HashMap::new();
+    let (root, sub) = if let Some(s) = key.strip_prefix(r"HKLM\") {
+        (HKEY_LOCAL_MACHINE, s)
+    } else if let Some(s) = key.strip_prefix(r"HKCU\") {
+        (HKEY_CURRENT_USER, s)
+    } else {
+        return map;
+    };
+    let sub_w = wide(sub);
+    let mut hkey: HKEY = std::ptr::null_mut();
+    unsafe {
+        if RegOpenKeyExW(root, sub_w.as_ptr(), 0, KEY_READ | KEY_WOW64_64KEY, &mut hkey) != 0 {
+            return map;
+        }
+        for index in 0u32.. {
+            let mut name = [0u16; 512];
+            let mut name_len = name.len() as u32;
+            let mut kind = 0u32;
+            let mut data = vec![0u8; 4096];
+            let mut data_len = data.len() as u32;
+            let rc = RegEnumValueW(hkey, index, name.as_mut_ptr(), &mut name_len, std::ptr::null(), &mut kind, data.as_mut_ptr(), &mut data_len);
+            if rc == 234 {
+                continue; // ERROR_MORE_DATA : valeur trop longue, ignorée (inutile au rapport)
+            }
+            if rc != 0 {
+                break; // ERROR_NO_MORE_ITEMS
+            }
+            data.truncate(data_len as usize);
+            let name = String::from_utf16_lossy(&name[..name_len as usize]);
+            let text = match kind {
+                REG_SZ | REG_EXPAND_SZ | REG_MULTI_SZ => {
+                    let units: Vec<u16> = data.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                    let s = String::from_utf16_lossy(&units);
+                    s.trim_end_matches('\0').replace('\0', "\\0")
+                }
+                REG_DWORD if data.len() >= 4 => format!("0x{:x}", u32::from_le_bytes([data[0], data[1], data[2], data[3]])),
+                REG_QWORD if data.len() >= 8 => format!("0x{:x}", u64::from_le_bytes(data[..8].try_into().unwrap_or([0; 8]))),
+                _ => data.iter().map(|b| format!("{b:02X}")).collect(),
+            };
+            map.insert(name, text);
+        }
+        RegCloseKey(hkey);
+    }
+    map
+}
+
 fn from_wide(buf: &[u16]) -> String {
     let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     String::from_utf16_lossy(&buf[..end])
@@ -576,5 +627,21 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), 8, "chaque clip doit avoir son propre fichier");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// La lecture directe du registre donne les mêmes valeurs que `reg query` (qu'elle remplace).
+    #[test]
+    fn registre_lu_comme_reg_exe() {
+        let key = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+        let native = reg_values(key);
+        let out = command(Path::new("reg")).args(["query", key]).output().expect("reg.exe");
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        for name in ["ProductName", "CurrentBuildNumber", "UBR", "DisplayVersion"] {
+            let line = text.lines().find(|l| l.trim_start().starts_with(&format!("{name} "))).expect(name);
+            let value = line.split_whitespace().skip(2).collect::<Vec<_>>().join(" ");
+            assert_eq!(native.get(name).map(|v| v.trim().to_string()), Some(value), "{name}");
+        }
+        assert!(reg_values(r"HKLM\SOFTWARE\Cle\Qui\N'Existe\Pas").is_empty());
+        assert!(reg_values(r"HKXX\SOFTWARE").is_empty());
     }
 }

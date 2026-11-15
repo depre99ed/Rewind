@@ -15,6 +15,7 @@ mod recorder;
 mod render;
 mod settings;
 mod share;
+mod speech;
 mod studio;
 mod toast;
 mod update;
@@ -1873,7 +1874,9 @@ pub fn start_elevated() -> bool {
 }
 
 /// Au lancement, avant tout : un Rewind tourne déjà → il ouvre sa fenêtre, celui-ci s'arrête.
+/// (Sauf s'il est en train de se fermer pour laisser la place à celui-ci : on attend d'abord sa fin.)
 pub fn wake_running_instance() -> bool {
+    admin::wait_previous();
     admin::wake_running(std::env::args().any(|a| a == "--tray"))
 }
 

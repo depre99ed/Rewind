@@ -13,7 +13,6 @@
 
 use crate::{audio, ffmpeg, settings::Settings, util};
 use std::{
-    collections::HashMap,
     fmt::Write as _,
     fs,
     io::{Read, Seek, SeekFrom},
@@ -153,33 +152,6 @@ fn section(out: &mut String, title: &str) {
     let _ = writeln!(out, "\n==================== {title} ====================");
 }
 
-/// Valeurs d'une clé du registre (via reg.exe, sans fenêtre).
-fn reg_query(key: &str, recursive: bool) -> String {
-    let mut cmd = util::command(Path::new("reg"));
-    cmd.arg("query").arg(key);
-    if recursive {
-        cmd.arg("/s");
-    }
-    cmd.output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default()
-}
-
-/// Lit les couples nom -> valeur d'une sortie de `reg query` (un seul bloc).
-fn reg_values(output: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for line in output.lines() {
-        let t = line.trim();
-        if t.is_empty() || t.starts_with("HKEY") {
-            continue;
-        }
-        let mut a = t.splitn(2, char::is_whitespace);
-        let (Some(name), Some(rest)) = (a.next(), a.next()) else { continue };
-        let mut b = rest.trim_start().splitn(2, char::is_whitespace);
-        let (Some(_ty), Some(val)) = (b.next(), b.next()) else { continue };
-        map.insert(name.to_string(), val.trim().to_string());
-    }
-    map
-}
-
 // ---------------------------------------------------------------------------
 // Système
 // ---------------------------------------------------------------------------
@@ -199,13 +171,13 @@ fn windows_uptime_hours() -> f64 {
 }
 
 fn system_section(out: &mut String) {
-    let cv = reg_values(&reg_query(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", false));
+    let cv = util::reg_values(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion");
     let get = |k: &str| cv.get(k).cloned().unwrap_or_default();
     let build: u32 = get("CurrentBuildNumber").parse().unwrap_or(0);
     // Windows 11 annonce encore « Windows 10 » dans ProductName : le numéro de build tranche.
     let name = if build >= 22000 { get("ProductName").replace("Windows 10", "Windows 11") } else { get("ProductName") };
     let _ = writeln!(out, "Windows : {} {} (build {}.{})", name, get("DisplayVersion"), get("CurrentBuildNumber"), cv.get("UBR").map(|u| u.trim_start_matches("0x")).map(|h| u32::from_str_radix(h, 16).unwrap_or(0)).unwrap_or(0));
-    let cpu = reg_values(&reg_query(r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0", false));
+    let cpu = util::reg_values(r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0");
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0);
     let _ = writeln!(out, "Processeur : {} ({} threads)", cpu.get("ProcessorNameString").map(|s| s.trim().to_string()).unwrap_or_default(), cores);
     if let Some((total, free)) = memory_info() {
@@ -213,20 +185,10 @@ fn system_section(out: &mut String) {
     }
     let _ = writeln!(out, "Windows allumé depuis : {:.1} h", windows_uptime_hours());
     // Cartes graphiques et pilotes (les versions de pilote expliquent beaucoup de pannes de capture)
-    // (une requête récursive sur toute la classe prend 13 s : on lit seulement les 8 premières cartes, en parallèle)
-    let blocks: Vec<String> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..8)
-            .map(|i| {
-                scope.spawn(move || {
-                    reg_query(&format!(r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{{4d36e968-e325-11ce-bfc1-08002be10318}}\{i:04}"), false)
-                })
-            })
-            .collect();
-        handles.into_iter().filter_map(|h| h.join().ok()).collect()
-    });
+    // (les 8 premières cartes, lues directement dans le registre : instantané)
     let mut seen = 0;
-    for b in blocks {
-        let v = reg_values(&b);
+    for i in 0..8 {
+        let v = util::reg_values(&format!(r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{{4d36e968-e325-11ce-bfc1-08002be10318}}\{i:04}"));
         if let Some(desc) = v.get("DriverDesc") {
             let _ = writeln!(out, "Carte graphique : {} · pilote {} ({})", desc, v.get("DriverVersion").cloned().unwrap_or_default(), v.get("DriverDate").cloned().unwrap_or_default());
             seen += 1;

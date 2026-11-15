@@ -149,7 +149,14 @@ pub fn reveal(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Ouvre un fichier avec son application par défaut (directement, sans passer par `cmd /C start`).
 pub fn open_default(path: &Path) -> Result<()> {
-    util::command(Path::new("cmd")).args(["/C", "start", ""]).arg(path).spawn()?;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    let verb = util::wide("open");
+    let file = util::wide(&path.to_string_lossy());
+    let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), 1) };
+    if (r as isize) <= 32 {
+        bail!("Ouverture impossible");
+    }
     Ok(())
 }

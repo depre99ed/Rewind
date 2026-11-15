@@ -1,23 +1,19 @@
 //! Commande vocale « Rewind clip » (hors ligne, désactivée par défaut).
 //!
-//! Utilise la reconnaissance vocale intégrée à Windows (System.Speech, aucun service en ligne)
-//! dans un petit processus PowerShell à part, avec une grammaire d'une seule phrase : rien
-//! d'autre n'est reconnu ni enregistré. Le processus est arrêté avec Rewind (objet « job »).
+//! Utilise la reconnaissance vocale intégrée à Windows (SAPI, aucun service en ligne) avec une
+//! grammaire d'une seule phrase : rien d'autre n'est reconnu ni enregistré. Depuis la 0.3.7 le moteur
+//! tourne DANS Rewind (speech.rs) : plus de PowerShell caché, que Windows Defender prenait pour un virus.
 //!
 //! Depuis le 2026-11-15, Rewind envoie lui-même au script le son du micro CHOISI dans ses réglages
-//! (PCM 16 kHz mono par l'entrée standard). Avant, le script écoutait le micro par défaut de Windows,
+//! (PCM 16 kHz mono). Avant, le script écoutait le micro par défaut de Windows,
 //! qui pouvait être un autre appareil (micro virtuel Voicemod, webcam…) : la phrase n'était jamais entendue.
 
-use crate::util;
+use crate::{speech, util};
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-const SCRIPT: &str = include_str!("voice.ps1");
 
 /// 0 = coupée, 1 = démarrage, 2 = à l'écoute, 3 = indisponible (aucun moteur), 4 = erreur
 pub static STATE: AtomicU8 = AtomicU8::new(0);
@@ -41,25 +37,9 @@ pub fn last_heard() -> Option<Heard> {
     LAST.lock().clone()
 }
 
-fn script_path() -> std::path::PathBuf {
-    let p = util::data_dir().join("commande-vocale.ps1");
-    // Avec BOM : PowerShell 5.1 lit sinon le fichier en ANSI (accents des commentaires abîmés)
-    let content = format!("\u{feff}{SCRIPT}");
-    if std::fs::read_to_string(&p).ok().as_deref() != Some(content.as_str()) {
-        let _ = std::fs::write(&p, content);
-    }
-    p
-}
-
-fn spawn(extra: &[&str], stdin: bool) -> std::io::Result<Child> {
-    let mut cmd = util::command(std::path::Path::new("powershell.exe"));
-    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(script_path())
-        .args(extra)
-        .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    cmd.spawn()
+/// Ancien script de la commande vocale (versions ≤ 0.3.6) : supprimé, il ne sert plus.
+fn remove_old_script() {
+    let _ = std::fs::remove_file(util::data_dir().join("commande-vocale.ps1"));
 }
 
 /// Micro à écouter (appelé au démarrage et à chaque enregistrement des réglages).
@@ -79,6 +59,7 @@ pub fn start(on_clip: impl Fn() + Send + 'static) {
     std::thread::Builder::new()
         .name("voix".into())
         .spawn(move || {
+            remove_old_script();
             let mut failures = 0u32;
             loop {
                 if !WANTED.load(Ordering::SeqCst) {
@@ -88,8 +69,8 @@ pub fn start(on_clip: impl Fn() + Send + 'static) {
                 }
                 STATE.store(1, Ordering::SeqCst);
                 RESTART.store(false, Ordering::SeqCst);
-                let mut child = match spawn(&["-Stdin", "-Verbose"], true) {
-                    Ok(c) => c,
+                let engine = match speech::start(speech::Options::default()) {
+                    Ok(e) => e,
                     Err(e) => {
                         log::warn!("commande vocale : lancement impossible ({e})");
                         STATE.store(4, Ordering::SeqCst);
@@ -97,35 +78,22 @@ pub fn start(on_clip: impl Fn() + Send + 'static) {
                         continue;
                     }
                 };
-                let job = util::Job::new();
-                if let Some(j) = &job {
-                    j.adopt(&child);
-                }
-                // Le son du micro choisi part dans l'entrée standard du script
+                // Le son du micro choisi part vers le moteur
                 let feed_stop = Arc::new(AtomicBool::new(false));
-                if let Some(mut stdin) = child.stdin.take() {
+                {
+                    let audio = engine.audio.clone();
                     let mic = MIC.lock().clone();
                     let stop = Arc::clone(&feed_stop);
                     std::thread::Builder::new()
                         .name("voix-micro".into())
                         .spawn(move || {
-                            if let Err(e) = crate::audio::mic_stream(&mic, 16_000, &stop, |pcm| stdin.write_all(pcm).is_ok()) {
+                            if let Err(e) = crate::audio::mic_stream(&mic, 16_000, &stop, |pcm| audio.send(pcm.to_vec()).is_ok()) {
                                 log::warn!("commande vocale : micro illisible ({e:#})");
                             }
                         })
                         .ok();
                 }
-                // Lecture des lignes dans un fil : on peut couper à tout moment depuis celui-ci
-                let (tx, rx) = std::sync::mpsc::channel::<String>();
-                if let Some(out) = child.stdout.take() {
-                    std::thread::spawn(move || {
-                        for line in BufReader::new(out).lines().map_while(Result::ok) {
-                            if tx.send(line).is_err() {
-                                break;
-                            }
-                        }
-                    });
-                }
+                let rx = &engine.lines;
                 let mut last_clip = Instant::now() - Duration::from_secs(60);
                 let mut last_heard_log = Instant::now() - Duration::from_secs(60);
                 let mut fatal = false;
@@ -167,7 +135,7 @@ pub fn start(on_clip: impl Fn() + Send + 'static) {
                             }
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            if let Ok(Some(_)) = child.try_wait() {
+                            if engine.finished() {
                                 break;
                             }
                         }
@@ -175,9 +143,7 @@ pub fn start(on_clip: impl Fn() + Send + 'static) {
                     }
                 }
                 feed_stop.store(true, Ordering::SeqCst);
-                let _ = child.kill();
-                let _ = child.wait();
-                drop(job);
+                engine.stop();
                 if RESTART.load(Ordering::SeqCst) {
                     continue; // micro changé : relance immédiate
                 }
@@ -211,49 +177,35 @@ pub fn self_test(dir: &std::path::Path) -> i32 {
         let bytes = std::fs::read(&f).unwrap_or_default();
         // En-tête WAV : on cherche le bloc « data »
         let data = bytes.windows(4).position(|w| w == b"data").map(|i| &bytes[(i + 8).min(bytes.len())..]).unwrap_or(&[]);
-        // Réglage du seuil : REWIND_VOICE_ARGS="-MinConfidence 0.6 -DictationWeight 0.3"
+        // Réglage du seuil : REWIND_VOICE_ARGS="-MinConfidence 0.6 -MaxSeconds 1.3"
         let tuning = std::env::var("REWIND_VOICE_ARGS").unwrap_or_default();
-        let mut args: Vec<&str> = vec!["-Stdin", "-Verbose"];
-        args.extend(tuning.split_whitespace());
-        let out = spawn(&args, true).and_then(|mut c| {
-            if let Some(mut stdin) = c.stdin.take() {
-                let pcm = data.to_vec();
-                std::thread::spawn(move || {
-                    // Au rythme réel (comme un micro), puis 1,5 s de silence
-                    for chunk in pcm.chunks(640) {
-                        if stdin.write_all(chunk).is_err() {
-                            return;
-                        }
-                        std::thread::sleep(Duration::from_millis(20));
+        let out = speech::start(speech::Options::default().with_args(&tuning)).map(|engine| {
+            let audio = engine.audio.clone();
+            let pcm = data.to_vec();
+            std::thread::spawn(move || {
+                // Au rythme réel (comme un micro), puis 1,5 s de silence
+                for chunk in pcm.chunks(640) {
+                    if audio.send(chunk.to_vec()).is_err() {
+                        return;
                     }
-                    let _ = stdin.write_all(&vec![0u8; 48_000]);
-                });
-            }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                let _ = audio.send(vec![0u8; 48_000]);
+            });
             let started = Instant::now();
             let mut text = String::new();
-            if let Some(out) = c.stdout.take() {
-                let (tx, rx) = std::sync::mpsc::channel::<String>();
-                std::thread::spawn(move || {
-                    for line in BufReader::new(out).lines().map_while(Result::ok) {
-                        if tx.send(line).is_err() {
-                            break;
-                        }
-                    }
-                });
-                let limit = Duration::from_secs_f64(data.len() as f64 / 32_000.0 + 4.0);
-                while started.elapsed() < limit {
-                    if let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
-                        text.push_str(&line);
-                        text.push('\n');
-                        if line.starts_with("CLIP ") {
-                            break;
-                        }
+            let limit = Duration::from_secs_f64(data.len() as f64 / 32_000.0 + 4.0);
+            while started.elapsed() < limit {
+                if let Ok(line) = engine.lines.recv_timeout(Duration::from_millis(200)) {
+                    text.push_str(&line);
+                    text.push('\n');
+                    if line.starts_with("CLIP ") || line.starts_with("ERR ") {
+                        break;
                     }
                 }
             }
-            let _ = c.kill();
-            let _ = c.wait();
-            Ok(text)
+            engine.stop();
+            text
         });
         let text = out.unwrap_or_default();
         let clipped = text.lines().any(|l| l.starts_with("CLIP "));

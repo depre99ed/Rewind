@@ -90,6 +90,22 @@
     app.patch((x) => fn(x.audio_sources[i]));
   }
 
+  // Jeux lancés en administrateur : assistant d'entrées (tâche Windows créée avec une seule autorisation)
+  const adm = $derived(app.adminInput);
+  let admBusy = $state(false);
+  async function setAdmin() {
+    admBusy = true;
+    const on = !adm?.enabled;
+    try {
+      await api.adminInputSet(on);
+      app.toast("ok", t(on ? "Assistant autorisé" : "Assistant retiré"), on ? t("Les raccourcis marchent maintenant dans les jeux lancés en administrateur.") : "");
+    } catch (e) {
+      app.toast("err", t("Autorisation impossible"), String(e));
+    }
+    app.adminInput = await api.adminInputStatus().catch(() => app.adminInput);
+    admBusy = false;
+  }
+
   // Mises à jour
   const upd = $derived(app.update);
   let checking = $state(false);
@@ -321,6 +337,26 @@
               <div class="item"><div class="lbl"><strong>{t("Capture d'écran")}</strong></div><HotkeyInput value={s.hotkeys.screenshot} onchange={(v) => app.patch((x) => (x.hotkeys.screenshot = v))} /></div>
               <div class="item"><div class="lbl"><strong>{t("Pause / reprise")}</strong></div><HotkeyInput value={s.hotkeys.toggle_recording} onchange={(v) => app.patch((x) => (x.hotkeys.toggle_recording = v))} /></div>
             </div>
+            <h3>{t("Jeux lancés en administrateur")}</h3>
+            <div class="group">
+              <div class="item">
+                <div class="lbl">
+                  <strong>{t("Raccourcis et touches dans ces jeux")}</strong>
+                  <span>{t("Quand Steam ou un jeu est lancé « en tant qu'administrateur », Windows cache ses touches aux autres programmes : F8 ne marche qu'en dehors du jeu et les touches à l'écran restent vides. Rewind peut lancer un petit assistant autorisé à les lire (une seule demande de Windows).")}</span>
+                  {#if adm?.rewind_admin}
+                    <span class="vstate ok">{t("Rewind tourne déjà en administrateur : rien à faire.")}</span>
+                  {:else if adm?.enabled}
+                    <span class="vstate" class:ok={adm.helper}>{t(adm.helper ? "● Assistant actif" : "Assistant autorisé, démarrage…")}</span>
+                  {:else if adm?.game_admin}
+                    <span class="vstate bad">{t("Le jeu en cours tourne en administrateur : ses touches sont bloquées.")}</span>
+                  {/if}
+                </div>
+                {#if !adm?.rewind_admin}
+                  <button class="btn" class:primary={!adm?.enabled} onclick={setAdmin} disabled={admBusy}>{admBusy ? t("Autorisation…") : t(adm?.enabled ? "Retirer" : "Autoriser")}</button>
+                {/if}
+              </div>
+            </div>
+            <p class="faint note">{t("Autre solution : ne plus lancer Steam en administrateur (clic droit sur Steam › Propriétés › Compatibilité › décocher « Exécuter ce programme en tant qu'administrateur »), puis relancer Steam et le jeu.")}</p>
             <h3>{t("Commande vocale")}</h3>
             <div class="group">
               <div class="item">
@@ -334,7 +370,7 @@
                     {#if app.status?.voice === 2}
                       <span class="vtest">
                         {#if heard && nowSec - heard.at < 30}
-                          {t(heard.accepted ? "Entendu il y a {s} s · sûr à {c} % · clip lancé" : "Entendu il y a {s} s · sûr à {c} % seulement : pas de clip (articule « ri-waïnd clip »)", { s: Math.max(0, Math.round(nowSec - heard.at)), c: Math.round(heard.confidence * 100) })}
+                          {t(heard.accepted ? "Entendu il y a {s} s · sûr à {c} % · clip lancé" : heard.confidence >= 0.7 ? "Entendu il y a {s} s · phrase trop longue : pas de clip (dis seulement « rewind clip »)" : "Entendu il y a {s} s · sûr à {c} % seulement : pas de clip (articule « ri-waïnd clip »)", { s: Math.max(0, Math.round(nowSec - heard.at)), c: Math.round(heard.confidence * 100) })}
                         {:else}
                           {t("Pour tester, dis « Rewind clip » : le résultat s'affiche ici.")}
                         {/if}

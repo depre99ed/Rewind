@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Clapperboard, Crosshair, Settings2, Camera, Mic, MicOff, Pause, Play, Film, Scissors, Timer, Ellipsis, History, Send } from "@lucide/svelte";
+  import { Clapperboard, Crosshair, Settings2, Camera, Mic, MicOff, Pause, Play, Film, Scissors, Timer, Ellipsis, History, Send, ShieldExclamationPoint } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { api, fileUrl, relativeDate } from "$lib/api";
   import { fit } from "$lib/fit";
@@ -67,6 +67,15 @@
     return { res: `${Math.min(st.width, st.height)}p`, fps: `${st.fps} FPS`, enc: enc.chip, full: `${st.width}×${st.height} · ${st.fps} ${t("i/s")} · ${enc.chip} ${enc.codec}` };
   });
 
+  // Jeu lancé en administrateur : ses touches sont invisibles pour Rewind tant que l'assistant n'est pas autorisé
+  $effect(() => {
+    const read = () => api.adminInputStatus().then((a) => (app.adminInput = a)).catch(() => {});
+    read();
+    const id = setInterval(read, 5000);
+    return () => clearInterval(id);
+  });
+  const adminBlocked = $derived(!!app.adminInput?.game_admin && !app.adminInput.helper);
+
   function onKey(e: KeyboardEvent) {
     if (menu && e.key === "Escape") menu = false;
   }
@@ -114,6 +123,14 @@
       {#if st?.session_since}
         <button class="hold" onclick={() => api.holdAction("session")}>
           <i class="dot rec"></i><span>{t("Session")}</span><span class="mono">{elapsed(st.session_since)}</span><b>{t("Finir")}</b>
+        </button>
+      {/if}
+
+      {#if adminBlocked}
+        <!-- Seul avertissement rouge de la colonne : les raccourcis ne marchent pas dans ce jeu -->
+        <button class="adminwarn" onclick={() => { app.settingsSection = "keys"; app.view = "settings"; }}>
+          <ShieldExclamationPoint size={15} strokeWidth={1.75} />
+          <span><b>{t("Raccourcis bloqués en jeu")}</b><small>{t("Jeu en administrateur · Corriger")}</small></span>
         </button>
       {/if}
 
@@ -260,6 +277,12 @@
   .state.error { color: var(--rec); }
   .more { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; color: var(--text-3); transition: color var(--dur) var(--ease), background var(--dur) var(--ease); }
   .more:hover, .more.on { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+
+  .adminwarn { display: flex; align-items: flex-start; gap: 9px; padding: 9px 10px; border-radius: 10px; text-align: left; color: var(--rec); background: color-mix(in srgb, var(--rec) 9%, transparent); border: 1px solid color-mix(in srgb, var(--rec) 28%, transparent); transition: background var(--dur) var(--ease); }
+  .adminwarn:hover { background: color-mix(in srgb, var(--rec) 14%, transparent); }
+  .adminwarn span { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .adminwarn b { font-size: 12px; font-weight: 600; color: var(--text); }
+  .adminwarn small { font-size: 11px; color: var(--text-2); }
 
   /* Clip sur mesure / session en cours */
   .hold { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 10px; font-size: 12px; color: var(--text-2); background: color-mix(in srgb, var(--rec) 8%, transparent); border: 1px solid color-mix(in srgb, var(--rec) 22%, transparent); transition: background var(--dur) var(--ease); }

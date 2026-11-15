@@ -1,5 +1,6 @@
 //! Rewind — application de clips instantanés pour Windows.
 
+mod admin;
 mod audio;
 mod cs2;
 mod rapport;
@@ -1638,6 +1639,39 @@ pub fn render_test(spec: PathBuf, out: PathBuf) -> i32 {
     }
 }
 
+/// Assistant d'entrées lancé en administrateur (`rewind.exe --input-helper`, voir admin.rs).
+pub fn input_helper() -> i32 {
+    inputs::helper_main()
+}
+
+#[derive(serde::Serialize)]
+struct AdminInput {
+    /// Le jeu suivi tourne en administrateur et Rewind non : ses touches sont invisibles sans l'assistant
+    game_admin: bool,
+    /// Assistant connecté
+    helper: bool,
+    /// Autorisé (tâche planifiée créée)
+    enabled: bool,
+    /// Rewind lui-même lancé en administrateur (rien à faire)
+    rewind_admin: bool,
+}
+
+#[tauri::command(async)]
+fn admin_input_status() -> AdminInput {
+    AdminInput {
+        game_admin: inputs::game_needs_helper(),
+        helper: inputs::HELPER_ON.load(std::sync::atomic::Ordering::Relaxed),
+        enabled: admin::enabled(),
+        rewind_admin: util::process_elevated(0) == Some(true),
+    }
+}
+
+/// Active (une invite Windows) ou retire l'assistant administrateur.
+#[tauri::command(async)]
+fn admin_input_set(on: bool) -> Res<()> {
+    if on { admin::enable() } else { admin::disable() }.map_err(err)
+}
+
 /// Diagnostic des touches reçues et de l'appareil qui les envoie : `rewind.exe --watch-keys <secondes>`.
 pub fn watch_keys(seconds: u64) -> i32 {
     inputs::watch(seconds)
@@ -2252,6 +2286,9 @@ pub fn run() {
             }
             inputs::set_overlay(settings.input_overlay);
             inputs::start();
+            // Jeux lancés en administrateur : l'assistant (s'il a été autorisé) relaie leurs touches
+            inputs::serve_helper();
+            admin::watch();
             // Démarrage automatique avec Windows : jamais depuis un test ni une version de développement
             // (un essai avait écrit le chemin du dossier de compilation dans le registre de l'utilisateur).
             let real_install = !cfg!(debug_assertions) && std::env::var_os("REWIND_DATA_DIR").is_none();
@@ -2557,6 +2594,8 @@ pub fn run() {
             media_filmstrip,
             media_waveform,
             media_stems,
+            admin_input_status,
+            admin_input_set,
             edit_trim,
             edit_merge,
             edit_vertical,

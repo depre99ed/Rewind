@@ -491,6 +491,9 @@ fn on_keyboard(make: u16, flags: u32, vkey: u16) {
     if vkey == 0xFF {
         return; // fausses touches (Maj fantôme des touches étendues)
     }
+    if forward([1, make as u8, (make >> 8) as u8, flags as u8, (flags >> 8) as u8, vkey as u8, (vkey >> 8) as u8]) {
+        return;
+    }
     let up = flags & RI_KEY_BREAK != 0;
     let mut sc = make;
     if sc == 0 {
@@ -531,6 +534,9 @@ fn on_keyboard(make: u16, flags: u32, vkey: u16) {
 fn on_mouse(buttons: u32) {
     if buttons == 0 {
         return; // simple mouvement : rien à faire
+    }
+    if forward([2, buttons as u8, (buttons >> 8) as u8, 0, 0, 0, 0]) {
+        return;
     }
     let pairs: [(u32, u32, u16, Option<u8>); 5] = [
         (RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, 0x01, None),
@@ -631,6 +637,149 @@ pub fn start() {
         return;
     }
     let _ = std::thread::Builder::new().name("entrees-jeu".into()).spawn(poll_loop);
+}
+
+// ---------------------------------------------------------------------------
+// Jeux lancés en administrateur (2026-11-15)
+// ---------------------------------------------------------------------------
+// Windows (UIPI) cache les touches d'une fenêtre « administrateur » à tout programme qui ne l'est pas :
+// Raw Input, crochets et GetAsyncKeyState restent muets. Quand Steam (donc CS2) tourne en administrateur,
+// F8 ne marchait qu'en dehors du jeu. Solution : un petit assistant `rewind.exe --input-helper`, lancé en
+// administrateur par une tâche planifiée (une seule invite Windows, à l'activation), lit les touches avec
+// le même moteur et les envoie au Rewind principal par une connexion locale (127.0.0.1 + jeton).
+// Le principal ne garde ses envois que si la fenêtre du premier plan est « administrateur » (pas de doublon).
+
+/// Mode assistant : les touches partent vers le Rewind principal au lieu d'être traitées ici.
+static FORWARD: Mutex<Option<std::net::TcpStream>> = Mutex::new(None);
+/// Rewind principal : un assistant est connecté.
+pub static HELPER_ON: AtomicBool = AtomicBool::new(false);
+/// Premier plan « administrateur » (cache : pid → élevé).
+static FG_ELEVATED: Mutex<(u32, bool)> = Mutex::new((0, false));
+
+fn forward(msg: [u8; 7]) -> bool {
+    use std::io::Write;
+    let mut f = FORWARD.lock();
+    let Some(s) = f.as_mut() else { return false };
+    if s.write_all(&msg).is_err() {
+        // Rewind principal fermé : l'assistant s'arrête
+        std::process::exit(0);
+    }
+    true
+}
+
+/// La fenêtre au premier plan appartient-elle à un programme lancé en administrateur ?
+pub fn foreground_elevated() -> bool {
+    let mut pid = 0u32;
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return false;
+        }
+        GetWindowThreadProcessId(hwnd, &mut pid);
+    }
+    let mut c = FG_ELEVATED.lock();
+    if c.0 != pid {
+        *c = (pid, util::process_elevated(pid).unwrap_or(false));
+    }
+    c.1
+}
+
+/// Le jeu suivi tourne-t-il en administrateur alors que Rewind non ? (touches invisibles sans l'assistant)
+pub fn game_needs_helper() -> bool {
+    let game = GAME_PID.load(Ordering::Relaxed);
+    game != 0 && util::process_elevated(game) == Some(true) && util::process_elevated(0) == Some(false)
+}
+
+fn helper_file() -> std::path::PathBuf {
+    // Les tests ne touchent pas au dossier de données (il est mémorisé au premier appel : le test du
+    // rapport en choisit un autre)
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("rewind-test-entrees-{}.json", std::process::id()));
+    }
+    util::data_dir().join("entrees-admin.json")
+}
+
+#[derive(Serialize, Deserialize)]
+struct HelperInfo {
+    port: u16,
+    token: String,
+}
+
+/// Rewind principal : attend l'assistant sur 127.0.0.1 (port libre + jeton écrits dans le dossier de données).
+pub fn serve_helper() {
+    let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:0") else { return };
+    let Ok(addr) = listener.local_addr() else { return };
+    let token = format!("{:016x}{:016x}", rand_u64(), rand_u64());
+    let info = HelperInfo { port: addr.port(), token: token.clone() };
+    if std::fs::write(helper_file(), serde_json::to_string(&info).unwrap_or_default()).is_err() {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("entrees-admin".into()).spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let token = token.clone();
+            let _ = std::thread::Builder::new().name("entrees-admin-lien".into()).spawn(move || helper_link(stream, &token));
+        }
+    });
+}
+
+fn rand_u64() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64((util::now() * 1e9) as u64);
+    h.finish()
+}
+
+fn helper_link(mut s: std::net::TcpStream, token: &str) {
+    use std::io::Read;
+    let mut got = vec![0u8; token.len()];
+    if s.read_exact(&mut got).is_err() || got != token.as_bytes() {
+        return; // pas notre assistant
+    }
+    HELPER_ON.store(true, Ordering::SeqCst);
+    log::info!("entrées : assistant administrateur connecté (touches des jeux lancés en administrateur)");
+    let mut msg = [0u8; 7];
+    while s.read_exact(&mut msg).is_ok() {
+        // Seulement quand une fenêtre administrateur est devant : sinon Rewind reçoit déjà tout lui-même
+        if !cfg!(test) && !foreground_elevated() {
+            continue;
+        }
+        let w = |i: usize| msg[i] as u16 | (msg[i + 1] as u16) << 8;
+        match msg[0] {
+            1 => on_keyboard(w(1), w(3) as u32, w(5)),
+            2 => on_mouse(w(1) as u32),
+            _ => {}
+        }
+    }
+    HELPER_ON.store(false, Ordering::SeqCst);
+    log::warn!("entrées : assistant administrateur déconnecté");
+}
+
+/// Assistant (`rewind.exe --input-helper`, lancé en administrateur) : se connecte au Rewind principal,
+/// lit le clavier et la souris et lui envoie tout ; s'arrête quand Rewind se ferme.
+pub fn helper_main() -> i32 {
+    use std::io::{Read, Write};
+    // Rewind vient peut-être de démarrer : on attend son adresse jusqu'à 30 s
+    let mut stream = None;
+    for _ in 0..60 {
+        if let Some(info) = std::fs::read_to_string(helper_file()).ok().and_then(|t| serde_json::from_str::<HelperInfo>(&t).ok())
+            && let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", info.port))
+            && s.write_all(info.token.as_bytes()).is_ok()
+        {
+            let _ = s.set_nodelay(true);
+            stream = Some(s);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    let Some(s) = stream else { return 1 };
+    let Ok(watch) = s.try_clone() else { return 1 };
+    *FORWARD.lock() = Some(s);
+    start();
+    // Bloque jusqu'à la fermeture de la connexion par Rewind
+    let mut watch = watch;
+    let mut buf = [0u8; 16];
+    while matches!(watch.read(&mut buf), Ok(n) if n > 0) {}
+    0
 }
 
 /// Touche Windows (VK) d'une position physique, pour lire son état réel.
@@ -838,6 +987,37 @@ pub fn self_test() -> i32 {
 mod tests {
     use super::*;
 
+    /// Les tests qui changent la liste des raccourcis passent l'un après l'autre
+    static BINDINGS_TEST: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn assistant_administrateur_relaie_les_raccourcis() {
+        use std::io::Write;
+        let _seul = BINDINGS_TEST.lock();
+        static GOT: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+        on_hotkey(|a| GOT.lock().push(a));
+        assert!(set_bindings(&[("F15".to_string(), "clip")]).is_empty());
+        serve_helper();
+        let info: HelperInfo = serde_json::from_str(&std::fs::read_to_string(helper_file()).unwrap()).unwrap();
+        // Mauvais jeton : ignoré
+        let mut bad = std::net::TcpStream::connect(("127.0.0.1", info.port)).unwrap();
+        bad.write_all(&b"x".repeat(info.token.len())).unwrap();
+        bad.write_all(&[1, 0x66, 0, 0, 0, 0x7E, 0]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(GOT.lock().is_empty(), "un inconnu ne déclenche rien");
+        // Assistant : F15 (position 0x66) appuyé puis relâché
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", info.port)).unwrap();
+        s.write_all(info.token.as_bytes()).unwrap();
+        s.write_all(&[1, 0x66, 0, 0, 0, 0x7E, 0]).unwrap();
+        s.write_all(&[1, 0x66, 0, 1, 0, 0x7E, 0]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(*GOT.lock(), vec!["clip"]);
+        assert!(HELPER_ON.load(Ordering::SeqCst));
+        drop(s);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!HELPER_ON.load(Ordering::SeqCst), "assistant parti");
+    }
+
     #[test]
     fn etat_au_debut_et_repetitions() {
         FORCE_GAME.store(true, Ordering::Relaxed);
@@ -899,6 +1079,7 @@ mod tests {
 
     #[test]
     fn doublons_et_inconnus() {
+        let _seul = BINDINGS_TEST.lock();
         let errors = set_bindings(&[("F8".into(), "clip"), ("F8".into(), "bookmark"), ("Ctrl+Truc".into(), "session")]);
         assert_eq!(errors.len(), 2, "{errors:?}");
         set_bindings(&[]);

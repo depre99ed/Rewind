@@ -161,6 +161,8 @@ if (typeof window !== "undefined" && !inTauri) {
         case "media_info": return { duration: 34, width: 1920, height: 1080, fps: 50, tracks: ["Mixage", "Son du PC", "Micro", "Discord"] };
         case "media_filmstrip": throw "pas de vignettes en aperçu";
         case "media_stems": return [];
+        case "admin_input_status": return { game_admin: new URLSearchParams(location.search).has("admin"), helper: false, enabled: false, rewind_admin: false };
+        case "admin_input_set": return null;
         case "media_waveform": {
           // Forme d'onde d'exemple : bruit de fond + « tirs »
           const peaks: number[] = [];

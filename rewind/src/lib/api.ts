@@ -244,6 +244,8 @@ export const api = {
   mediaFilmstrip: (path: string) => invoke<Filmstrip>("media_filmstrip", { path }),
   mediaWaveform: (path: string) => invoke<Waveform>("media_waveform", { path }),
   mediaStems: (path: string) => invoke<string[]>("media_stems", { path }),
+  adminInputStatus: () => invoke<AdminInput>("admin_input_status"),
+  adminInputSet: (on: boolean) => invoke<void>("admin_input_set", { on }),
   trim: (id: string, start: number, end: number, exact: boolean) => invoke<Clip>("edit_trim", { id, start, end, exact }),
   merge: (ids: string[]) => invoke<Clip>("edit_merge", { ids }),
   vertical: (id: string, mode: string, start: number, end: number) => invoke<Clip>("edit_vertical", { id, mode, start, end }),
@@ -258,7 +260,10 @@ export const api = {
   quit: () => invoke<void>("quit_app"),
 };
 
-export const fileUrl = (path: string) => (!path ? "" : path.startsWith("/mock/") ? path : convertFileSrc(path));
+/** Jeux lancés en administrateur : leurs touches ne sont visibles qu'avec l'assistant. */
+export type AdminInput = { game_admin: boolean; helper: boolean; enabled: boolean; rewind_admin: boolean };
+
+export const fileUrl =(path: string) => (!path ? "" : path.startsWith("/mock/") ? path : convertFileSrc(path));
 
 const KIND_FR: Record<string, string> = {
   kill: "Kill",

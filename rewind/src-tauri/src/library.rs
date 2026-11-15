@@ -71,7 +71,7 @@ fn moved_here(c: &Clip, path: &Path, size: u64) -> bool {
 impl Library {
     pub fn load(clip_folder: &Path) -> Self {
         let text = std::fs::read_to_string(index_path()).ok();
-        let mut clips: Vec<Clip> = match text.as_deref().map(serde_json::from_str::<Vec<Clip>>) {
+        let clips: Vec<Clip> = match text.as_deref().map(serde_json::from_str::<Vec<Clip>>) {
             Some(Ok(c)) => c,
             Some(Err(_)) => {
                 // Index abîmé : on le garde de côté et on reconstruit à partir du dossier des clips

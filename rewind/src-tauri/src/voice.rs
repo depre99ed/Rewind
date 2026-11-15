@@ -143,11 +143,14 @@ pub fn start(on_clip: impl Fn() + Send + 'static) {
                             } else if let Some(rest) = line.strip_prefix("CLIP ") {
                                 let conf = rest.split_whitespace().next().and_then(|c| c.replace(',', ".").parse().ok()).unwrap_or(0.0);
                                 *LAST.lock() = Some(Heard { at: util::now(), confidence: conf, accepted: true });
-                                // Anti-rebond : une seule phrase = un seul clip
-                                if last_clip.elapsed() > Duration::from_secs(4) {
+                                // Un seul clip vocal par 20 s : un clip garde déjà les 30 dernières secondes, et
+                                // juste après une vraie commande on parle fort (faux déclenchements vus le 2026-11-15)
+                                if last_clip.elapsed() > Duration::from_secs(20) {
                                     last_clip = Instant::now();
                                     log::info!("commande vocale : {line}");
                                     on_clip();
+                                } else {
+                                    log::info!("commande vocale ignorée (un clip vocal il y a moins de 20 s) : {line}");
                                 }
                             } else if let Some(rest) = line.strip_prefix("HEARD ") {
                                 // Phrase proche mais sous le seuil : gardée pour le bouton « Tester » et le réglage du seuil

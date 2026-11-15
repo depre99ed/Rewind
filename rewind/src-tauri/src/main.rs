@@ -42,6 +42,10 @@ fn main() {
         let out = args.get(3).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
         std::process::exit(rewind_lib::render_test(spec, out));
     }
+    if args.get(1).map(String::as_str) == Some("--input-helper") {
+        // Assistant lancé en administrateur : relaie clavier et souris des jeux lancés en administrateur
+        std::process::exit(rewind_lib::input_helper());
+    }
     if args.get(1).map(String::as_str) == Some("--watch-keys") {
         let seconds = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
         std::process::exit(rewind_lib::watch_keys(seconds));

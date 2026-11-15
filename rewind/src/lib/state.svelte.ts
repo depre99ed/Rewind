@@ -15,6 +15,8 @@ class AppState {
   toasts = $state<Toast[]>([]);
   view = $state<"library" | "studio" | "cs2" | "settings">("library");
   settingsSection = $state("video");
+  /** Jeux lancés en administrateur (relu toutes les 5 s par la barre de gauche) */
+  adminInput = $state<import("./api").AdminInput | null>(null);
   openClip = $state<Clip | null>(null);
   progress = $state<{ op: string; value: number } | null>(null);
   cs2Feed = $state<{ at: number; text: string; kind: string }[]>([]);

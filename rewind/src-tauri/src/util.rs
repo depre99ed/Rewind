@@ -205,6 +205,33 @@ pub fn process_running(exe: &str) -> bool {
     root_process(exe).is_some()
 }
 
+/// Processus lancé « en tant qu'administrateur » ? (None : impossible à savoir). 0 = Rewind lui-même.
+/// Un jeu élevé au premier plan rend ses touches invisibles pour un Rewind qui ne l'est pas (UIPI).
+pub fn process_elevated(pid: u32) -> Option<bool> {
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let own = pid == 0;
+        let handle = if own { GetCurrentProcess() } else { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return None;
+        }
+        let mut token: HANDLE = std::ptr::null_mut();
+        let opened = OpenProcessToken(handle, TOKEN_QUERY, &mut token) != 0;
+        if !own {
+            CloseHandle(handle);
+        }
+        if !opened {
+            return None;
+        }
+        let mut e: TOKEN_ELEVATION = std::mem::zeroed();
+        let mut len = 0u32;
+        let ok = GetTokenInformation(token, TokenElevation, &mut e as *mut _ as *mut _, std::mem::size_of::<TOKEN_ELEVATION>() as u32, &mut len);
+        CloseHandle(token);
+        if ok == 0 { None } else { Some(e.TokenIsElevated != 0) }
+    }
+}
+
 /// Heure de démarrage d'un processus (secondes depuis 1970).
 pub fn process_start(pid: u32) -> Option<f64> {
     use windows_sys::Win32::Foundation::FILETIME;

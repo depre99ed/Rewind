@@ -29,7 +29,8 @@
   let message = $state("");
   let sending = $state(false);
   // Envoi à des amis (partage entre amis)
-  let toFriends = $state(false);
+  // Aperçu navigateur seulement : « ?send=1 » ouvre le choix des amis (captures)
+  let toFriends = $state(typeof window !== "undefined" && !!(window as any).__REWIND_MOCK__ && new URLSearchParams(location.search).get("send") === "1");
   let picked = $state<string[]>([]);
   let friendSending = $state(false);
   const fv = $derived(friends.view);

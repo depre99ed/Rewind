@@ -27,7 +27,7 @@
       // Aperçu dans un navigateur : rejoue les états
       const demo: Toast = { state: "saving", title: "30 dernières secondes", subtitle: "Counter-Strike 2", game: "Counter-Strike 2", thumb: "", badges: [], seconds: 30 };
       t = demo; visible = true; key++;
-      setTimeout(() => { t = { state: "saved", title: "CS2 ACE · 2× One Tap", subtitle: "Counter-Strike 2 · 34 s", game: "Counter-Strike 2", thumb: "/mock/t1.jpg", badges: ["ACE", "One Tap", "Série de 5"], seconds: 34 }; key++; }, params.get("demo") === "saved" ? 0 : 1600);
+      setTimeout(() => { t = { state: "saved", title: "CS2 ACE · 2× One Tap", subtitle: "Counter-Strike 2 · 34 s", game: "Counter-Strike 2", thumb: "/mock/t1.jpg", badges: ["ACE", "One Tap", params.get("lang") === "en" ? "5 streak" : "Série de 5"], seconds: 34, lang: params.get("lang") ?? undefined }; key++; }, params.get("demo") === "saved" ? 0 : 1600);
       return;
     }
     const un1 = listen<Toast>("toast", (e) => { t = e.payload; visible = true; key++; });

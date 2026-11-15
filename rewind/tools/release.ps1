@@ -124,7 +124,10 @@ try {
     if (-not $Notes) { $Notes = "Rewind $Version - installation Windows et mises a jour signees via GitHub." }
     [IO.File]::WriteAllText($notesPath, $Notes, $utf8)
     # Brouillon tant que les trois pieces ne sont pas toutes chargees.
-    & gh release create "v$Version" $setup "$setup.sig" $manifest --repo $Repo --target $head --title "Rewind $Version" --notes-file $notesPath --draft
+    # Copie au nom fixe : le bouton du site (.../releases/latest/download/Rewind-setup.exe) telecharge toujours la derniere version
+    $stable = Join-Path $nsis 'Rewind-setup.exe'
+    Copy-Item -LiteralPath $setup -Destination $stable -Force
+    & gh release create "v$Version" $setup "$setup.sig" $manifest $stable --repo $Repo --target $head --title "Rewind $Version" --notes-file $notesPath --draft
     Assert-Exit 'Envoi des fichiers dans la version brouillon'
     & gh release edit "v$Version" --repo $Repo --draft=false --latest
     Assert-Exit 'Publication de la version'

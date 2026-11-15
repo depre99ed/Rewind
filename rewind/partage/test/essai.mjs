@@ -129,6 +129,51 @@ check((await call(alice, "POST", "/v1/friends/request", { code: bob.code })).jso
 sb = (await call(bob, "GET", "/v1/sync")).json;
 check(sb.blocked.length === 1 && sb.incoming.length === 0, "Bob voit Alice dans ses bloqués, pas de demande");
 
+// Clé du PC et clé de secours (0.4.0)
+{
+  const newKeys = async () => {
+    const keys = await c.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+    return { keys, pub: b64(new Uint8Array(await c.subtle.exportKey("raw", keys.publicKey))) };
+  };
+  const sign = async (k, text) => b64(new Uint8Array(await c.subtle.sign("Ed25519", k.keys.privateKey, enc.encode(text))));
+  // Passage d'Alice (ancienne clé aléatoire) à la clé de son PC : l'ancienne devient la clé de secours
+  const pc1 = await newKeys();
+  let time = Date.now();
+  const bad = await call(alice, "POST", "/v1/me/key", { pubkey: pc1.pub, time, proof: await sign(alice, `rekey\n${alice.id}\n${time}`) });
+  check(bad.status === 401, "clé du PC sans sa propre preuve : refusée");
+  const rk = await call(alice, "POST", "/v1/me/key", { pubkey: pc1.pub, time, proof: await sign(pc1, `rekey\n${alice.id}\n${time}`) });
+  check(rk.json?.recovery === alice.pub, "Alice passe à la clé du PC ; l'ancienne devient sa clé de secours");
+  const alicePc1 = { ...alice, keys: pc1.keys };
+  check((await call(alice, "GET", "/v1/sync")).status === 401, "l'ancienne clé ne signe plus les demandes");
+  const s1 = (await call(alicePc1, "GET", "/v1/sync")).json;
+  check(s1?.me?.code === alice.code && s1.me.recovery === alice.pub, "même code ami avec la clé du PC");
+  // Réinscription depuis le même PC (données de Rewind effacées) : même compte
+  time = Date.now();
+  const again = await (await fetch(`${BASE}/v1/register`, { method: "POST", body: JSON.stringify({ pubkey: pc1.pub, name: "Alice", time, proof: await sign(pc1, `register\n${pc1.pub}\n${time}`), recovery: (await newKeys()).pub }) })).json();
+  check(again.id === alice.id && again.recovery === alice.pub, "même PC : même compte, la clé de secours n'est pas remplacée");
+  // Nouveau PC qui a déjà son propre compte : la clé de secours y rattache le compte d'Alice
+  const pc2 = await newKeys();
+  time = Date.now();
+  const other = await (await fetch(`${BASE}/v1/register`, { method: "POST", body: JSON.stringify({ pubkey: pc2.pub, name: "PC2", time, proof: await sign(pc2, `register\n${pc2.pub}\n${time}`) }) })).json();
+  time = Date.now();
+  const recBody = (p) => ({ recovery: alice.pub, pubkey: pc2.pub, time, proof_recovery: p.r, proof_device: p.d });
+  const r0 = await fetch(`${BASE}/v1/recover`, { method: "POST", body: JSON.stringify(recBody({ r: await sign(alice, `recover\n${pc2.pub}\n${time}`), d: await sign(alice, `device\n${alice.pub}\n${time}`) })) });
+  check(r0.status === 401, "restauration sans la preuve du nouveau PC : refusée");
+  const r1 = await (await fetch(`${BASE}/v1/recover`, { method: "POST", body: JSON.stringify(recBody({ r: await sign(alice, `recover\n${pc2.pub}\n${time}`), d: await sign(pc2, `device\n${alice.pub}\n${time}`) })) })).json();
+  check(r1.id === alice.id && r1.code === alice.code, "clé de secours : compte d'Alice rattaché au nouveau PC");
+  const alicePc2 = { ...alice, keys: pc2.keys };
+  check((await call(alicePc2, "GET", "/v1/sync")).json?.me?.code === alice.code, "le nouveau PC signe pour Alice");
+  check((await call(alicePc1, "GET", "/v1/sync")).status === 401, "l'ancien PC ne signe plus pour Alice");
+  check((await call({ ...other, keys: pc2.keys }, "GET", "/v1/sync")).status === 401, "l'ancien compte du nouveau PC est remplacé");
+  // Nouvelle clé de secours : l'ancienne ne marche plus
+  const rec2 = await newKeys();
+  check((await call(alicePc2, "POST", "/v1/me/recovery", { recovery: rec2.pub })).json?.recovery === rec2.pub, "nouvelle clé de secours");
+  time = Date.now();
+  const r2 = await fetch(`${BASE}/v1/recover`, { method: "POST", body: JSON.stringify({ recovery: alice.pub, pubkey: pc1.pub, time, proof_recovery: await sign(alice, `recover\n${pc1.pub}\n${time}`), proof_device: await sign(pc1, `device\n${alice.pub}\n${time}`) }) });
+  check(r2.status === 404, "l'ancienne clé de secours ne marche plus");
+  alice.keys = pc2.keys;
+}
+
 // Suppression d'identité
 check((await call(eve, "DELETE", "/v1/me")).json?.ok, "Eve supprime son identité");
 check((await call(eve, "GET", "/v1/sync")).status === 401, "Eve n'existe plus");

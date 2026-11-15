@@ -91,7 +91,8 @@ if (typeof window !== "undefined" && !inTauri) {
   const ms = Date.now();
   let friends: any = {
     enabled: params.get("amis") !== "0", ready: params.get("amis") !== "0", online: true, error: "", synced_at: ms / 1000,
-    me: params.get("amis") === "0" ? null : { id: "moi", code: "RW-7KQ2-9XZ4", name: "Ethan", avatar: 1, show_online: true },
+    me: params.get("amis") === "0" ? null : { id: "moi", code: "RW-7KQ2-9XZ4", name: "Ethan", avatar: 1, show_online: true, recovery: "x" },
+    recovery_here: params.get("secours") !== "0", syncing: false,
     friends: [{ id: "f1", name: "Lucas", since: ms - 9 * 86400e3, avatar: 1, online: true }, { id: "f2", name: "Noah", since: ms - 3 * 86400e3, avatar: 1, online: false }, { id: "f3", name: "Sacha", since: ms - 86400e3, avatar: 0, online: true }],
     incoming: [{ id: "f4", name: "Inès", since: ms - 2 * 3600e3, avatar: 0, online: false }],
     outgoing: [{ id: "f5", name: "Tom", since: ms - 20 * 3600e3, avatar: 0, online: false }],
@@ -105,7 +106,10 @@ if (typeof window !== "undefined" && !inTauri) {
       { id: "s2", title: "Fou rire en vocal", game: "Discord", size: 22_000_000, state: "ready", created: ms - 40 * 60e3, to: [{ id: "f3", name: "Sacha", state: "waiting" }] },
     ],
     limits: { max_clip: 500 * 1048576, daily_bytes: 2048 * 1048576, used_today: 74 * 1048576, part: 50 * 1048576, keep_days: 7 },
-    transfers: [{ key: "down-i1", share_id: "i1", kind: "down", title: "CS2 ACE · 2× One Tap", peer: "Lucas", progress: 0.42, state: "running", error: "" }],
+    transfers: [
+      { key: "down-i1", share_id: "i1", kind: "down", title: "CS2 ACE · 2× One Tap", peer: "Lucas", progress: 0.42, state: "running", error: "", stage: "" },
+      ...(params.get("envoi") ? [{ key: "local-m1", share_id: "", kind: "up", title: "CS2 Deagle 1 tap", peer: "Lucas, Noah", progress: 0.14, state: "running", error: "", stage: "compress" }] : []),
+    ],
     received: [
       { share_id: "r1", clip_id: "m15", from_id: "f2", from_name: "Noah", title: "CS2 Clutch 1v2", game: "Counter-Strike 2", at: now - 5 * h },
       { share_id: "r2", clip_id: "m16", from_id: "f1", from_name: "Lucas", title: "Fou rire Valorant", game: "Valorant", at: now - 26 * h },
@@ -221,12 +225,13 @@ if (typeof window !== "undefined" && !inTauri) {
         case "friends_add": if (String(args.code).toUpperCase().includes("ZZZZ")) throw "ami:code_unknown"; friends = { ...friends, outgoing: [...friends.outgoing, { id: "n" + Date.now(), name: "Nouveau", since: Date.now() }] }; return "pending";
         case "friends_answer": { const p = friends.incoming.find((x: any) => x.id === args.user); friends = { ...friends, incoming: friends.incoming.filter((x: any) => x.id !== args.user), friends: args.accept && p ? [...friends.friends, p] : friends.friends }; return null; }
         case "friends_remove": friends = { ...friends, friends: friends.friends.filter((x: any) => x.id !== args.user), outgoing: friends.outgoing.filter((x: any) => x.id !== args.user), blocked: args.block ? [...friends.blocked, friends.friends.find((x: any) => x.id === args.user)].filter(Boolean) : friends.blocked.filter((x: any) => x.id !== args.user) }; return null;
-        case "friends_refresh": return null;
         case "friends_avatar": return ({ f1: "/mock/t3.jpg", f2: "/mock/t5.jpg", moi: "/mock/t12.jpg" } as Record<string, string>)[args.id] ?? Promise.reject("ami:not_found");
         case "friends_set_avatar": friends = { ...friends, me: { ...friends.me, avatar: Date.now() } }; return null;
         case "friends_remove_avatar": friends = { ...friends, me: { ...friends.me, avatar: 0 } }; return null;
         case "friends_show_online": friends = { ...friends, me: { ...friends.me, show_online: args.show } }; return null;
-        case "friends_recovery_key": return "RWK-FQ3A-K7MZ-2PLD-WX8N-4HVB-RT6C-YJ2E-9GKU-SM5Q-AZ7D-NP3L-XW4F-B2RT";
+        case "friends_new_recovery": friends = { ...friends, recovery_here: true }; return "RWK-NEW2-K7MZ-2PLD-WX8N-4HVB-RT6C-YJ2E-9GKU-SM5Q-AZ7D-NP3L-XW4F-B2RT";
+        case "friends_refresh": friends = { ...friends, syncing: true }; setTimeout(() => { friends = { ...friends, syncing: false, synced_at: Date.now() / 1000 }; (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__?.emit?.("friends-changed", null); }, 700); return null;
+        case "friends_recovery_key": if (!friends.recovery_here) throw "ami:recovery_missing"; return "RWK-FQ3A-K7MZ-2PLD-WX8N-4HVB-RT6C-YJ2E-9GKU-SM5Q-AZ7D-NP3L-XW4F-B2RT";
         case "friends_save_recovery": return null;
         case "friends_restore": if (!String(args.key).toUpperCase().startsWith("RWK")) throw "ami:recovery_invalid"; friends = { ...friends, enabled: true, ready: true, me: { id: "moi", code: "RW-7KQ2-9XZ4", name: "Ethan", avatar: 1, show_online: true } }; return friends;
         case "friends_delete_identity": friends = { ...friends, enabled: false, ready: false, me: null, friends: [], incoming: [], outgoing: [], blocked: [], inbox: [], sent: [] }; return null;

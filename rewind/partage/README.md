@@ -4,8 +4,10 @@ Petit service Cloudflare (Worker + base D1 + stockage R2) qui sert de **boîte a
 clips entre amis. Rewind (`src-tauri/src/amis.rs`) y dépose un clip, le Rewind de l'ami le relève ; le
 fichier est supprimé dès réception, au plus tard après 7 jours.
 
-- **Aucun compte** : chaque Rewind crée une paire de clés Ed25519 et signe ses demandes
+- **Aucun compte** : chaque Rewind a une paire de clés Ed25519 et signe ses demandes
   (`MÉTHODE \n chemin \n heure \n empreinte SHA-256 du corps`, en-têtes `x-rewind-*`).
+  Depuis la 0.4.0, cette clé est **dérivée de l'identifiant du PC** (MachineGuid de Windows + UUID SMBIOS de la
+  carte mère, jamais envoyés) : réinstaller Rewind ou effacer ses données redonne le même compte.
 - **Aucun secret** : le Worker écrit dans R2 par sa liaison ; il n'y a ni clé d'accès ni mot de passe.
 - **Stocké** : pseudo, code ami, liens d'amitié, liste des envois ; les vidéos et miniatures le temps du trajet.
 - **Limites** (`LIMITS` dans `src/index.ts`) : 500 Mo par clip, 2 Go envoyés par jour et par personne,
@@ -14,12 +16,16 @@ fichier est supprimé dès réception, au plus tard après 7 jours.
 - **Profils** : photo (JPEG carré 256 px préparé par Rewind, `avatars/<id>` dans R2, visible des amis et des
   demandes en cours seulement), présence « en ligne » (amis seulement, désactivable ; écrite toutes les 5 min).
 - **Règles du stockage** : `clips/` et `thumbs/` supprimés après 7 jours ; les photos (`avatars/`) restent.
-- **Clé de secours** (côté Rewind) : la graine de la clé en base32 (`RWK-…`) ; la réinscrire redonne le même compte.
+- **Clé de secours** : une seconde clé, aléatoire (`RWK-…` côté Rewind, partie publique dans `users.recovery`).
+  `POST /v1/recover` (preuve de la clé de secours + preuve de la clé du PC) rattache le compte à un nouveau PC ;
+  l'éventuel compte que ce PC avait déjà est supprimé. `POST /v1/me/recovery` la remplace.
+- **Passage à la clé du PC** (comptes d'avant la 0.4.0) : `POST /v1/me/key`, signé par l'ancienne clé avec la preuve
+  de la nouvelle ; l'ancienne clé devient la clé de secours, donc une `RWK-` déjà notée reste valable.
 
 ## Base : création et migrations
 
-`schema.sql` crée les tables de départ ; ensuite, **une fois chacune**, dans l'ordre : `migrations/0002_profils.sql`.
-En ligne : appliquées le 2026-11-15.
+`schema.sql` crée une base neuve complète. Sur une base existante, **une fois chacune**, dans l'ordre :
+`migrations/0002_profils.sql`, `migrations/0003_cle_pc.sql`. En ligne : appliquées le 2026-11-15.
 
 ## Commandes (PowerShell : `npx.cmd`, pas `npx`)
 

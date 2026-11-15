@@ -18,6 +18,117 @@ use tauri::{AppHandle, Manager};
 /// Identifiant de l'application Discord « Rewind » (vide = présence inactive). Test : REWIND_DISCORD_CLIENT_ID.
 const CLIENT_ID: &str = "1571581651333414922";
 const DOWNLOAD_URL: &str = "https://github.com/depre99ed/Rewind/releases/latest";
+const PAGE_URL: &str = "https://github.com/depre99ed/Rewind";
+
+/// Logos des jeux connus de Discord (application Discord du jeu, empreinte de son icône), comme Medal.
+/// Les autres jeux sont cherchés dans la liste publique des jeux reconnus par Discord (voir `icons`).
+const KNOWN_ICONS: &[(&str, &str, &str)] = &[
+    ("cs2.exe", "1158877933042143272", "558f5a26ecb3b17c3dea3d15c1df537a"),
+    ("valorant-win64-shipping.exe", "700136079562375258", "11f81959f4fdd76ca6c39c59eac256c1"),
+    ("fortniteclient-win64-shipping.exe", "1402418703554842694", "c1864b38910c209afd5bf6423b672022"),
+    ("league of legends.exe", "1402418696126992445", "7c99428541032ac02ec6981d88b78fb7"),
+    ("rocketleague.exe", "356877880938070016", "a74899a5190c48a3e6ce9f8d2eaff348"),
+    ("r5apex.exe", "542075586886107149", "91fac0600c5b6527c1aea95a93c6a8e0"),
+    ("r5apex_dx12.exe", "542075586886107149", "91fac0600c5b6527c1aea95a93c6a8e0"),
+    ("overwatch.exe", "356875221078245376", "a60bb76ba4d4acafbd4cb9aad6e61739"),
+    ("robloxplayerbeta.exe", "363445589247131668", "f2b60e350a2097289b3b0b877495e55f"),
+    ("gta5.exe", "1402418714716143646", "b77111108195cd5e4dd2011dd39bf67d"),
+    ("rainbowsix.exe", "356876590342340608", "01125e693db476e6f83f7d9769080fd0"),
+    ("tslgame.exe", "1402418717781921935", "9d616d0c960ff87c3bc6beb9475362f5"),
+    ("marvel-win64-shipping.exe", "1314395942253756416", "2dd7882b887306ab5afad03452869ad8"),
+    ("dota2.exe", "356875988589740042", "6b4b3fa4c83555d3008de69d33a60588"),
+    ("deadlock.exe", "1276737795012165766", "08e679bae42c738a66c1b2e0e546ecc0"),
+    ("minecraft.windows.exe", "1402418491272986635", "166fbad351ecdd02d11a3b464748f66b"),
+];
+
+/// Adresse du logo d'un jeu (None = logo de Rewind).
+fn game_icon(exe: &str) -> Option<String> {
+    let lower = exe.to_ascii_lowercase();
+    let url = |id: &str, hash: &str| format!("https://cdn.discordapp.com/app-icons/{id}/{hash}.png?size=512");
+    if let Some((_, id, hash)) = KNOWN_ICONS.iter().find(|(e, _, _)| *e == lower) {
+        return Some(url(id, hash));
+    }
+    icons::lookup(&lower).map(|(id, hash)| url(&id, &hash))
+}
+
+/// Liste des jeux reconnus par Discord (publique), réduite à « exécutable → logo » et gardée 14 jours.
+/// Téléchargée seulement quand un jeu inconnu est enregistré avec la présence Discord active.
+mod icons {
+    use crate::util;
+    use parking_lot::Mutex;
+    use serde::Deserialize;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    const URL: &str = "https://discord.com/api/v9/applications/detectable";
+    static MAP: Mutex<Option<HashMap<String, (String, String)>>> = Mutex::new(None);
+    static LOADING: AtomicBool = AtomicBool::new(false);
+
+    fn path() -> std::path::PathBuf {
+        util::data_dir().join("discord-jeux.json")
+    }
+
+    #[derive(Deserialize)]
+    struct App {
+        id: String,
+        icon_hash: Option<String>,
+        executables: Option<Vec<Exe>>,
+    }
+    #[derive(Deserialize)]
+    struct Exe {
+        name: String,
+        os: String,
+    }
+
+    pub fn lookup(exe: &str) -> Option<(String, String)> {
+        let mut map = MAP.lock();
+        if map.is_none() {
+            *map = std::fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str(&t).ok());
+        }
+        let fresh = std::fs::metadata(path()).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age < Duration::from_secs(14 * 86_400));
+        let found = map.as_ref().and_then(|m| m.get(exe).cloned());
+        if found.is_none() && !fresh && !LOADING.swap(true, Ordering::SeqCst) {
+            let _ = std::thread::Builder::new().name("discord-jeux".into()).spawn(|| {
+                match download() {
+                    Ok(m) => {
+                        log::info!("Discord : liste des jeux reconnus mise à jour ({} exécutables)", m.len());
+                        let _ = std::fs::write(path(), serde_json::to_string(&m).unwrap_or_default());
+                        *MAP.lock() = Some(m);
+                    }
+                    Err(e) => {
+                        log::warn!("Discord : liste des jeux reconnus indisponible ({e})");
+                        // Pas de nouvel essai avant 14 jours : un fichier vide marque la tentative
+                        if !path().exists() {
+                            let _ = std::fs::write(path(), "{}");
+                        }
+                    }
+                }
+                LOADING.store(false, Ordering::SeqCst);
+            });
+        }
+        found
+    }
+
+    fn download() -> anyhow::Result<HashMap<String, (String, String)>> {
+        let resp = ureq::AgentBuilder::new().timeout(Duration::from_secs(60)).build().get(URL).call()?;
+        let apps: Vec<App> = serde_json::from_reader(std::io::Read::take(resp.into_reader(), 64 << 20))?;
+        let mut map = HashMap::new();
+        for a in apps {
+            let Some(hash) = a.icon_hash else { continue };
+            for e in a.executables.unwrap_or_default() {
+                if e.os == "win32" {
+                    let name = e.name.rsplit(['/', '\\']).next().unwrap_or("").to_ascii_lowercase();
+                    if name.ends_with(".exe") {
+                        map.entry(name).or_insert_with(|| (a.id.clone(), hash.clone()));
+                    }
+                }
+            }
+        }
+        anyhow::ensure!(map.len() > 100, "liste trop courte");
+        Ok(map)
+    }
+}
 
 fn client_id() -> String {
     std::env::var("REWIND_DISCORD_CLIENT_ID").unwrap_or_else(|_| CLIENT_ID.to_string())
@@ -43,8 +154,8 @@ pub fn set_ui(context: &str) {
     *UI.lock() = context.chars().take(20).collect();
 }
 
-/// Le jeu vu en dernier tourne-t-il encore ? (même processus, même heure de lancement)
-fn running_game() -> Option<(String, f64)> {
+/// Le jeu vu en dernier tourne-t-il encore ? (exécutable, nom lisible, heure de lancement)
+fn running_game() -> Option<(String, String, f64)> {
     let mut g = GAME.lock();
     let (exe, pid, since) = g.clone()?;
     let alive = util::process_start(pid).is_some_and(|s| (s - since).abs() < 2.0);
@@ -52,7 +163,16 @@ fn running_game() -> Option<(String, f64)> {
         *g = None;
         return None;
     }
-    Some((util::friendly_app(&exe), since))
+    Some((util::friendly_app(&exe), exe, since))
+}
+
+/// « 1 clip », « 3 clips » (vide si aucun ; même mot en français et en anglais)
+fn clips_text(n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => "1 clip".into(),
+        _ => format!("{n} clips"),
+    }
 }
 
 /// Ce que Discord doit afficher maintenant (None = rien).
@@ -68,18 +188,27 @@ fn wanted(app: &AppHandle) -> Option<Value> {
         "viewer" => tr("Regarde un clip", "Watching a clip"),
         "friends" => tr("Partage des clips avec ses amis", "Sharing clips with friends"),
         "cs2" => tr("Règle ses clips Counter-Strike 2", "Setting up Counter-Strike 2 clips"),
-        "settings" => tr("Règle Rewind", "Setting up Rewind"),
+        "settings" => tr("Dans les paramètres", "In the settings"),
         _ => tr("Regarde ses clips", "Browsing clips"),
     };
+    // Logo de Rewind (cliquable : page de Rewind), bouton « Télécharger Rewind » (visible par les autres)
     let mut activity = json!({
-        "assets": { "large_image": "rewind", "large_text": "Rewind" },
+        "assets": { "large_image": "rewind", "large_text": "Rewind", "large_url": PAGE_URL },
         "buttons": [ { "label": tr("Télécharger Rewind", "Get Rewind"), "url": DOWNLOAD_URL } ],
     });
     match (running_game().filter(|_| recording), visible) {
-        (Some((game, since)), _) => {
+        (Some((game, exe, since)), _) => {
             activity["details"] = json!(tr(&format!("Enregistre {game}"), &format!("Recording {game}")));
-            activity["state"] = json!(if visible { doing } else { tr("Prêt à clipper", "Ready to clip") });
+            // Clips faits pendant cette partie (depuis le lancement du jeu)
+            let clips = state.library.try_lock_for(Duration::from_millis(200)).map(|l| l.clips.iter().filter(|c| c.created >= since && !matches!(c.kind.as_str(), "screenshot" | "edit" | "received")).count()).unwrap_or(0);
+            let base = if visible { doing } else { tr("Prêt à clipper", "Ready to clip") };
+            let count = clips_text(clips);
+            activity["state"] = json!(if count.is_empty() { base } else { format!("{base} · {count}") });
             activity["timestamps"] = json!({ "start": since as i64 });
+            // Logo du jeu en grand, Rewind en petit (comme Medal)
+            if let Some(icon) = game_icon(&exe) {
+                activity["assets"] = json!({ "large_image": icon, "large_text": game, "small_image": "rewind", "small_text": "Rewind", "small_url": PAGE_URL });
+            }
         }
         (None, true) => {
             activity["details"] = json!(doing);

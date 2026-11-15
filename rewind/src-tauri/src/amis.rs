@@ -28,6 +28,8 @@ use tauri::{AppHandle, Emitter, Manager};
 const DEFAULT_URL: &str = "https://rewind-partage.rewind-clips.workers.dev";
 /// Relève de la boîte quand Rewind est ouvert (et tout de suite sur demande de l'interface)
 const POLL: Duration = Duration::from_secs(120);
+/// … et plus souvent quand la page Amis est affichée (une relève ≈ 1 Ko)
+const POLL_FOCUS: Duration = Duration::from_secs(30);
 
 fn base_url() -> String {
     std::env::var("REWIND_SHARE_URL").unwrap_or_else(|_| DEFAULT_URL.into()).trim_end_matches('/').to_string()
@@ -80,24 +82,167 @@ fn dpapi(data: &[u8], protect: bool) -> Result<Vec<u8>> {
     }
 }
 
+/// Ancienne clé aléatoire (avant la 0.4.0), ou clé de secours d'un PC dont l'identifiant est illisible.
 fn key_path() -> PathBuf {
     dir().join("cle.bin")
 }
 
-fn load_key() -> Option<SigningKey> {
-    let raw = std::fs::read(key_path()).ok()?;
+/// Clé de secours (aléatoire, chiffrée par Windows) : seule sa partie publique est au guichet.
+fn recovery_path() -> PathBuf {
+    dir().join("secours.bin")
+}
+
+fn read_sealed(path: &Path) -> Option<SigningKey> {
+    let raw = std::fs::read(path).ok()?;
     let seed: [u8; 32] = dpapi(&raw, false).ok()?.try_into().ok()?;
     Some(SigningKey::from_bytes(&seed))
+}
+
+fn write_sealed(path: &Path, key: &SigningKey) -> Result<()> {
+    std::fs::write(path, dpapi(&key.to_bytes(), true)?)?;
+    Ok(())
+}
+
+fn random_key() -> Result<SigningKey> {
+    let mut seed = [0u8; 32];
+    getrandom::getrandom(&mut seed).map_err(|e| anyhow!("hasard indisponible : {e}"))?;
+    Ok(SigningKey::from_bytes(&seed))
+}
+
+fn pubkey_b64(key: &SigningKey) -> String {
+    b64(key.verifying_key().as_bytes())
+}
+
+/// Identifiant matériel de ce PC : identifiant de Windows (MachineGuid) + identifiant de la carte mère
+/// (SMBIOS, s'il est valable). Lu comme le font beaucoup de logiciels (Steam, navigateurs…), sans WMI ni
+/// programme externe. Ne quitte jamais le PC : il sert seulement à fabriquer la clé de ce Rewind.
+fn hardware_id() -> Option<String> {
+    let guid = util::reg_values(r"HKLM\SOFTWARE\Microsoft\Cryptography").get("MachineGuid").map(|g| g.trim().to_ascii_lowercase()).filter(|g| g.len() >= 32)?;
+    let board = smbios_uuid().map(|u| hex(&u)).unwrap_or_default();
+    Some(format!("{guid}|{board}"))
+}
+
+/// UUID du système lu dans la table SMBIOS du micrologiciel (structure de type 1).
+fn smbios_uuid() -> Option<[u8; 16]> {
+    use windows_sys::Win32::System::SystemInformation::GetSystemFirmwareTable;
+    const RSMB: u32 = u32::from_be_bytes(*b"RSMB");
+    let size = unsafe { GetSystemFirmwareTable(RSMB, 0, std::ptr::null_mut(), 0) };
+    if !(8..=1 << 20).contains(&size) {
+        return None;
+    }
+    let mut buf = vec![0u8; size as usize];
+    if unsafe { GetSystemFirmwareTable(RSMB, 0, buf.as_mut_ptr() as _, size) } != size {
+        return None;
+    }
+    // En-tête RawSMBIOSData (8 octets), puis les structures : type, longueur, poignée, champs, chaînes (fin : 0 0)
+    let len = u32::from_le_bytes(buf[4..8].try_into().ok()?) as usize;
+    let table = buf.get(8..8 + len.min(buf.len() - 8))?;
+    let mut i = 0;
+    while i + 4 <= table.len() {
+        let (kind, flen) = (table[i], table[i + 1] as usize);
+        if flen < 4 || i + flen > table.len() {
+            return None;
+        }
+        if kind == 1 && flen >= 0x18 {
+            let uuid: [u8; 16] = table[i + 8..i + 24].try_into().ok()?;
+            // Valeurs bidon fréquentes : tout à 0 ou tout à FF, ou la valeur d'exemple des fabricants
+            let fake = uuid.iter().all(|&b| b == 0) || uuid.iter().all(|&b| b == 0xff) || hex(&uuid) == "03000200040005000006000700080009";
+            return (!fake).then_some(uuid);
+        }
+        if kind == 127 {
+            return None;
+        }
+        // Chaînes : jusqu'au double zéro
+        let mut j = i + flen;
+        while j + 1 < table.len() && !(table[j] == 0 && table[j + 1] == 0) {
+            j += 1;
+        }
+        i = j + 2;
+    }
+    None
+}
+
+/// Clé de ce PC : toujours la même sur ce PC (réinstaller Rewind ou effacer ses données redonne le même
+/// compte), différente sur un autre PC. Dérivée de l'identifiant matériel, jamais enregistrée.
+fn device_key() -> Option<SigningKey> {
+    static KEY: OnceLock<Option<[u8; 32]>> = OnceLock::new();
+    let seed = KEY.get_or_init(|| {
+        #[allow(unused_mut)]
+        let mut id = hardware_id()?;
+        // Essais (versions de développement) : un dossier de données = un « PC » différent
+        #[cfg(debug_assertions)]
+        if let Ok(d) = std::env::var("REWIND_DATA_DIR") {
+            id.push('|');
+            id.push_str(&d.to_lowercase());
+        }
+        let mut h = Sha256::new();
+        h.update(b"Rewind : identite du PC, v1\n");
+        h.update(id.as_bytes());
+        Some(h.finalize().into())
+    });
+    seed.map(|s| SigningKey::from_bytes(&s))
+}
+
+/// Clé qui signe les demandes : l'ancienne clé tant qu'elle n'est pas remplacée, sinon celle du PC.
+fn load_key() -> Option<SigningKey> {
+    read_sealed(&key_path()).or_else(device_key)
 }
 
 fn load_or_create_key() -> Result<SigningKey> {
     if let Some(k) = load_key() {
         return Ok(k);
     }
-    let mut seed = [0u8; 32];
-    getrandom::getrandom(&mut seed).map_err(|e| anyhow!("hasard indisponible : {e}"))?;
-    std::fs::write(key_path(), dpapi(&seed, true)?)?;
-    Ok(SigningKey::from_bytes(&seed))
+    // Identifiant du PC illisible (très rare) : clé aléatoire gardée sur le disque, comme avant
+    let k = random_key()?;
+    write_sealed(&key_path(), &k)?;
+    Ok(k)
+}
+
+fn load_recovery() -> Option<SigningKey> {
+    read_sealed(&recovery_path())
+}
+
+/// La clé de secours gardée sur ce PC est-elle celle du compte ?
+fn recovery_here(acc: Option<&Account>) -> bool {
+    match (acc, load_recovery()) {
+        (Some(a), Some(k)) => !a.recovery.is_empty() && a.recovery == pubkey_b64(&k),
+        _ => false,
+    }
+}
+
+/// Passage de l'ancienne clé aléatoire à la clé du PC (une fois, au premier lancement de la 0.4.0).
+/// L'ancienne clé devient la clé de secours : une clé « RWK- » déjà notée reste valable.
+fn migrate_to_device_key() {
+    // Refus définitif du guichet (ce PC a déjà un autre compte) : on garde l'ancienne clé, sans réessayer
+    static GAVE_UP: AtomicBool = AtomicBool::new(false);
+    if GAVE_UP.load(Ordering::SeqCst) || !key_path().exists() {
+        return;
+    }
+    let (Some(old), Some(device), Some(acc)) = (read_sealed(&key_path()), device_key(), load_account()) else { return };
+    if old.verifying_key() == device.verifying_key() {
+        let _ = std::fs::remove_file(key_path());
+        return;
+    }
+    let time = now_ms();
+    let proof = b64(&device.sign(format!("rekey\n{}\n{time}", acc.id).as_bytes()).to_bytes());
+    match call("POST", "/v1/me/key", Some(json!({ "pubkey": pubkey_b64(&device), "time": time, "proof": proof }))) {
+        Ok(r) => {
+            let recovery = r["recovery"].as_str().unwrap_or_default().to_string();
+            if recovery == pubkey_b64(&old) && write_sealed(&recovery_path(), &old).is_err() {
+                return; // on garde l'ancienne clé tant que la clé de secours n'est pas écrite
+            }
+            let _ = std::fs::remove_file(key_path());
+            save_account(&Account { recovery, ..acc });
+            log::info!("partage : identité rattachée à ce PC");
+        }
+        Err(e) => {
+            log::warn!("partage : rattachement à ce PC impossible pour l'instant ({e})");
+            // Guichet injoignable : nouvel essai à la prochaine relève
+            if e.to_string() != "ami:offline" {
+                GAVE_UP.store(true, Ordering::SeqCst);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -110,6 +255,8 @@ pub struct Account {
     pub avatar: u64,
     /// Montrer à mes amis quand Rewind est ouvert
     pub show_online: bool,
+    /// Partie publique de la clé de secours (vide = pas encore créée)
+    pub recovery: String,
 }
 
 fn account_path() -> PathBuf {
@@ -260,6 +407,8 @@ pub struct Transfer {
     pub progress: f64,
     /// "running", "error", "done"
     pub state: String,
+    /// Étape d'un envoi : "compress" (allègement de la vidéo) ou "" (envoi)
+    pub stage: String,
     pub error: String,
 }
 
@@ -296,6 +445,10 @@ pub struct View {
     pub limits: Limits,
     pub transfers: Vec<Transfer>,
     pub received: Vec<Received>,
+    /// La clé de secours du compte est gardée sur ce PC (sinon : en créer une nouvelle)
+    pub recovery_here: bool,
+    /// Relève en cours
+    pub syncing: bool,
 }
 
 static VIEW: OnceLock<Mutex<View>> = OnceLock::new();
@@ -304,7 +457,8 @@ static CANCELLED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 fn view() -> &'static Mutex<View> {
     VIEW.get_or_init(|| {
-        Mutex::new(View { received: load_received(), me: load_account(), ready: load_account().is_some() && load_key().is_some(), ..Default::default() })
+        let me = load_account();
+        Mutex::new(View { received: load_received(), recovery_here: recovery_here(me.as_ref()), ready: me.is_some() && load_key().is_some(), me, ..Default::default() })
     })
 }
 
@@ -319,6 +473,13 @@ fn changed(app: &AppHandle) {
 /// Relève tout de suite (après une action de l'utilisateur).
 pub fn wake() {
     WAKE.store(true, Ordering::SeqCst);
+}
+
+static FOCUS: AtomicBool = AtomicBool::new(false);
+
+/// La page Amis est affichée (relève toutes les 30 s tant que la fenêtre est visible).
+pub fn set_focus(on: bool) {
+    FOCUS.store(on, Ordering::SeqCst);
 }
 
 fn received_path() -> PathBuf {
@@ -358,17 +519,29 @@ fn clean_name(name: &str) -> Result<String> {
     Ok(n)
 }
 
-/// Inscrit cette clé au guichet (la même clé redonne toujours le même compte).
-fn register_key(key: &SigningKey, name: &str) -> Result<Account> {
-    let pubkey = b64(key.verifying_key().as_bytes());
+/// Inscrit cette clé au guichet (la même clé, donc le même PC, redonne toujours le même compte).
+/// La clé de secours proposée n'est gardée que si le compte n'en a pas encore.
+fn register_key(key: &SigningKey, name: &str, recovery: Option<&SigningKey>) -> Result<Account> {
+    let pubkey = pubkey_b64(key);
     let time = now_ms();
     let proof = b64(&key.sign(format!("register\n{pubkey}\n{time}").as_bytes()).to_bytes());
     Ok(agent()
         .post(&format!("{}/v1/register", base_url()))
         .set("content-type", "application/json")
-        .send_json(json!({ "pubkey": pubkey, "name": name, "time": time, "proof": proof }))
+        .send_json(json!({ "pubkey": pubkey, "name": name, "time": time, "proof": proof, "recovery": recovery.map(pubkey_b64) }))
         .map_err(http_error)?
         .into_json::<Account>()?)
+}
+
+/// Clé de secours locale : gardée si c'est celle du compte, effacée si le compte en a une autre.
+fn keep_recovery(acc: &Account, proposed: &SigningKey) {
+    if acc.recovery == pubkey_b64(proposed) {
+        if load_recovery().map(|k| k.verifying_key()) != Some(proposed.verifying_key()) {
+            let _ = write_sealed(&recovery_path(), proposed);
+        }
+    } else if load_recovery().is_some_and(|k| pubkey_b64(&k) != acc.recovery) {
+        let _ = std::fs::remove_file(recovery_path());
+    }
 }
 
 fn turn_on(app: &AppHandle) {
@@ -382,13 +555,24 @@ fn turn_on(app: &AppHandle) {
     v.enabled = true;
     v.ready = true;
     v.me = load_account();
+    v.recovery_here = recovery_here(v.me.as_ref());
 }
 
 /// Active le partage : crée l'identité (une fois) et obtient le code ami.
 pub fn enable(app: &AppHandle, name: &str) -> Result<View> {
     let name = clean_name(name)?;
     let key = load_or_create_key()?;
-    let resp = register_key(&key, &name)?;
+    let proposed = match load_recovery() {
+        Some(k) => k,
+        None => random_key()?,
+    };
+    // Ancienne clé encore là (compte d'avant la 0.4.0) : elle deviendra la clé de secours au passage à la
+    // clé du PC, on n'en propose donc pas d'autre
+    let legacy = key_path().exists() && device_key().is_some();
+    let resp = register_key(&key, &name, (!legacy).then_some(&proposed))?;
+    if !legacy {
+        keep_recovery(&resp, &proposed);
+    }
     save_account(&resp);
     // Même clé déjà inscrite avec un autre pseudo : on garde celui qui vient d'être choisi
     if resp.name != name {
@@ -487,6 +671,7 @@ pub fn delete_identity(app: &AppHandle) -> Result<()> {
         }
     }
     let _ = std::fs::remove_file(key_path());
+    let _ = std::fs::remove_file(recovery_path());
     let _ = std::fs::remove_file(account_path());
     disable(app);
     {
@@ -554,15 +739,38 @@ fn unbase32(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Texte de la clé de secours de cette identité.
-pub fn recovery_key() -> Result<String> {
-    let key = load_key().ok_or_else(|| coded("no_identity"))?;
+fn recovery_text(key: &SigningKey) -> String {
     let seed = key.to_bytes();
     let mut data = seed.to_vec();
     data.extend_from_slice(&Sha256::digest(seed)[..3]);
     let raw = base32(&data);
     let groups: Vec<String> = raw.as_bytes().chunks(4).map(|c| String::from_utf8_lossy(c).to_string()).collect();
-    Ok(format!("RWK-{}", groups.join("-")))
+    format!("RWK-{}", groups.join("-"))
+}
+
+/// Texte de la clé de secours du compte (gardée sur ce PC).
+pub fn recovery_key() -> Result<String> {
+    let acc = load_account().ok_or_else(|| coded("no_identity"))?;
+    let key = load_recovery().filter(|k| pubkey_b64(k) == acc.recovery).ok_or_else(|| coded("recovery_missing"))?;
+    Ok(recovery_text(&key))
+}
+
+/// Nouvelle clé de secours (l'ancienne ne marche plus) ; renvoie son texte.
+pub fn new_recovery(app: &AppHandle) -> Result<String> {
+    let acc = load_account().ok_or_else(|| coded("no_identity"))?;
+    let key = random_key()?;
+    call("POST", "/v1/me/recovery", Some(json!({ "recovery": pubkey_b64(&key) })))?;
+    write_sealed(&recovery_path(), &key)?;
+    let acc = Account { recovery: pubkey_b64(&key), ..acc };
+    save_account(&acc);
+    {
+        let mut v = view().lock();
+        v.me = Some(acc);
+        v.recovery_here = true;
+    }
+    changed(app);
+    log::info!("partage : nouvelle clé de secours");
+    Ok(recovery_text(&key))
 }
 
 /// Lit une clé de secours tapée ou collée (espaces, tirets, minuscules acceptés).
@@ -591,12 +799,32 @@ pub fn save_recovery(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Restaure une identité depuis sa clé de secours (remplace celle de ce PC).
+/// Restaure une identité depuis sa clé de secours : le compte est rattaché à ce PC
+/// (s'il y avait déjà un compte sur ce PC, il est remplacé).
 pub fn restore(app: &AppHandle, text: &str) -> Result<View> {
-    let seed = parse_recovery(text)?;
-    let key = SigningKey::from_bytes(&seed);
-    let acc = register_key(&key, "Rewind")?;
-    std::fs::write(key_path(), dpapi(&seed, true)?)?;
+    let recovery = SigningKey::from_bytes(&parse_recovery(text)?);
+    let (device, from_hardware) = match device_key() {
+        Some(k) => (k, true),
+        None => (load_or_create_key()?, false),
+    };
+    if recovery.verifying_key() == device.verifying_key() {
+        return Err(coded("recovery_invalid"));
+    }
+    let (rpub, dpub, time) = (pubkey_b64(&recovery), pubkey_b64(&device), now_ms());
+    let acc = agent()
+        .post(&format!("{}/v1/recover", base_url()))
+        .set("content-type", "application/json")
+        .send_json(json!({
+            "recovery": rpub, "pubkey": dpub, "time": time,
+            "proof_recovery": b64(&recovery.sign(format!("recover\n{dpub}\n{time}").as_bytes()).to_bytes()),
+            "proof_device": b64(&device.sign(format!("device\n{rpub}\n{time}").as_bytes()).to_bytes()),
+        }))
+        .map_err(http_error)?
+        .into_json::<Account>()?;
+    write_sealed(&recovery_path(), &recovery)?;
+    if from_hardware {
+        let _ = std::fs::remove_file(key_path());
+    }
     save_account(&acc);
     turn_on(app);
     log::info!("partage : identité restaurée depuis la clé de secours");
@@ -691,7 +919,12 @@ fn sync() -> Result<SyncResp> {
 
 /// Relève tout de suite, dans ce fil (actions de l'utilisateur) ; les erreurs restent dans l'état.
 fn sync_now(app: &AppHandle) {
-    match sync() {
+    migrate_to_device_key();
+    view().lock().syncing = true;
+    changed(app);
+    let result = sync();
+    view().lock().syncing = false;
+    match result {
         Ok(r) => apply(app, r),
         Err(e) => {
             let mut v = view().lock();
@@ -726,6 +959,7 @@ fn apply(app: &AppHandle, r: SyncResp) {
         v.online = true;
         v.error.clear();
         v.synced_at = util::now();
+        v.recovery_here = recovery_here(v.me.as_ref());
     }
     for item in &new_items {
         let _ = app.emit("friends-new-clip", json!({ "from": item.sender_name, "title": item.title }));
@@ -733,9 +967,12 @@ fn apply(app: &AppHandle, r: SyncResp) {
     changed(app);
 }
 
-/// Fil de relève : toutes les 2 minutes quand le partage est activé, et tout de suite après une action.
+/// Fil de relève : toutes les 2 minutes quand le partage est activé (30 s quand la page Amis est
+/// affichée), et tout de suite après une action.
 pub fn start(app: AppHandle) {
     let _ = std::thread::Builder::new().name("amis".into()).spawn(move || {
+        // Clips allégés d'un envoi interrompu (Rewind fermé pendant l'envoi)
+        let _ = std::fs::remove_dir_all(dir().join("envoi"));
         let mut last = Instant::now() - POLL;
         loop {
             let (enabled, auto) = {
@@ -750,7 +987,9 @@ pub fn start(app: AppHandle) {
                 v.ready = ready;
             }
             let wake = WAKE.swap(false, Ordering::SeqCst);
-            if enabled && ready && (wake || last.elapsed() >= POLL) {
+            let watching = FOCUS.load(Ordering::SeqCst) && app.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false));
+            let every = if watching { POLL_FOCUS } else { POLL };
+            if enabled && ready && (wake || last.elapsed() >= every) {
                 last = Instant::now();
                 sync_now(&app);
                 if auto {
@@ -800,6 +1039,85 @@ impl Read for Counting<'_> {
     }
 }
 
+/// Débit vidéo visé pour l'envoi : 65 % du débit moyen d'origine. NVENC en VBR multipasse reste souvent en
+/// dessous sur les clips de jeu : mesuré sur un vrai clip CS2 1080p50 à 5,6 Mb/s, fichier 35 à 45 % plus
+/// léger selon le passage, pour une image quasi identique (SSIM 0,994). Jamais sous un plancher qui dépend de la définition
+/// (2,5 Mb/s en 1080p). None = ne pas réencoder (déjà léger, ou codec déjà efficace comme HEVC/AV1).
+fn share_bitrate(codec: &str, width: u32, height: u32, video_bps: f64) -> Option<u64> {
+    if !matches!(codec, "h264" | "mpeg4") || video_bps <= 0.0 {
+        return None;
+    }
+    let pixels = (width.max(1) * height.max(1)) as f64;
+    let floor = (pixels / (1920.0 * 1080.0)).clamp(0.25, 4.0) * 2_500_000.0;
+    let target = (video_bps * 0.65).max(floor);
+    (target < video_bps * 0.92).then_some(target as u64)
+}
+
+/// Allège le clip avant l'envoi (carte graphique si possible, son copié tel quel).
+/// Renvoie le fichier allégé, ou None si l'original est gardé (déjà léger, ou réencodage raté).
+fn compress_for_share(path: &Path, duration: f64, size: u64, out: &Path, cancelled: impl Fn() -> bool, mut progress: impl FnMut(f64)) -> Option<PathBuf> {
+    let tools = ffmpeg::tools().ok()?;
+    let probe = util::command(&tools.ffprobe)
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height,bit_rate", "-of", "json"])
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let info: Value = serde_json::from_slice(&probe.stdout).ok()?;
+    let v = &info["streams"][0];
+    let (codec, width, height) = (v["codec_name"].as_str().unwrap_or(""), v["width"].as_u64().unwrap_or(0) as u32, v["height"].as_u64().unwrap_or(0) as u32);
+    // Débit vidéo : celui du flux, sinon celui du fichier moins ~200 kb/s de son
+    let video_bps = v["bit_rate"].as_str().and_then(|b| b.parse::<f64>().ok()).unwrap_or_else(|| (size as f64 * 8.0 / duration.max(0.1)) - 200_000.0);
+    let target = share_bitrate(codec, width, height, video_bps)?;
+    let encoder = ffmpeg::pick_encoder("auto");
+    let (b, max, buf) = (target.to_string(), (target * 3 / 2).to_string(), (target * 2).to_string());
+    let mut args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y", "-i"].iter().map(|s| s.to_string()).collect();
+    args.push(path.to_string_lossy().to_string());
+    args.extend(["-map", "0:v:0", "-map", "0:a?", "-c:v", &encoder].iter().map(|s| s.to_string()));
+    let quality: &[&str] = if encoder.contains("nvenc") {
+        &["-preset", "p5", "-tune", "hq", "-rc", "vbr", "-multipass", "qres"]
+    } else if encoder.contains("amf") {
+        &["-usage", "transcoding", "-quality", "quality", "-rc", "vbr_peak"]
+    } else if encoder.contains("qsv") {
+        &["-preset", "medium"]
+    } else {
+        &["-preset", "fast"]
+    };
+    args.extend(quality.iter().map(|s| s.to_string()));
+    args.extend(["-b:v", &b, "-maxrate", &max, "-bufsize", &buf, "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart"].iter().map(|s| s.to_string()));
+    args.push(out.to_string_lossy().to_string());
+    let mut child = util::command(&tools.ffmpeg).args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().ok()?;
+    // Progression : lignes « out_time_us=… » de ffmpeg
+    if let Some(stdout) = child.stdout.take() {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout).lines().map_while(|l| l.ok()) {
+            if cancelled() {
+                let _ = child.kill();
+                break;
+            }
+            if let Some(us) = line.strip_prefix("out_time_us=").and_then(|x| x.trim().parse::<f64>().ok()) {
+                progress((us / 1e6 / duration.max(0.1)).clamp(0.0, 1.0));
+            }
+        }
+    }
+    let status = child.wait().ok()?;
+    let new_size = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+    let ok = status.success() && new_size > 0 && new_size < size * 9 / 10 && ffmpeg::duration(out).is_some_and(|d| (d - duration).abs() < 1.0);
+    if !ok {
+        if !cancelled() {
+            let mut err = String::new();
+            if let Some(mut e) = child.stderr.take() {
+                let _ = e.read_to_string(&mut err);
+            }
+            log::warn!("partage : allègement impossible avec {encoder}, envoi de l'original ({})", err.lines().last().unwrap_or("taille non réduite"));
+        }
+        let _ = std::fs::remove_file(out);
+        return None;
+    }
+    log::info!("partage : clip allégé avec {encoder} ({} → {} Mo)", size >> 20, new_size >> 20);
+    Some(out.to_path_buf())
+}
+
 fn is_cancelled(key: &str, share_id: &str) -> bool {
     let c = CANCELLED.lock();
     c.iter().any(|x| x == key || (!share_id.is_empty() && x == share_id))
@@ -814,10 +1132,11 @@ pub fn send(app: &AppHandle, clip_id: &str, to: Vec<String>) -> Result<()> {
     if to.is_empty() {
         return Err(coded("recipients_invalid"));
     }
-    let path = PathBuf::from(&clip.path);
-    let size = std::fs::metadata(&path).map(|m| m.len()).map_err(|_| coded("file_missing"))?;
+    let original = PathBuf::from(&clip.path);
+    let original_size = std::fs::metadata(&original).map(|m| m.len()).map_err(|_| coded("file_missing"))?;
     let limits = view().lock().limits.clone();
-    if size > limits.max_clip {
+    // Trop gros même une fois allégé
+    if original_size > limits.max_clip * 2 {
         return Err(coded("clip_too_big"));
     }
     let names: Vec<String> = {
@@ -825,17 +1144,38 @@ pub fn send(app: &AppHandle, clip_id: &str, to: Vec<String>) -> Result<()> {
         to.iter().map(|id| v.friends.iter().find(|f| &f.id == id).map(|f| f.name.clone()).unwrap_or_default()).collect()
     };
     let key = format!("local-{}-{}", clip.id, now_ms());
-    let mut t = Transfer { key: key.clone(), kind: "up".into(), title: clip.title.clone(), peer: names.join(", "), state: "running".into(), ..Default::default() };
+    let mut t = Transfer { key: key.clone(), kind: "up".into(), title: clip.title.clone(), peer: names.join(", "), state: "running".into(), stage: "compress".into(), ..Default::default() };
     set_transfer(app, t.clone());
     let app = app.clone();
+    let light_path = dir().join("envoi").join(format!("{key}.mp4"));
     std::thread::Builder::new().name("amis-envoi".into()).spawn(move || {
         let result = (|| -> Result<String> {
-            // 1) Empreinte (10 % de la barre)
+            // 0) Allègement de la vidéo (25 % de la barre) : 30 à 40 % de moins à envoyer et à stocker
+            let _ = std::fs::create_dir_all(dir().join("envoi"));
             let mut last = Instant::now();
+            let light = compress_for_share(&original, clip.duration, original_size, &light_path, || is_cancelled(&key, ""), |p| {
+                if last.elapsed() > Duration::from_millis(250) {
+                    last = Instant::now();
+                    t.progress = 0.25 * p;
+                    set_transfer(&app, t.clone());
+                }
+            });
+            if is_cancelled(&t.key, "") {
+                bail!("ami:cancelled");
+            }
+            let path = light.unwrap_or_else(|| original.clone());
+            let size = std::fs::metadata(&path)?.len();
+            if size > limits.max_clip {
+                bail!("ami:clip_too_big");
+            }
+            t.stage.clear();
+            t.progress = 0.25;
+            set_transfer(&app, t.clone());
+            // 1) Empreinte (5 % de la barre)
             let sha = file_sha256(&path, |done| {
                 if last.elapsed() > Duration::from_millis(250) {
                     last = Instant::now();
-                    t.progress = 0.1 * done as f64 / size.max(1) as f64;
+                    t.progress = 0.25 + 0.05 * done as f64 / size.max(1) as f64;
                     set_transfer(&app, t.clone());
                 }
             })?;
@@ -873,7 +1213,7 @@ pub fn send(app: &AppHandle, clip_id: &str, to: Vec<String>) -> Result<()> {
                     let watcher = std::thread::spawn(move || {
                         while !d2.load(Ordering::Relaxed) {
                             std::thread::sleep(Duration::from_millis(300));
-                            t2.progress = 0.1 + 0.85 * (base + c2.load(Ordering::Relaxed)) as f64 / size.max(1) as f64;
+                            t2.progress = 0.3 + 0.65 * (base + c2.load(Ordering::Relaxed)) as f64 / size.max(1) as f64;
                             set_transfer(&a2, t2.clone());
                         }
                     });
@@ -907,6 +1247,7 @@ pub fn send(app: &AppHandle, clip_id: &str, to: Vec<String>) -> Result<()> {
             call("POST", &format!("/v1/shares/{share_id}/complete"), None)?;
             Ok(share_id)
         })();
+        let _ = std::fs::remove_file(&light_path);
         match result {
             Ok(id) => {
                 log::info!("partage : clip « {} » envoyé ({id})", t.title);
@@ -1140,6 +1481,33 @@ mod tests {
         bad[i] = if bad[i] == 'A' { 'B' } else { 'A' };
         assert!(parse_recovery(&bad.into_iter().collect::<String>()).is_err());
         assert!(parse_recovery("RWK-ABCD").is_err());
+    }
+
+    #[test]
+    fn cle_du_pc_stable() {
+        // Lue deux fois de suite (et sans cache) : même identifiant, donc même compte
+        let a = hardware_id().expect("identifiant de Windows lisible");
+        let b = hardware_id().unwrap();
+        assert_eq!(a, b);
+        let (guid, board) = a.split_once('|').unwrap();
+        assert!(guid.len() >= 32, "MachineGuid : {guid}");
+        println!("carte mère lue : {}", if board.is_empty() { "non (MachineGuid seul)" } else { "oui" });
+        assert_eq!(device_key().unwrap().verifying_key(), device_key().unwrap().verifying_key());
+    }
+
+    #[test]
+    fn allegement_avant_envoi() {
+        // Clip Rewind typique : 1080p à 5,6 Mb/s → visé 3,64 Mb/s
+        let t = share_bitrate("h264", 1920, 1080, 5.6e6).unwrap();
+        assert!((3_600_000..3_700_000).contains(&t), "{t}");
+        // Déjà très léger : on garde l'original (plancher 1080p : 2,5 Mb/s)
+        assert!(share_bitrate("h264", 1920, 1080, 2.6e6).is_none());
+        // 1440p à 5 Mb/s : réduit, mais pas sous le plancher de 1440p (~4,4 Mb/s)
+        let t = share_bitrate("h264", 2560, 1440, 5e6).unwrap();
+        assert!((4_400_000..4_500_000).contains(&t), "{t}");
+        // HEVC / AV1 : déjà efficaces, on ne réencode pas
+        assert!(share_bitrate("hevc", 1920, 1080, 40e6).is_none());
+        assert!(share_bitrate("av1", 1920, 1080, 40e6).is_none());
     }
 
     #[test]

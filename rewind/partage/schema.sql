@@ -9,8 +9,12 @@ CREATE TABLE IF NOT EXISTS users (
   created    INTEGER NOT NULL,
   last_seen  INTEGER NOT NULL,
   sent_day   TEXT NOT NULL DEFAULT '',   -- quota d'envoi du jour (AAAA-MM-JJ)
-  sent_bytes INTEGER NOT NULL DEFAULT 0
+  sent_bytes INTEGER NOT NULL DEFAULT 0,
+  avatar     INTEGER NOT NULL DEFAULT 0, -- version de la photo de profil (0 = aucune)
+  show_online INTEGER NOT NULL DEFAULT 1,
+  recovery   TEXT                        -- clé publique de secours (base64), NULL = pas encore créée
 );
+CREATE UNIQUE INDEX IF NOT EXISTS users_recovery ON users (recovery);
 
 -- Une ligne par paire (a < b) : demande en attente, amis, ou bloqué
 CREATE TABLE IF NOT EXISTS friends (

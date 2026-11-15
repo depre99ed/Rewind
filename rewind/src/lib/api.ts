@@ -285,6 +285,8 @@ export const api = {
   friendsRefresh: () => invoke<void>("friends_refresh"),
   friendsDeleteIdentity: () => invoke<void>("friends_delete_identity"),
   friendsRecoveryKey: () => invoke<string>("friends_recovery_key"),
+  /** Nouvelle clé de secours (l'ancienne ne marche plus) : renvoie son texte */
+  friendsNewRecovery: () => invoke<string>("friends_new_recovery"),
   friendsSaveRecovery: (path: string) => invoke<void>("friends_save_recovery", { path }),
   friendsRestore: (key: string) => invoke<FriendsView>("friends_restore", { key }),
   friendsSetAvatar: (path: string) => invoke<void>("friends_set_avatar", { path }),
@@ -303,7 +305,7 @@ export const api = {
 export type FriendPerson = { id: string; name: string; since: number; avatar: number; online: boolean };
 export type FriendIncoming = { id: string; sender: string; sender_name: string; title: string; game: string; duration: number; size: number; sha256: string; markers: Marker[]; has_thumb: boolean; created: number };
 export type FriendSent = { id: string; title: string; game: string; size: number; state: string; created: number; to: { id: string; name: string; state: "waiting" | "received" | "dismissed" | string }[] };
-export type FriendTransfer = { key: string; share_id: string; kind: "up" | "down"; title: string; peer: string; progress: number; state: "running" | "error" | "done"; error: string };
+export type FriendTransfer = { key: string; share_id: string; kind: "up" | "down"; title: string; peer: string; progress: number; state: "running" | "error" | "done"; error: string; stage: "compress" | "" };
 export type FriendReceived = { share_id: string; clip_id: string; from_id: string; from_name: string; title: string; game: string; at: number };
 export type FriendsView = {
   enabled: boolean;
@@ -311,7 +313,7 @@ export type FriendsView = {
   online: boolean;
   error: string;
   synced_at: number;
-  me: { id: string; code: string; name: string; avatar: number; show_online: boolean } | null;
+  me: { id: string; code: string; name: string; avatar: number; show_online: boolean; recovery: string } | null;
   friends: FriendPerson[];
   incoming: FriendPerson[];
   outgoing: FriendPerson[];
@@ -321,6 +323,10 @@ export type FriendsView = {
   limits: { max_clip: number; daily_bytes: number; used_today: number; part: number; keep_days: number };
   transfers: FriendTransfer[];
   received: FriendReceived[];
+  /** La clé de secours du compte est gardée sur ce PC */
+  recovery_here: boolean;
+  /** Relève en cours */
+  syncing: boolean;
 };
 
 /** Message lisible pour une erreur du partage (« ami:<code> » renvoyé par Rewind). */
@@ -335,7 +341,7 @@ export function friendError(e: unknown): string {
     friends_full: "Liste d'amis pleine (200 au maximum).",
     too_many_requests: "Trop de demandes en attente : attends que certaines soient acceptées.",
     not_friends: "Vous n'êtes plus amis.",
-    clip_too_big: "Clip trop lourd pour le partage (500 Mo au maximum).",
+    clip_too_big: "Clip trop lourd pour le partage, même allégé (500 Mo au maximum).",
     daily_quota: "Limite d'envoi du jour atteinte (2 Go). Réessaie demain.",
     name_invalid: "Choisis un pseudo (24 caractères au maximum).",
     file_missing: "Le fichier du clip est introuvable.",
@@ -349,6 +355,9 @@ export function friendError(e: unknown): string {
     busy: "Une réception est déjà en cours.",
     cancelled: "Envoi annulé.",
     recovery_invalid: "Clé de secours invalide : vérifie les caractères (une faute est détectée automatiquement).",
+    recovery_unknown: "Cette clé de secours ne correspond à aucun compte (remplacée par une plus récente, ou identité supprimée).",
+    recovery_missing: "La clé de secours n'est plus sur ce PC : crée-en une nouvelle.",
+    recovery_used: "Cette clé de secours sert déjà à un autre compte.",
     avatar_unreadable: "Image illisible : choisis une photo JPEG ou PNG.",
     avatar_too_big: "Image trop lourde.",
   };

@@ -156,7 +156,7 @@
     } catch (e) { app.toast("err", t("Suppression impossible"), String(e)); }
   }
   const pct = (t: number) => (total > 0 ? (t / total) * 100 : 0);
-  const kindLabel = $derived(t(clip.kind === "auto" ? "Automatique" : clip.kind === "edit" ? "Montage" : clip.kind === "screenshot" ? "Capture" : clip.kind === "session" ? "Session" : clip.kind === "received" ? "Reçu d'un ami" : "Manuel"));
+  const kindLabel = $derived(t(clip.kind === "auto" ? "Automatique" : clip.kind === "edit" ? "Montage" : clip.kind === "screenshot" ? "Capture" : clip.kind === "session" ? "Session" : clip.kind === "received" ? "Reçu" : "Manuel"));
 </script>
 
 <svelte:window onkeydown={key} onpointerup={() => (dragging = false)} />
@@ -385,7 +385,8 @@
   .gchip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 99px; font-size: 12px; font-weight: 600; background: var(--panel-3); border: 1px solid var(--line-2); font-weight: 500; }
   .gchip i { display: none; }
   .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .facts div { display: flex; flex-direction: column; gap: 2px; padding: 9px 11px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
+  /* Contenu centré verticalement : une case sur deux lignes ne laisse plus sa voisine collée en haut */
+  .facts div { display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; padding: 9px 11px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
   .facts span { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
   .facts strong { font-size: 13.5px; font-weight: 600; }
   .discord { height: 48px; font-size: 15px; border-radius: 13px; }

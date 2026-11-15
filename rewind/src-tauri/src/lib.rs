@@ -1146,6 +1146,7 @@ struct ShareResult {
 #[tauri::command(async)]
 fn discord_context(view: String) {
     discord::set_ui(&view);
+    amis::set_focus(view == "friends");
 }
 
 #[tauri::command(async)]
@@ -1196,6 +1197,11 @@ fn friends_delete_identity(app: AppHandle) -> Res<()> {
 #[tauri::command(async)]
 fn friends_recovery_key() -> Res<String> {
     amis::recovery_key().map_err(err)
+}
+
+#[tauri::command(async)]
+fn friends_new_recovery(app: AppHandle) -> Res<String> {
+    amis::new_recovery(&app).map_err(err)
 }
 
 #[tauri::command(async)]
@@ -3002,6 +3008,7 @@ pub fn run() {
             friends_refresh,
             friends_delete_identity,
             friends_recovery_key,
+            friends_new_recovery,
             friends_save_recovery,
             friends_restore,
             friends_set_avatar,

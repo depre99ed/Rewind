@@ -1,6 +1,7 @@
 // Rewind : guichet du partage de clips entre amis (Cloudflare Worker).
 //
-// Aucun compte : chaque Rewind crée une paire de clés Ed25519 et signe ses demandes.
+// Aucun compte : chaque Rewind a une paire de clés Ed25519 (dérivée de l'identifiant du PC depuis la 0.4.0)
+// et signe ses demandes. Une seconde clé, « de secours », permet de rattacher le compte à un nouveau PC.
 // Le guichet vérifie la signature, l'amitié et les quotas, garde les clips dans R2 le temps
 // qu'ils soient relevés (supprimés dès réception, au plus tard 7 jours) et ne stocke rien d'autre
 // qu'un pseudo, un code ami, les liens d'amitié et la liste des envois.
@@ -18,7 +19,7 @@ export interface Env {
   CLIPS: R2Bucket;
 }
 
-type User = { id: string; pubkey: string; name: string; code: string; sent_day: string; sent_bytes: number; last_seen: number; avatar: number; show_online: number };
+type User = { id: string; pubkey: string; name: string; code: string; sent_day: string; sent_bytes: number; last_seen: number; avatar: number; show_online: number; recovery: string | null };
 
 const MB = 1024 * 1024;
 const LIMITS = {
@@ -113,7 +114,7 @@ async function authenticate(req: Request, env: Env, url: URL, body: ArrayBuffer 
     const real = body.byteLength ? await sha256hex(body) : EMPTY_SHA;
     if (real !== hash) throw new Fail(401, "body_hash");
   }
-  const user = await env.DB.prepare("SELECT id, pubkey, name, code, sent_day, sent_bytes, last_seen, avatar, show_online FROM users WHERE id = ?").bind(id).first<User>();
+  const user = await env.DB.prepare("SELECT id, pubkey, name, code, sent_day, sent_bytes, last_seen, avatar, show_online, recovery FROM users WHERE id = ?").bind(id).first<User>();
   if (!user) throw new Fail(401, "unknown_user");
   const message = `${req.method}\n${url.pathname}\n${time}\n${hash}`;
   if (!(await verify(user.pubkey, sig, message))) throw new Fail(401, "bad_signature");
@@ -143,8 +144,20 @@ async function register(req: Request, env: Env, body: any): Promise<Response> {
   if (Math.abs(now() - time) > LIMITS.clockSkewMs) throw new Fail(401, "clock");
   if (!(await verify(pubkey, String(body.proof ?? ""), `register\n${pubkey}\n${time}`))) throw new Fail(401, "bad_signature");
   const name = cleanName(body.name);
-  const existing = await env.DB.prepare("SELECT id, code, name FROM users WHERE pubkey = ?").bind(pubkey).first<User>();
-  if (existing) return json({ id: existing.id, code: existing.code, name: existing.name });
+  // Clé de secours proposée (facultative) : gardée seulement si le compte n'en a pas encore
+  const recovery = body.recovery === undefined || body.recovery === null ? null : String(body.recovery);
+  if (recovery !== null && (unb64Safe(recovery)?.length !== 32 || recovery === pubkey)) throw new Fail(400, "recovery_invalid");
+  const existing = await env.DB.prepare("SELECT id, code, name, avatar, show_online, recovery FROM users WHERE pubkey = ?").bind(pubkey).first<User>();
+  if (existing) {
+    // Même PC (ou même clé) : on redonne le même compte
+    let rec = existing.recovery;
+    if (!rec && recovery && !(await keyUsed(env, recovery))) {
+      await env.DB.prepare("UPDATE users SET recovery = ? WHERE id = ?").bind(recovery, existing.id).run();
+      rec = recovery;
+    }
+    return json(account(existing, rec));
+  }
+  if (recovery && (await keyUsed(env, recovery))) throw new Fail(409, "recovery_used");
 
   const ip = req.headers.get("cf-connecting-ip") ?? "?";
   const day = today();
@@ -156,15 +169,79 @@ async function register(req: Request, env: Env, body: any): Promise<Response> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = newCode();
     try {
-      await env.DB.prepare("INSERT INTO users (id, pubkey, name, code, created, last_seen) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(id, pubkey, name, code, now(), now())
+      await env.DB.prepare("INSERT INTO users (id, pubkey, name, code, created, last_seen, recovery) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(id, pubkey, name, code, now(), now(), recovery)
         .run();
-      return json({ id, code, name });
+      return json({ id, code, name, avatar: 0, show_online: true, recovery: recovery ?? "" });
     } catch (e) {
       if (!String(e).includes("UNIQUE")) throw e;
     }
   }
   throw new Fail(500, "code_collision");
+}
+
+function account(u: Pick<User, "id" | "code" | "name" | "avatar" | "show_online">, recovery: string | null) {
+  return { id: u.id, code: u.code, name: u.name, avatar: u.avatar ?? 0, show_online: !!(u.show_online ?? 1), recovery: recovery ?? "" };
+}
+
+/** Cette clé publique sert-elle déjà (clé de secours ou clé d'un PC) ? */
+async function keyUsed(env: Env, key: string): Promise<boolean> {
+  return !!(await env.DB.prepare("SELECT id FROM users WHERE recovery = ?1 OR pubkey = ?1").bind(key).first());
+}
+
+// ---------------------------------------------------------------------------
+// Clé du PC et clé de secours
+// ---------------------------------------------------------------------------
+
+/**
+ * Passage à la clé du PC (Rewind 0.4.0) : signé par l'ancienne clé, avec la preuve de la nouvelle.
+ * L'ancienne clé devient la clé de secours si le compte n'en a pas (les clés « RWK- » déjà notées restent valables).
+ */
+async function rekey(env: Env, me: User, body: any): Promise<Response> {
+  const pubkey = String(body.pubkey ?? "");
+  const time = Number(body.time ?? 0);
+  if (unb64Safe(pubkey)?.length !== 32) throw new Fail(400, "pubkey_invalid");
+  if (Math.abs(now() - time) > LIMITS.clockSkewMs) throw new Fail(401, "clock");
+  if (!(await verify(pubkey, String(body.proof ?? ""), `rekey\n${me.id}\n${time}`))) throw new Fail(401, "bad_signature");
+  if (pubkey === me.pubkey) return json(account(me, me.recovery));
+  if (await keyUsed(env, pubkey)) throw new Fail(409, "device_has_account");
+  const recovery = me.recovery ?? me.pubkey;
+  await env.DB.prepare("UPDATE users SET pubkey = ?, recovery = ? WHERE id = ?").bind(pubkey, recovery, me.id).run();
+  return json(account(me, recovery));
+}
+
+/** Nouvelle clé de secours (l'ancienne ne marche plus). */
+async function setRecovery(env: Env, me: User, body: any): Promise<Response> {
+  const recovery = String(body.recovery ?? "");
+  if (unb64Safe(recovery)?.length !== 32 || recovery === me.pubkey) throw new Fail(400, "recovery_invalid");
+  if (recovery !== me.recovery && (await keyUsed(env, recovery))) throw new Fail(409, "recovery_used");
+  await env.DB.prepare("UPDATE users SET recovery = ? WHERE id = ?").bind(recovery, me.id).run();
+  return json(account(me, recovery));
+}
+
+/**
+ * Restauration (Windows réinstallé, nouveau PC) : la clé de secours rattache le compte à la clé de ce PC.
+ * Deux preuves : celle de la clé de secours et celle du PC. Si ce PC avait son propre compte, il est remplacé.
+ */
+async function recover(env: Env, body: any): Promise<Response> {
+  const recovery = String(body.recovery ?? "");
+  const pubkey = String(body.pubkey ?? "");
+  const time = Number(body.time ?? 0);
+  if (unb64Safe(recovery)?.length !== 32 || unb64Safe(pubkey)?.length !== 32 || recovery === pubkey) throw new Fail(400, "recovery_invalid");
+  if (Math.abs(now() - time) > LIMITS.clockSkewMs) throw new Fail(401, "clock");
+  if (!(await verify(recovery, String(body.proof_recovery ?? ""), `recover\n${pubkey}\n${time}`))) throw new Fail(401, "bad_signature");
+  if (!(await verify(pubkey, String(body.proof_device ?? ""), `device\n${recovery}\n${time}`))) throw new Fail(401, "bad_signature");
+  // Clé de secours, ou ancienne clé d'un compte pas encore passé à la clé du PC (clé « RWK- » d'avant la 0.4.0)
+  const user = await env.DB.prepare("SELECT id, pubkey, name, code, avatar, show_online, recovery FROM users WHERE recovery = ?1 OR (pubkey = ?1 AND recovery IS NULL)")
+    .bind(recovery)
+    .first<User>();
+  if (!user) throw new Fail(404, "recovery_unknown");
+  if (user.pubkey !== pubkey) {
+    const other = await env.DB.prepare("SELECT id FROM users WHERE pubkey = ? AND id != ?").bind(pubkey, user.id).first<{ id: string }>();
+    if (other) await deleteUser(env, other.id);
+  }
+  await env.DB.prepare("UPDATE users SET pubkey = ?, recovery = ? WHERE id = ?").bind(pubkey, recovery, user.id).run();
+  return json(account(user, recovery));
 }
 
 function unb64Safe(text: string): Uint8Array | null {
@@ -303,7 +380,7 @@ async function sync(env: Env, me: User): Promise<Response> {
   }
   const used = me.sent_day === today() ? me.sent_bytes : 0;
   return json({
-    me: { id: me.id, name: me.name, code: me.code, avatar: me.avatar ?? 0, show_online: !!me.show_online },
+    me: account(me, me.recovery),
     friends,
     incoming,
     outgoing,
@@ -526,15 +603,19 @@ async function getAvatar(env: Env, me: User, id: string): Promise<Response> {
 
 /** « Supprimer mon identité » : tout ce qui concerne cet utilisateur disparaît. */
 async function deleteMe(env: Env, me: User): Promise<Response> {
-  const mine = (await env.DB.prepare("SELECT id FROM shares WHERE sender = ?").bind(me.id).all<{ id: string }>()).results;
+  await deleteUser(env, me.id);
+  return json({ ok: true });
+}
+
+async function deleteUser(env: Env, id: string) {
+  const mine = (await env.DB.prepare("SELECT id FROM shares WHERE sender = ?").bind(id).all<{ id: string }>()).results;
   for (const s of mine) await purge(env, s.id, false);
   await env.DB.batch([
-    env.DB.prepare("DELETE FROM recipients WHERE user_id = ?").bind(me.id),
-    env.DB.prepare("DELETE FROM friends WHERE a = ? OR b = ?").bind(me.id, me.id),
-    env.DB.prepare("DELETE FROM users WHERE id = ?").bind(me.id),
+    env.DB.prepare("DELETE FROM recipients WHERE user_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM friends WHERE a = ? OR b = ?").bind(id, id),
+    env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id),
   ]);
-  await env.CLIPS.delete(`avatars/${me.id}`);
-  return json({ ok: true });
+  await env.CLIPS.delete(`avatars/${id}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +638,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (body.byteLength > max) throw new Fail(413, "body_too_big");
   }
   if (m === "POST" && p === "/v1/register") return register(req, env, await readJson(body));
+  if (m === "POST" && p === "/v1/recover") return recover(env, await readJson(body));
 
   const me = await authenticate(req, env, url, body);
   const data = m === "PUT" ? {} : await readJson(body);
@@ -564,6 +646,8 @@ async function route(req: Request, env: Env): Promise<Response> {
 
   if (m === "GET" && p === "/v1/sync") return sync(env, me);
   if (m === "POST" && p === "/v1/me") return updateMe(env, me, data);
+  if (m === "POST" && p === "/v1/me/key") return rekey(env, me, data);
+  if (m === "POST" && p === "/v1/me/recovery") return setRecovery(env, me, data);
   if (m === "PUT" && p === "/v1/me/avatar") return setAvatar(env, me, body ?? new ArrayBuffer(0));
   if (m === "DELETE" && p === "/v1/me/avatar") return removeAvatar(env, me);
   const av = p.match(/^\/v1\/users\/([0-9a-f-]{36})\/avatar$/);

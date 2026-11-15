@@ -52,8 +52,9 @@ is saved, with your PC sound, your microphone and Discord.
 <td width="50%" valign="top">
 
 ### Edit and share
-- Editing Studio: projects, stacked tracks, animated text (10 fonts), images, GIFs, picture-in-picture video, blurred area
+- Editing Studio: projects, stacked tracks, animated text (16 fonts, including gothic ones), images, GIFs, picture-in-picture video, blurred area
 - Animated zoom, speed ramps, colors, freeze frames, several audio tracks, voice-over, keyframes
+- Effects: shake, flash, glitch, black and white, negative, fade to black, vignette, cinema bars; everything shows and plays live in the preview
 - Ready-made formats: 16:9, 9:16 or 1:1 (blurred background or cropped), 10 or 20 MB files
 - "Copy for Discord" compresses to the right size and puts the clip on the clipboard
 - Keyboard and mouse presses shown on the video, if you want them

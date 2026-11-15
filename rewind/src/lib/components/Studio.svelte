@@ -1,6 +1,6 @@
 <script lang="ts">
   // Studio v2 : disposition façon CapCut (médias à gauche, aperçu au centre, réglages à droite, pistes en bas).
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { Download, FolderOpen, Plus, Trash2, CloudCheck, ChevronDown, Film } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { studio, fmtTime } from "$lib/studio/store.svelte";
@@ -27,6 +27,39 @@
       studio.saveNow();
     };
   });
+  // Clips déplacés : le projet ouvert retrouve ses fichiers dès que la bibliothèque est là
+  $effect(() => {
+    void app.clips, studio.project.id, studio.loaded;
+    if (studio.loaded) untrack(() => studio.relink());
+  });
+
+  // Hauteur de la frise : se règle en tirant sa bordure du haut (gardée pour la prochaine fois)
+  const TLH_KEY = "rewind.studio.tlh";
+  let tlh = $state(readTlh());
+  function readTlh() {
+    try {
+      const v = Number(localStorage.getItem(TLH_KEY));
+      return v >= 180 && v <= 900 ? v : 270;
+    } catch {
+      return 270;
+    }
+  }
+  let sizing: { y0: number; h0: number } | null = null;
+  function sizeDown(e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    sizing = { y0: e.clientY, h0: tlh };
+  }
+  function sizeMove(e: PointerEvent) {
+    if (!sizing) return;
+    tlh = Math.round(Math.max(180, Math.min(window.innerHeight * 0.62, sizing.h0 - (e.clientY - sizing.y0))));
+  }
+  function sizeUp() {
+    if (!sizing) return;
+    sizing = null;
+    try { localStorage.setItem(TLH_KEY, String(tlh)); } catch {}
+  }
 
   async function openProjects() {
     projectsOpen = !projectsOpen;
@@ -73,7 +106,7 @@
 
 <svelte:window onkeydown={key} onmousedown={outside} />
 
-<section class="studio">
+<section class="studio" style="--tlh:{tlh}px">
   <header class="top">
     <button bind:this={menuBtn} class="btn small ghost proj" class:on={projectsOpen} onclick={openProjects} aria-expanded={projectsOpen}><FolderOpen size={15} />{t("Projets")}<ChevronDown size={13} /></button>
     <input class="title" value={P.name} onchange={(e) => studio.rename(e.currentTarget.value.trim())} placeholder={t("Nom du montage")} aria-label={t("Nom du montage")} />
@@ -85,7 +118,7 @@
     <button class="btn primary exp" onclick={() => (exportOpen = true)} disabled={!P.pieces.length && !P.tracks.length}><Download size={16} />{t("Exporter")}</button>
 
     {#if projectsOpen}
-      <div class="projects glass" bind:this={menuEl}>
+      <div class="projects" bind:this={menuEl}>
         <button class="newp" onclick={() => { studio.create(); projectsOpen = false; }}><Plus size={15} />{t("Nouveau projet")}</button>
         <div class="plist">
           {#each studio.projects as pr (pr.id)}
@@ -111,6 +144,7 @@
   </div>
 
   <div class="bottom">
+    <div class="sizer" onpointerdown={sizeDown} onpointermove={sizeMove} onpointerup={sizeUp} onpointercancel={sizeUp} ondblclick={() => { tlh = 270; sizeUp(); }} role="separator" aria-orientation="horizontal" aria-label={t("Agrandir ou réduire la frise")} title={t("Agrandir ou réduire la frise")}></div>
     <Timeline />
   </div>
 </section>
@@ -120,9 +154,10 @@
 {/if}
 
 <style>
-  .studio { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) 270px; grid-template-columns: minmax(0, 1fr); background: var(--bg); }
+  .studio { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) var(--tlh, 270px); grid-template-columns: minmax(0, 1fr); background: var(--bg); }
   .studio > * { min-width: 0; }
-  .top { position: relative; display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--bg-2); }
+  /* z-index : la liste des projets passe au-dessus des colonnes du Studio */
+  .top { position: relative; z-index: 20; display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--bg-2); }
   .proj.on { color: var(--text); background: var(--panel-3); }
   .title { flex: 0 1 320px; min-width: 80px; height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid transparent; background: transparent; outline: none; font-weight: 600; font-size: 14px; color: var(--text); user-select: text; transition: border-color var(--dur), background var(--dur); }
   .title:hover { border-color: var(--line); }
@@ -133,9 +168,13 @@
   .exp { height: 34px; padding: 0 16px; }
   .work { display: grid; grid-template-columns: 300px minmax(0, 1fr) 290px; min-height: 0; }
   @media (max-width: 1280px) { .work { grid-template-columns: 270px minmax(0, 1fr) 260px; } }
-  .bottom { min-height: 0; }
-  /* Liste des projets : flotte au-dessus du contenu */
-  .projects { position: absolute; left: 12px; top: calc(100% + 6px); z-index: 40; width: 340px; max-height: 420px; display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 14px; animation: pin 180ms var(--ease); }
+  .bottom { position: relative; min-height: 0; }
+  /* Poignée invisible sur la bordure du haut de la frise : un filet clair apparaît au survol */
+  .sizer { position: absolute; left: 0; right: 0; top: -4px; height: 8px; z-index: 10; cursor: ns-resize; }
+  .sizer::after { content: ""; position: absolute; left: 0; right: 0; top: 3px; height: 2px; background: var(--text-3); opacity: 0; transition: opacity var(--dur) var(--ease); }
+  .sizer:hover::after, .sizer:active::after { opacity: 0.8; }
+  /* Liste des projets : surface pleine (lisible au-dessus de n'importe quoi), filet fin et ombre */
+  .projects { position: absolute; left: 12px; top: calc(100% + 6px); z-index: 40; width: 340px; max-height: 420px; display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line-2); box-shadow: var(--shadow); animation: pin 180ms var(--ease); }
   @keyframes pin { from { opacity: 0; transform: translateY(-4px); } }
   @media (prefers-reduced-motion: reduce) { .projects { animation: none; } }
   .projects > * { position: relative; z-index: 2; }

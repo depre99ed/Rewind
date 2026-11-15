@@ -1,8 +1,8 @@
 <script lang="ts">
   // Un calque dans l'aperçu, placé avec la même formule que l'export (layerState de model.ts).
   import { fileUrl } from "$lib/api";
-  import { layerState, type Layer } from "$lib/studio/model";
-  import { measureText, drawText } from "$lib/studio/render";
+  import { isFilterFx, layerState, type Layer } from "$lib/studio/model";
+  import { measureText, drawText, drawFx } from "$lib/studio/render";
 
   let { layer, local, fw, fh, onpick }: { layer: Layer; local: number; fw: number; fh: number; onpick?: (e: PointerEvent) => void } = $props();
 
@@ -11,6 +11,7 @@
   const drawScale = $derived(Math.round(st.scale * 1000) / 1000);
   const reveal = $derived(st.reveal);
   let canvas: HTMLCanvasElement | undefined = $state();
+  let fxCanvas: HTMLCanvasElement | undefined = $state();
   let box = $state({ w: 0, h: 0 });
 
   // Texte : dessiné sur canvas avec la même fonction que l'image envoyée à l'export
@@ -33,19 +34,36 @@
     if (layer.kind === "text") document.fonts?.ready.then(() => fontsReady++);
   });
 
+  // Effet « voile » (flash, noir, vignette, bandes) : même dessin que l'image envoyée à l'export
+  $effect(() => {
+    if (layer.kind !== "fx" || !fxCanvas) return;
+    const dpr = Math.min(1.5, window.devicePixelRatio || 1);
+    const w = Math.max(2, Math.round(fw * dpr)), h = Math.max(2, Math.round(fh * dpr));
+    void layer.fx, layer.strength;
+    fxCanvas.width = w;
+    fxCanvas.height = h;
+    const ctx = fxCanvas.getContext("2d");
+    if (ctx) drawFx(ctx, layer, w, h);
+  });
+
+  const isFx = $derived(layer.kind === "fx");
   const size = $derived.by(() => {
     if (layer.kind === "text") return box;
     if (layer.kind === "blur") return { w: layer.w * fw, h: layer.h * fh };
+    if (layer.kind === "fx") return { w: fw, h: fh };
     const w = st.scale * fw;
     return { w, h: w * (layer.ih / Math.max(1, layer.iw)) };
   });
+  // Un effet est toujours plein cadre, immobile
+  const pos = $derived(isFx ? { x: 0.5, y: 0.5, rot: 0 } : { x: st.x, y: st.y, rot: st.rot });
 </script>
 
 <div
   class="layer {layer.kind}"
-  style="left:{st.x * fw - size.w / 2}px;top:{st.y * fh - size.h / 2}px;width:{size.w}px;height:{size.h}px;opacity:{st.opacity};transform:rotate({st.rot}deg);--blur:{layer.kind === 'blur' ? (layer.strength * fh) / 1080 : 0}px"
+  class:fx={isFx}
+  style="left:{pos.x * fw - size.w / 2}px;top:{pos.y * fh - size.h / 2}px;width:{size.w}px;height:{size.h}px;opacity:{st.opacity};transform:rotate({pos.rot}deg)"
   data-layer={layer.uid}
-  onpointerdown={onpick}
+  onpointerdown={isFx ? undefined : onpick}
   role="presentation"
 >
   {#if layer.kind === "text"}
@@ -54,16 +72,17 @@
     <img src={fileUrl(layer.path)} alt="" draggable="false" />
   {:else if layer.kind === "video"}
     <!-- svelte-ignore a11y_media_has_caption -->
-    <video src={fileUrl(layer.path)} data-pip={layer.uid} preload="auto" playsinline></video>
+    <video src={fileUrl(layer.path)} data-pip={layer.uid} preload="auto" playsinline crossorigin="anonymous"></video>
   {:else if layer.kind === "blur"}
-    <div class="blurbox" class:pixel={layer.mode === "pixel"}></div>
+    <!-- Redessinée à chaque image par Preview.svelte (drawBlurs) avec l'image qui est dessous -->
+    <canvas class="blurcv" data-blur={layer.uid}></canvas>
+  {:else if layer.kind === "fx" && !isFilterFx(layer)}
+    <canvas class="fxcv" bind:this={fxCanvas}></canvas>
   {/if}
 </div>
 
 <style>
   .layer { position: absolute; transform-origin: 50% 50%; pointer-events: auto; cursor: move; }
+  .layer.fx { pointer-events: none; }
   .layer canvas, .layer img, .layer video { display: block; width: 100%; height: 100%; object-fit: fill; user-select: none; -webkit-user-drag: none; }
-  .blurbox { width: 100%; height: 100%; backdrop-filter: blur(var(--blur)); -webkit-backdrop-filter: blur(var(--blur)); }
-  /* Pixelisé : l'aperçu montre un flou plus une grille (l'export pixelise vraiment) */
-  .blurbox.pixel { backdrop-filter: blur(calc(var(--blur) * 0.6)) saturate(1.1); background-image: linear-gradient(rgba(0,0,0,.18) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,.18) 1px, transparent 1px); background-size: var(--blur) var(--blur); }
 </style>

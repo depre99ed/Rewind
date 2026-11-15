@@ -491,6 +491,12 @@ pub fn friendly_app(exe: &str) -> String {
         ("brave.exe", "Brave"),
         ("spotify.exe", "Spotify"),
         ("explorer.exe", "Bureau"),
+        // Menu Démarrer, recherche, clavier tactile, écran de verrouillage : c'est encore le bureau
+        ("searchhost.exe", "Bureau"),
+        ("startmenuexperiencehost.exe", "Bureau"),
+        ("shellexperiencehost.exe", "Bureau"),
+        ("textinputhost.exe", "Bureau"),
+        ("lockapp.exe", "Bureau"),
         ("code.exe", "VS Code"),
         ("obs64.exe", "OBS"),
         ("steamwebhelper.exe", "Steam"),
@@ -522,6 +528,9 @@ mod tests {
         assert!(!is_game("MonJeuIndie.exe", false), "appli inconnue en fenêtre : non");
         assert!(!is_game("chrome.exe", true), "vidéo plein écran dans le navigateur : non");
         assert!(!is_game("explorer.exe", true), "bureau : non");
+        // Recherche / menu Démarrer : nommés « Bureau », pas « SearchHost »
+        assert_eq!(friendly_app("SearchHost.exe"), "Bureau");
+        assert_eq!(friendly_app("StartMenuExperienceHost.exe"), "Bureau");
         assert!(!is_game("rewind.exe", true), "Rewind lui-même : non");
     }
 

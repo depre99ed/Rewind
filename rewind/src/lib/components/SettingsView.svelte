@@ -2,7 +2,7 @@
   import { t } from "$lib/i18n.svelte";
   import { onMount } from "svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
-  import { Video, AudioLines, Keyboard, HardDrive, Share2, Palette, Power, Stethoscope, Plus, Trash2, FolderOpen, MonitorUp, Layers } from "@lucide/svelte";
+  import { Video, AudioLines, Keyboard, HardDrive, Share2, Palette, Power, Stethoscope, Plus, Trash2, FolderOpen, MonitorUp, Layers, Bell } from "@lucide/svelte";
   import KeysOverlay from "./KeysOverlay.svelte";
   import type { KeysPreset } from "$lib/studio/render";
 
@@ -41,15 +41,17 @@
   });
 
   const s = $derived(app.settings!);
+  // Rangement : ce qu'on filme, ce qu'on garde, ce qu'on entend, comment on déclenche, ce qui s'affiche, le reste
   const sections = [
     ["video", "Enregistrement", Video],
+    ["clips", "Clips et stockage", HardDrive],
     ["audio", "Audio", AudioLines],
     ["keys", "Raccourcis", Keyboard],
+    ["notif", "Notifications", Bell],
     ["overlay", "Superposition", Layers],
-    ["storage", "Stockage", HardDrive],
     ["share", "Partage", Share2],
     ["look", "Apparence", Palette],
-    ["general", "Démarrage", Power],
+    ["general", "Système", Power],
     ["diag", "Diagnostic", Stethoscope],
   ] as const;
   const accents = ["#c8f031", "#ff5d5d", "#ff8a3d", "#ffc53d", "#3ddc97", "#38bdf8", "#8b8cff", "#f472b6", "#eef0f4"];
@@ -199,6 +201,9 @@
               </div>
             </div>
 
+          {:else if section === "clips"}
+            <h2>{t("Clips et stockage")}</h2>
+            <p class="lead muted">{t("La durée de chaque clip, ce que Rewind garde en mémoire, et où les clips sont rangés.")}</p>
             <h3>{t("Durées")}</h3>
             <div class="group">
               <div class="item">
@@ -214,6 +219,18 @@
                 <input type="range" min="30" max="1800" step="30" value={s.buffer_seconds} oninput={(e) => app.patch((x) => (x.buffer_seconds = +e.currentTarget.value))} />
               </div>
             </div>
+            <h3>{t("Rangement")}</h3>
+            <div class="group">
+              <div class="item">
+                <div class="lbl"><strong>{t("Dossier des clips")}</strong><span class="mono path">{s.clip_folder}</span></div>
+                <div class="inline"><button class="btn" onclick={chooseFolder}>{t("Changer")}</button><button class="btn icon" onclick={() => api.openFolder(s.clip_folder)} aria-label={t("Ouvrir")}><FolderOpen size={15} /></button></div>
+              </div>
+              <div class="item">
+                <div class="lbl"><strong>{t("Un sous-dossier par jeu")}</strong><span>{t("Ex. Rewind\\Counter-Strike 2\\…")}</span></div>
+                <span class="switch"><input type="checkbox" checked={s.folder_per_game} onchange={(e) => app.patch((x) => (x.folder_per_game = e.currentTarget.checked))} /><span></span></span>
+              </div>
+            </div>
+            <p class="faint note">{t("Rien n'est jamais supprimé définitivement : la suppression envoie à la Corbeille de Windows.")}</p>
           {:else if section === "audio"}
             <h2>{t("Audio")}</h2>
             <p class="lead muted">{t("Chaque source est enregistrée sur sa propre piste en plus du mixage : tu peux couper un pote ou ton micro au montage.")}</p>
@@ -328,15 +345,10 @@
                 <span class="switch"><input type="checkbox" checked={s.voice_command} onchange={(e) => app.patch((x) => (x.voice_command = e.currentTarget.checked))} /><span></span></span>
               </div>
             </div>
-            <h3>{t("Au lancement d'un jeu")}</h3>
-            <div class="group">
-              <div class="item"><div class="lbl"><strong>{t("Bandeau des raccourcis")}</strong><span>{t("Pendant 6 s, le jeu reconnu et tes raccourcis s'affichent dans un coin (une fois par lancement).")}</span></div><span class="switch"><input type="checkbox" checked={s.welcome_banner} onchange={(e) => app.patch((x) => (x.welcome_banner = e.currentTarget.checked))} /><span></span></span></div>
-            </div>
-            <div class="tip">
-              <MonitorUp size={18} />
-              <div><strong>{t("Tu ne vois pas les notifications en jeu ?")}</strong><span>{t("Mets le jeu en « Plein écran fenêtré » (CS2 : Paramètres › Vidéo › Mode d'affichage). En plein écran exclusif, Windows ne laisse rien s'afficher par-dessus — l'enregistrement, lui, marche dans les deux cas.")}</span></div>
-            </div>
-            <h3>{t("Confirmation")}</h3>
+          {:else if section === "notif"}
+            <h2>{t("Notifications")}</h2>
+            <p class="lead muted">{t("Ce que Rewind te montre ou te fait entendre pendant que tu joues.")}</p>
+            <h3>{t("Quand un clip est gardé")}</h3>
             <div class="group">
               <div class="item"><div class="lbl"><strong>{t("Son quand un clip est gardé")}</strong></div><span class="switch"><input type="checkbox" checked={s.sound_on_clip} onchange={(e) => app.patch((x) => (x.sound_on_clip = e.currentTarget.checked))} /><span></span></span></div>
               <div class="item"><div class="lbl"><strong>{t("Notification à l'écran")}</strong><span>{t("Mini-bandeau animé quand un clip est gardé. Ne prend jamais la main sur le jeu (pas visible en plein écran exclusif).")}</span></div><span class="switch"><input type="checkbox" checked={s.notify_overlay} onchange={(e) => app.patch((x) => (x.notify_overlay = e.currentTarget.checked))} /><span></span></span></div>
@@ -349,19 +361,14 @@
               {/if}
               <div class="item"><div class="lbl"><strong>{t("Volume du son")} : {s.sound_volume} %</strong></div><input type="range" min="5" max="100" step="5" value={s.sound_volume} oninput={(e) => app.patch((x) => (x.sound_volume = +e.currentTarget.value))} /></div>
             </div>
-          {:else if section === "storage"}
-            <h2>{t("Stockage")}</h2>
+            <h3>{t("Au lancement d'un jeu")}</h3>
             <div class="group">
-              <div class="item">
-                <div class="lbl"><strong>{t("Dossier des clips")}</strong><span class="mono path">{s.clip_folder}</span></div>
-                <div class="inline"><button class="btn" onclick={chooseFolder}>{t("Changer")}</button><button class="btn icon" onclick={() => api.openFolder(s.clip_folder)} aria-label={t("Ouvrir")}><FolderOpen size={15} /></button></div>
-              </div>
-              <div class="item">
-                <div class="lbl"><strong>{t("Un sous-dossier par jeu")}</strong><span>{t("Ex. Rewind\\Counter-Strike 2\\…")}</span></div>
-                <span class="switch"><input type="checkbox" checked={s.folder_per_game} onchange={(e) => app.patch((x) => (x.folder_per_game = e.currentTarget.checked))} /><span></span></span>
-              </div>
+              <div class="item"><div class="lbl"><strong>{t("Bandeau des raccourcis")}</strong><span>{t("Pendant 6 s, le jeu reconnu et tes raccourcis s'affichent dans un coin (une fois par lancement).")}</span></div><span class="switch"><input type="checkbox" checked={s.welcome_banner} onchange={(e) => app.patch((x) => (x.welcome_banner = e.currentTarget.checked))} /><span></span></span></div>
             </div>
-            <p class="faint note">{t("Rien n'est jamais supprimé définitivement : la suppression envoie à la Corbeille de Windows.")}</p>
+            <div class="tip">
+              <MonitorUp size={18} />
+              <div><strong>{t("Tu ne vois pas les notifications en jeu ?")}</strong><span>{t("Mets le jeu en « Plein écran fenêtré » (CS2 : Paramètres › Vidéo › Mode d'affichage). En plein écran exclusif, Windows ne laisse rien s'afficher par-dessus — l'enregistrement, lui, marche dans les deux cas.")}</span></div>
+            </div>
           {:else if section === "share"}
             <h2>{t("Partage")}</h2>
             <p class="lead muted">{t("Le plus simple : « Copier pour Discord » dans un clip, puis Ctrl+V dans n'importe quelle conversation. Pour envoyer en un clic sur un salon, ajoute son webhook (Paramètres du salon → Intégrations → Webhooks → Copier l'URL).")}</p>
@@ -403,13 +410,6 @@
                 <span class="switch"><input type="checkbox" checked={s.animations} onchange={(e) => app.patch((x) => (x.animations = e.currentTarget.checked))} /><span></span></span>
               </div>
             </div>
-          {:else if section === "general"}
-            <h2>{t("Démarrage")}</h2>
-            <div class="group">
-              <div class="item"><div class="lbl"><strong>{t("Lancer avec Windows")}</strong><span>{t("Rewind démarre discrètement dans la barre des tâches.")}</span></div><span class="switch"><input type="checkbox" checked={s.launch_at_startup} onchange={(e) => app.patch((x) => (x.launch_at_startup = e.currentTarget.checked))} /><span></span></span></div>
-              <div class="item"><div class="lbl"><strong>{t("Démarrer réduit")}</strong><span>{t("Ne pas ouvrir la fenêtre au lancement.")}</span></div><span class="switch"><input type="checkbox" checked={s.start_minimized} onchange={(e) => app.patch((x) => (x.start_minimized = e.currentTarget.checked))} /><span></span></span></div>
-              <div class="item"><div class="lbl"><strong>{t("Fermer = réduire")}</strong><span>{t("La croix cache la fenêtre ; l'enregistrement continue. Pour quitter : clic droit sur l'icône près de l'horloge.")}</span></div><span class="switch"><input type="checkbox" checked={s.close_to_tray} onchange={(e) => app.patch((x) => (x.close_to_tray = e.currentTarget.checked))} /><span></span></span></div>
-            </div>
             <h3>{t("Langue")}</h3>
             <div class="group">
               <div class="item">
@@ -420,6 +420,14 @@
                   <button class:on={s.language === "en"} onclick={() => app.patch((x) => (x.language = "en"))}>English</button>
                 </div>
               </div>
+            </div>
+          {:else if section === "general"}
+            <h2>{t("Système")}</h2>
+            <h3>{t("Démarrage")}</h3>
+            <div class="group">
+              <div class="item"><div class="lbl"><strong>{t("Lancer avec Windows")}</strong><span>{t("Rewind démarre discrètement dans la barre des tâches.")}</span></div><span class="switch"><input type="checkbox" checked={s.launch_at_startup} onchange={(e) => app.patch((x) => (x.launch_at_startup = e.currentTarget.checked))} /><span></span></span></div>
+              <div class="item"><div class="lbl"><strong>{t("Démarrer réduit")}</strong><span>{t("Ne pas ouvrir la fenêtre au lancement.")}</span></div><span class="switch"><input type="checkbox" checked={s.start_minimized} onchange={(e) => app.patch((x) => (x.start_minimized = e.currentTarget.checked))} /><span></span></span></div>
+              <div class="item"><div class="lbl"><strong>{t("Fermer = réduire")}</strong><span>{t("La croix cache la fenêtre ; l'enregistrement continue. Pour quitter : clic droit sur l'icône près de l'horloge.")}</span></div><span class="switch"><input type="checkbox" checked={s.close_to_tray} onchange={(e) => app.patch((x) => (x.close_to_tray = e.currentTarget.checked))} /><span></span></span></div>
             </div>
             <h3>{t("Mises à jour")}</h3>
             <div class="group">

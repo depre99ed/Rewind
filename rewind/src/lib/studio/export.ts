@@ -5,9 +5,9 @@ import { api } from "../api";
 import { t } from "../i18n.svelte";
 import {
   type Layer, type Project, type AudioItem,
-  clampSpeed, fadeWindows, frameSize, kfValue, layerState, layout, opacityAnimated, projectTotal, smooth, speedSegments, typeDur,
+  clampSpeed, fadeWindows, frameSize, isFilterFx, kfValue, layerState, layout, opacityAnimated, projectTotal, smooth, speedSegments, typeDur,
 } from "./model";
-import { textPng, keysPngs, keysSize, layoutLabels, presetOf } from "./render";
+import { textPng, keysPngs, keysSize, layoutLabels, presetOf, fxPng } from "./render";
 import { app } from "../state.svelte";
 import { loadFonts } from "./fonts";
 import { media } from "./store.svelte";
@@ -137,6 +137,7 @@ export async function compile(p: Project, o: ExportOptions, onStep: (s: string) 
 
   // ---- Calques : de la piste du bas à celle du haut ----
   const layers: any[] = [];
+  const effects: { kind: string; at: number; dur: number; strength: number }[] = [];
   const order = [...p.tracks].reverse();
   let done = 0;
   const count = order.reduce((a, tr) => a + (tr.kind === "layer" && !tr.hidden ? tr.items.length : 0), 0);
@@ -147,9 +148,15 @@ export async function compile(p: Project, o: ExportOptions, onStep: (s: string) 
       const { fin, fout } = fadeWindows(l);
       const opKf = opacityAnimated(l) ? smoothCurve(l.kf, "opacity", l.at) : [];
       const base = { at: l.at, dur: l.dur, opacity: opacityAnimated(l) ? 1 : l.opacity, op_kf: opKf, fade_in: fin, fade_out: fout, windows: [] as [number, number][] };
+      if (l.kind === "fx") {
+        // Filtre sur toute l'image : appliqué par le moteur après les calques ; voile : image plein cadre
+        if (isFilterFx(l)) effects.push({ kind: l.fx, at: l.at, dur: l.dur, strength: l.strength });
+        else layers.push({ ...base, kind: "image", path: await png(fxPng(l, W, H)), w: W, h: H, kf: [{ t: l.at, x: W / 2, y: H / 2, s: 1, r: 0 }] });
+        continue;
+      }
       if (l.kind === "blur") {
         const kf = layerKfs(l, W, H, 1);
-        layers.push({ ...base, kind: "blur", path: "", w: l.w * W, h: l.h * H, kf, mode: l.mode, strength: l.strength * (H / 1080), fade_in: 0, fade_out: 0 });
+        layers.push({ ...base, kind: "blur", path: "", w: l.w * W, h: l.h * H, kf, mode: l.mode, strength: l.strength * (H / 1080) });
         continue;
       }
       const maxScale = maxScaleOf(l);
@@ -210,7 +217,7 @@ export async function compile(p: Project, o: ExportOptions, onStep: (s: string) 
 
   return {
     title: o.title, w: W, h: H, fit: p.fit, short: o.short, fps: o.fps, max_mb: o.maxMb, total,
-    pieces, zoom, layers, audio, keys,
+    pieces, zoom, layers, audio, keys, effects,
   };
 }
 

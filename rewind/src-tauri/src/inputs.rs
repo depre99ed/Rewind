@@ -459,6 +459,8 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 static THREAD: AtomicU32 = AtomicU32::new(0);
 /// Vrai dès que la fenêtre reçoit des entrées (rapport de diagnostic).
 pub static ALIVE: AtomicBool = AtomicBool::new(false);
+/// Appuis reçus par Raw Input pendant qu'un jeu est au premier plan (diagnostic).
+static RAW_IN_GAME: AtomicU32 = AtomicU32::new(0);
 
 fn devices(hwnd: HWND) -> [RAWINPUTDEVICE; 2] {
     [
@@ -517,6 +519,9 @@ fn on_keyboard(make: u16, flags: u32, vkey: u16) {
     });
     if let Some((qwerty, _, _)) = KEYS.iter().find(|(_, s, _)| *s != 0 && *s == code) {
         record(*qwerty, !up);
+    }
+    if !up && !repeat && GAME_PID.load(Ordering::Relaxed) != 0 && game_in_front() {
+        RAW_IN_GAME.fetch_add(1, Ordering::Relaxed);
     }
     if !up && !repeat {
         press(Main::Key(code));
@@ -623,6 +628,89 @@ pub fn start() {
     });
     if spawned.is_err() {
         RUNNING.store(false, Ordering::SeqCst);
+        return;
+    }
+    let _ = std::thread::Builder::new().name("entrees-jeu".into()).spawn(poll_loop);
+}
+
+/// Touche Windows (VK) d'une position physique, pour lire son état réel.
+fn vk_of(main: Main, layout: isize) -> i32 {
+    match main {
+        Main::Mouse(3) => 0x04,
+        Main::Mouse(4) => 0x05,
+        Main::Mouse(5) => 0x06,
+        Main::Mouse(_) => 0,
+        Main::Key(0xE11D) => 0x13,
+        Main::Key(0xE037) => 0x2C,
+        Main::Key(0x45) => 0x90,
+        Main::Key(sc) => unsafe { MapVirtualKeyExW(sc as u32, MAPVK_VSC_TO_VK_EX, layout as _) as i32 },
+    }
+}
+
+/// Secours pendant le jeu : certains jeux (CS2) empêchent Windows de transmettre les touches aux autres
+/// programmes (Raw Input muet : F8 sans effet en partie, touches à l'écran vides, alors que tout marche
+/// sur le bureau). Quand un jeu est au premier plan, on lit donc l'état réel des touches toutes les 8 ms
+/// (GetAsyncKeyState). Les doublons avec Raw Input sont filtrés (anti-rebond des raccourcis, état tenu).
+fn poll_loop() {
+    let mut hot_prev: HashMap<i32, bool> = HashMap::new();
+    let mut key_prev: HashMap<u16, bool> = HashMap::new();
+    let mut noted = false;
+    // Diagnostic : après 2 min de jeu au premier plan, une ligne dit si des touches ont été vues
+    // (lues directement / reçues par Raw Input) : le journal dira où ça bloque chez l'utilisateur.
+    let (mut front_ms, mut seen_poll, mut reported) = (0u64, 0u32, false);
+    loop {
+        let active = RUNNING.load(Ordering::Relaxed) && game_in_front();
+        std::thread::sleep(std::time::Duration::from_millis(if active { 8 } else { 250 }));
+        if active && !reported {
+            front_ms += 8;
+            if front_ms >= 120_000 {
+                reported = true;
+                log::info!(
+                    "entrées pendant le jeu : {seen_poll} appuis lus directement, {} reçus par Raw Input",
+                    RAW_IN_GAME.load(Ordering::Relaxed)
+                );
+            }
+        }
+        if !active {
+            hot_prev.clear();
+            key_prev.clear();
+            continue;
+        }
+        let layout = GAME_LAYOUT.load(Ordering::Relaxed);
+        let down = |vk: i32| vk != 0 && unsafe { GetAsyncKeyState(vk) } < 0;
+        // Raccourcis : un passage « relâché → appuyé » = un appui
+        let mains: Vec<Main> = BINDINGS.lock().iter().map(|b| b.main).collect();
+        for main in mains {
+            let vk = vk_of(main, layout);
+            let now_down = down(vk);
+            let was = hot_prev.insert(vk, now_down).unwrap_or(true);
+            if now_down && !was {
+                seen_poll += 1;
+                if !noted {
+                    noted = true;
+                    log::info!("entrées : touches lues directement pendant le jeu (secours actif)");
+                }
+                press(main);
+            }
+        }
+        // Touches à l'écran (Maj gauche / droite = une seule touche)
+        if OVERLAY.load(Ordering::Relaxed) {
+            let mut state: HashMap<u16, bool> = HashMap::new();
+            for (qwerty, sc, _) in KEYS {
+                let vk = if *sc == 0 { *qwerty as i32 } else { vk_of(Main::Key(*sc), layout) };
+                let d = down(vk);
+                state.entry(*qwerty).and_modify(|x| *x |= d).or_insert(d);
+            }
+            for (k, d) in state {
+                let before = key_prev.insert(k, d);
+                if before.is_some() && before != Some(d) && d {
+                    seen_poll += 1;
+                }
+                if before != Some(d) {
+                    record(k, d);
+                }
+            }
+        }
     }
 }
 

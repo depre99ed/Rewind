@@ -891,6 +891,12 @@ async fn media_waveform(path: String) -> Res<media::Waveform> {
     tauri::async_runtime::spawn_blocking(move || media::waveform(std::path::Path::new(&path))).await.map_err(err)?.map_err(err)
 }
 
+/// Pistes son séparées d'un clip, en fichiers à part (aperçu du Studio).
+#[tauri::command]
+async fn media_stems(path: String) -> Res<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(move || media::stems(std::path::Path::new(&path))).await.map_err(err)?.map_err(err)
+}
+
 #[tauri::command]
 async fn studio_export(app: AppHandle, pieces: Vec<editor::Piece>, options: editor::StudioOptions, game: String) -> Res<Clip> {
     tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Clip> {
@@ -1605,6 +1611,16 @@ pub fn render_test(spec: PathBuf, out: PathBuf) -> i32 {
             return 2;
         }
     };
+    // Pistes séparées pour l'aperçu (media_stems) : vérifiées sur les mêmes fichiers si demandé
+    if std::env::var_os("REWIND_TEST_STEMS").is_some() {
+        for p in &spec.pieces {
+            let t = std::time::Instant::now();
+            match media::stems(std::path::Path::new(&p.path)) {
+                Ok(list) => println!("pistes séparées ({} ms) : {list:?}", t.elapsed().as_millis()),
+                Err(e) => println!("ÉCHEC pistes séparées : {e:#}"),
+            }
+        }
+    }
     let started = std::time::Instant::now();
     match render::render(&spec, &out, &|p| {
         if (p * 100.0) as u32 % 25 == 0 {
@@ -2540,6 +2556,7 @@ pub fn run() {
             media_info,
             media_filmstrip,
             media_waveform,
+            media_stems,
             edit_trim,
             edit_merge,
             edit_vertical,

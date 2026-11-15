@@ -165,6 +165,46 @@ pub fn filmstrip(path: &Path) -> Result<Filmstrip> {
     Ok(strip)
 }
 
+/// Pistes son séparées d'un clip (sans la piste 0 de mixage), chacune dans son propre fichier .m4a :
+/// l'aperçu du Studio les joue à part pour qu'un réglage « Micro 0 % » s'entende tout de suite.
+/// Copie directe du son (aucun ré-encodage) : quasi instantané, gardé en cache.
+pub fn stems(path: &Path) -> Result<Vec<String>> {
+    let info = info(path)?;
+    if info.tracks.len() < 2 {
+        return Ok(Vec::new());
+    }
+    let dir = cache_dir("stems");
+    let key = cache_key(path);
+    let tools = ffmpeg::tools()?;
+    let mut out = Vec::new();
+    for k in 1..info.tracks.len() {
+        let file = dir.join(format!("{key}_{k}.m4a"));
+        if !file.is_file() {
+            let tmp = dir.join(format!("{key}_{k}.tmp.m4a"));
+            let run = |copy: bool| {
+                let mut cmd = util::command(&tools.ffmpeg);
+                cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(path);
+                cmd.args(["-vn", "-map", &format!("0:a:{k}")]);
+                if copy {
+                    cmd.args(["-c:a", "copy"]);
+                } else {
+                    cmd.args(["-c:a", "aac", "-b:a", "160k"]);
+                }
+                cmd.arg(&tmp).stdin(Stdio::null()).output()
+            };
+            // Copie directe ; si le codec ne rentre pas dans un .m4a, ré-encodage en AAC
+            let ok = run(true).map(|o| o.status.success()).unwrap_or(false) && tmp.is_file();
+            if !ok {
+                ffmpeg::checked(run(false)?, "Pistes son")?;
+            }
+            std::fs::rename(&tmp, &file)?;
+        }
+        out.push(file.to_string_lossy().to_string());
+    }
+    prune(&dir, 300);
+    Ok(out)
+}
+
 /// Forme d'onde de la première piste son (50 valeurs par seconde).
 pub fn waveform(path: &Path) -> Result<Waveform> {
     let dir = cache_dir("wave");

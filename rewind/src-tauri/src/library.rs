@@ -59,6 +59,15 @@ pub fn new_id() -> String {
     format!("{:x}{:03x}", (util::now() * 1000.0) as u64, COUNTER.fetch_add(1, Ordering::Relaxed) % 4096)
 }
 
+/// `c` est-il le clip `path` qui a changé de dossier ? Son ancien fichier n'existe plus, même nom, même taille.
+fn moved_here(c: &Clip, path: &Path, size: u64) -> bool {
+    let same_name = Path::new(&c.path)
+        .file_name()
+        .zip(path.file_name())
+        .is_some_and(|(a, b)| a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()));
+    same_name && (c.size == 0 || size == 0 || c.size == size) && !Path::new(&c.path).is_file()
+}
+
 impl Library {
     pub fn load(clip_folder: &Path) -> Self {
         let text = std::fs::read_to_string(index_path()).ok();
@@ -72,9 +81,11 @@ impl Library {
             }
             None => Vec::new(),
         };
-        clips.retain(|c| Path::new(&c.path).is_file());
         let mut lib = Self { clips };
+        // D'abord retrouver les clips déplacés (dossier changé, fichiers copiés ailleurs) : ils gardent leur
+        // identifiant, leurs repères de kills et leurs touches. Ensuite seulement on oublie les fichiers disparus.
         lib.scan(clip_folder);
+        lib.clips.retain(|c| Path::new(&c.path).is_file());
         lib.sort();
         let _ = lib.save();
         lib
@@ -111,6 +122,13 @@ impl Library {
                 let meta = entry.metadata().ok();
                 // Fichier vide = nom réservé par un export en cours : il sera ajouté une fois fini
                 if meta.as_ref().is_some_and(|m| m.len() == 0) {
+                    continue;
+                }
+                // Clip déplacé : même nom de fichier (et même taille si connue) qu'un clip dont le fichier a disparu
+                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                if let Some(old) = self.clips.iter_mut().find(|c| moved_here(c, &path, size)) {
+                    log::info!("clip retrouvé après déplacement : {} -> {}", old.path, p);
+                    old.path = p;
                     continue;
                 }
                 let created = meta
@@ -257,5 +275,36 @@ impl WideVec for std::ffi::OsStr {
     fn encode_wide_vec(&self) -> Vec<u16> {
         use std::os::windows::ffi::OsStrExt;
         self.encode_wide().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clip_deplace_garde_ses_reperes() {
+        let root = std::env::temp_dir().join(format!("rewind-test-lib-{}", new_id()));
+        let (a, b) = (root.join("ancien").join("Counter-Strike 2"), root.join("nouveau").join("Counter-Strike 2"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let old = a.join("CS2 3K · 100 % HS 2026-11-15 01h48-36.mp4");
+        std::fs::write(&old, b"0123456789").unwrap();
+        let clip = Clip {
+            id: "abc".into(), path: old.to_string_lossy().to_string(), title: "CS2 3K".into(), size: 10, kind: "auto".into(),
+            markers: vec![Marker { time: 5.1, kind: "headshot".into(), label: "Headshot".into() }], ..Default::default()
+        };
+        let mut lib = Library { clips: vec![clip] };
+        // Le fichier change de dossier (comme un déplacement vers un autre disque)
+        let new = b.join("CS2 3K · 100 % HS 2026-11-15 01h48-36.mp4");
+        std::fs::rename(&old, &new).unwrap();
+        lib.scan(&root.join("nouveau"));
+        assert_eq!(lib.clips.len(), 1, "pas de doublon");
+        assert_eq!(lib.clips[0].id, "abc", "même identifiant");
+        assert_eq!(lib.clips[0].path, new.to_string_lossy());
+        assert_eq!(lib.clips[0].markers.len(), 1, "repères gardés");
+        // Un autre fichier de même nom mais de taille différente n'est pas confondu
+        assert!(!moved_here(&lib.clips[0], &new, 99));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

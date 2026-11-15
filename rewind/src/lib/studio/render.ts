@@ -1,6 +1,6 @@
 // Dessin sur canvas partagé par l'aperçu et l'export : texte stylé et clavier / souris.
 // L'export envoie ces dessins en PNG au moteur, qui les incruste : le rendu est identique au pixel près.
-import type { TextLayer } from "./model";
+import type { TextLayer, FxLayer } from "./model";
 import { fontOf, cssFont } from "./fonts";
 
 // ---------------------------------------------------------------------------
@@ -104,6 +104,43 @@ export function textPng(l: TextLayer, k: number, reveal = 1): { b64: string; w: 
   c.height = box.h;
   drawText(ctx, l, k, box, reveal);
   return { b64: c.toDataURL("image/png").split(",")[1], w: box.w, h: box.h };
+}
+
+// ---------------------------------------------------------------------------
+// Effets « voiles » (flash, fondu au noir, vignette, bandes cinéma) : une image plein cadre
+// ---------------------------------------------------------------------------
+
+/** Dessine le voile d'un effet sur tout le canvas (w × h). L'opacité dans le temps est celle du calque. */
+export function drawFx(ctx: CanvasRenderingContext2D, l: FxLayer, w: number, h: number) {
+  ctx.clearRect(0, 0, w, h);
+  const s = Math.max(0, Math.min(1, l.strength));
+  if (l.fx === "flash" || l.fx === "black") {
+    ctx.fillStyle = l.fx === "flash" ? `rgba(255,255,255,${s})` : `rgba(0,0,0,${s})`;
+    ctx.fillRect(0, 0, w, h);
+  } else if (l.fx === "vignette") {
+    const r = Math.hypot(w, h) / 2;
+    const g = ctx.createRadialGradient(w / 2, h / 2, r * 0.35, w / 2, h / 2, r);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(0.55, `rgba(0,0,0,${0.35 * s})`);
+    g.addColorStop(1, `rgba(0,0,0,${0.9 * s})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  } else if (l.fx === "bars") {
+    // Chaque bande : 4 à 16 % de la hauteur selon l'intensité
+    const bh = Math.round(h * (0.04 + 0.12 * s));
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, w, bh);
+    ctx.fillRect(0, h - bh, w, bh);
+  }
+}
+
+/** Voile d'un effet en PNG plein cadre (export). */
+export function fxPng(l: FxLayer, w: number, h: number): string {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  drawFx(c.getContext("2d")!, l, w, h);
+  return c.toDataURL("image/png").split(",")[1];
 }
 
 // ---------------------------------------------------------------------------

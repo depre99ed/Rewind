@@ -3,8 +3,8 @@ import { api, type Clip, type Filmstrip, type InputEvent, type MediaInfo, type W
 import { app } from "../state.svelte";
 import { t } from "../i18n.svelte";
 import {
-  type AudioItem, type Format, type Kf, type Layer, type Piece, type Project, type Track, type Transition, type TextStyle, type VideoLayer,
-  clampSpeed, defaultKeys, frameSize, fromLegacy, layout, newAudio, newBlur, newMediaLayer, newProject, newText,
+  type AudioItem, type Format, type FxKind, type Kf, type Layer, type Piece, type Project, type Track, type Transition, type TextStyle, type VideoLayer,
+  clampSpeed, defaultKeys, frameSize, fromLegacy, layout, newAudio, newBlur, newFx, newMediaLayer, newProject, newText,
   normalizePiece, outLen, projectTotal, srcAt, uid,
 } from "./model";
 
@@ -54,10 +54,16 @@ class MediaCache {
       api.keyLabels().then((l) => (this.labels = l ?? {})).catch(() => {});
     }
   }
+  /** Fichiers introuvables (déplacés ou supprimés) : signalés dans la frise et l'aperçu. */
+  missing = $state.raw<Record<string, boolean>>({});
   load(path: string) {
     if (!path || this.asked.has(path)) return;
     this.asked.add(path);
-    api.mediaInfo(path).then((i) => i && (this.info = { ...this.info, [path]: i })).catch(() => {});
+    api.mediaInfo(path)
+      .then((i) => i && (this.info = { ...this.info, [path]: i }))
+      .catch((e) => {
+        if (/introuvable|not found|does not exist/i.test(String(e))) this.missing = { ...this.missing, [path]: true };
+      });
     api.mediaWaveform(path).then((w) => w && (this.waves = { ...this.waves, [path]: w })).catch(() => {});
   }
   loadStrip(path: string) {
@@ -65,6 +71,14 @@ class MediaCache {
     if (!path || this.asked.has(key)) return;
     this.asked.add(key);
     api.mediaFilmstrip(path).then((s) => s && (this.strips = { ...this.strips, [path]: s })).catch(() => {});
+  }
+  /** Pistes son séparées en fichiers (aperçu des volumes par piste), demandées au premier besoin. */
+  stems = $state.raw<Record<string, string[]>>({});
+  loadStems(path: string) {
+    const key = "stems:" + path;
+    if (!path || this.asked.has(key)) return;
+    this.asked.add(key);
+    api.mediaStems(path).then((s) => (this.stems = { ...this.stems, [path]: s ?? [] })).catch(() => (this.stems = { ...this.stems, [path]: [] }));
   }
   /** Pistes séparées d'un clip (sans la piste de mixage) ; vide si une seule piste. */
   separateTracks(path: string): string[] {
@@ -335,6 +349,44 @@ class StudioStore {
     if (next !== undefined) this.seek(next);
   }
 
+  /**
+   * Clips déplacés (autre dossier, autre disque) : le montage retrouve ses fichiers dans la bibliothèque,
+   * par l'identifiant du clip, sinon par le nom du fichier. Rien ne change si tout est déjà à sa place.
+   */
+  relink() {
+    const clips = app.clips;
+    if (!clips.length) return;
+    const fileOf = (p: string) => (p.split(/[\\/]/).pop() ?? "").toLowerCase();
+    const known = new Set(clips.map((c) => c.path.toLowerCase()));
+    const byId = new Map(clips.map((c) => [c.id, c]));
+    const byName = new Map(clips.map((c) => [fileOf(c.path), c]));
+    let changed = false;
+    const pieces = this.project.pieces.map((p) => {
+      if (known.has(p.path.toLowerCase())) return p;
+      const c = (p.clipId && byId.get(p.clipId)) || byName.get(fileOf(p.path));
+      if (!c || c.path === p.path) return p;
+      changed = true;
+      return { ...p, path: c.path, clipId: c.id, thumb: c.thumb || p.thumb, markers: p.markers.length ? p.markers : c.markers };
+    });
+    const tracks = this.project.tracks.map((tr) => {
+      if (tr.kind !== "layer") return tr;
+      const items = tr.items.map((l) => {
+        if (l.kind !== "video" || known.has(l.path.toLowerCase())) return l;
+        const c = byName.get(fileOf(l.path));
+        if (!c) return l;
+        changed = true;
+        return { ...l, path: c.path };
+      });
+      return { ...tr, items };
+    });
+    if (!changed) return;
+    this.edit((pr) => {
+      pr.pieces = pieces;
+      pr.tracks = tracks as Track[];
+    }, false);
+    this.say("Clips déplacés retrouvés : le montage utilise leur nouvel emplacement");
+  }
+
   // ----- piste principale -----
   piecesFrom(clips: Clip[]): Piece[] {
     return clips
@@ -508,8 +560,10 @@ class StudioStore {
     const free = (tr: Track) => tr.kind === kind && !tr.locked && (tr.items as { at: number; dur: number }[]).every((i) => i.at + i.dur <= at + 1e-3 || i.at >= at + dur - 1e-3);
     const pref = this.project.tracks.find((tr) => tr.id === prefer);
     if (pref && free(pref)) return pref;
-    const found = (kind === "layer" ? this.project.tracks : [...this.project.tracks].reverse()).find(free);
-    if (found && (!name || found.name === name)) return found;
+    // Une piste libre du même nom d'abord (« Effets », « Musique »…), sinon n'importe laquelle sans nom imposé
+    const fxName = t("Effets");
+    const found = (kind === "layer" ? this.project.tracks : [...this.project.tracks].reverse()).find((tr) => free(tr) && (name ? tr.name === name : tr.name !== fxName));
+    if (found) return found;
     const n = this.project.tracks.filter((x) => x.kind === kind).length + 1;
     const tr: Track = kind === "layer"
       ? { id: uid(), kind: "layer", name: name ?? t("Calque {n}", { n }), hidden: false, locked: false, items: [] }
@@ -652,7 +706,9 @@ class StudioStore {
   }
   private addLayer(l: Layer, prefer?: string) {
     this.edit(() => {
-      const tr = prefer === "new" ? this.newTrack("layer", 0) : this.freeTrack("layer", l.at, l.dur, prefer);
+      // Les effets ont leurs propres pistes « Effets » (comme CapCut)
+      const name = l.kind === "fx" ? t("Effets") : undefined;
+      const tr = prefer === "new" ? this.newTrack("layer", 0) : this.freeTrack("layer", l.at, l.dur, prefer, name);
       (tr.items as Layer[]).push(l);
     });
     this.select({ type: "layer", id: l.uid });
@@ -663,9 +719,29 @@ class StudioStore {
     this.addLayer(l);
     this.say("Texte ajouté : écris-le à droite, place-le sur l'aperçu");
   }
-  addBlur() {
-    this.addLayer(newBlur(this.t, Math.max(2, Math.min(5, this.total - this.t || 5))));
-    this.say("Zone floutée ajoutée : place-la sur l'aperçu");
+  addBlur(full: "" | "blur" | "pixel" = "") {
+    this.addLayer(newBlur(this.t, Math.max(2, Math.min(5, this.total - this.t || 5)), full));
+    this.say(full ? "Effet ajouté à la tête de lecture" : "Zone floutée ajoutée : place-la sur l'aperçu");
+  }
+  /** Effet (tremblement, flash…) à la tête de lecture, sur sa propre piste s'il le faut. */
+  addFx(fx: FxKind) {
+    const room = this.total > 0 ? this.total - this.t : 0;
+    this.addLayer(newFx(fx, this.t, room));
+    this.say("Effet ajouté à la tête de lecture : allonge-le ou déplace-le sur la frise");
+  }
+  /** Zoom rapide sur le morceau sous la tête de lecture : l'image plonge puis revient (points de zoom). */
+  zoomPunch() {
+    const i = this.indexAt(this.t);
+    const p = this.project.pieces[i];
+    if (!p) return this.say("Place la tête de lecture sur un clip");
+    const len = outLen(p);
+    const a = Math.max(0, Math.min(len - 0.3, this.t - this.lay.offsets[i]));
+    const x = kfAt(p.zoom, "x", a, 0.5), y = kfAt(p.zoom, "y", a, 0.5), z0 = kfAt(p.zoom, "z", a, 1);
+    const keep = p.zoom.filter((k) => k.t < a - 0.05 || k.t > a + 0.75);
+    const add = [{ t: a, z: z0, x, y }, { t: Math.min(len, a + 0.15), z: Math.max(z0, 1) * 1.3, x, y }, { t: Math.min(len, a + 0.7), z: z0, x, y }];
+    this.updatePiece(p.uid, { zoom: [...keep, ...add].sort((m, n) => m.t - n.t) });
+    this.select({ type: "piece", id: p.uid });
+    this.say("Zoom rapide ajouté : le centre se règle dans « Zoom » à droite");
   }
   /** Image, GIF ou vidéo par-dessus (taille de départ raisonnable, à droite en haut). */
   async addMedia(path: string, opts: { at?: number; track?: string; name?: string } = {}) {

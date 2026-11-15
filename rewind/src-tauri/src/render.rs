@@ -97,6 +97,19 @@ pub struct KeysSpec {
     pub y: f64,
 }
 
+/// Effet appliqué à toute l'image (vidéo + calques, pas les touches) pendant [at, at + dur] :
+/// « bw » noir et blanc, « invert » négatif, « glitch » couleurs décalées, « shake » tremblement.
+/// Les mêmes formules sont dans l'aperçu (Preview.svelte, fxStyle).
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct EffectSpec {
+    pub kind: String,
+    pub at: f64,
+    pub dur: f64,
+    /// 0..1
+    pub strength: f64,
+}
+
 #[derive(Clone, Debug, Deserialize, Default)]
 #[serde(default)]
 pub struct RenderSpec {
@@ -116,6 +129,52 @@ pub struct RenderSpec {
     pub layers: Vec<LayerSpec>,
     pub audio: Vec<AudioSpec>,
     pub keys: Option<KeysSpec>,
+    pub effects: Vec<EffectSpec>,
+}
+
+/// Ordre fixe des effets (le même que l'aperçu) : couleurs d'abord, tremblement en dernier.
+const FX_ORDER: [&str; 4] = ["bw", "invert", "glitch", "shake"];
+
+/// Tremblement : part de l'image gardée (1 - 2f) et décalage (temps du montage `t`).
+/// Mêmes nombres dans l'aperçu : f = 0,03 × intensité, sinus à 7 Hz (x) et 11 Hz (y).
+pub fn shake_crop(w: u32, h: u32, strength: f64) -> (u32, u32, String, String) {
+    let f = 0.03 * strength.clamp(0.0, 1.0);
+    let cw = ((w as f64 * (1.0 - 2.0 * f)) / 2.0).floor() as u32 * 2;
+    let ch = ((h as f64 * (1.0 - 2.0 * f)) / 2.0).floor() as u32 * 2;
+    let (mx, my) = ((w - cw) as f64 / 2.0, (h - ch) as f64 / 2.0);
+    (cw, ch, format!("{}*(1+sin(2*PI*7*t))", n(mx)), format!("{}*(1+sin(2*PI*11*t+1))", n(my)))
+}
+
+/// Filtres des effets, ajoutés à la suite de l'image `cur` ; renvoie la nouvelle étiquette.
+fn effect_filters(g: &mut String, effects: &[EffectSpec], w: u32, h: u32, mut cur: String) -> String {
+    let mut list: Vec<&EffectSpec> = effects.iter().filter(|e| e.dur > 0.01 && FX_ORDER.contains(&e.kind.as_str())).collect();
+    list.sort_by(|a, b| {
+        let ia = FX_ORDER.iter().position(|k| *k == a.kind).unwrap_or(9);
+        let ib = FX_ORDER.iter().position(|k| *k == b.kind).unwrap_or(9);
+        ia.cmp(&ib).then(a.at.total_cmp(&b.at))
+    });
+    for (i, e) in list.iter().enumerate() {
+        let en = format!("between(t\\,{}\\,{})", n(e.at), n(e.at + e.dur));
+        let s = e.strength.clamp(0.0, 1.0);
+        let out = format!("FX{i}");
+        match e.kind.as_str() {
+            "bw" => g.push_str(&format!("[{cur}]hue=s={}:enable='{en}'[{out}];", n(1.0 - s))),
+            "invert" => g.push_str(&format!("[{cur}]negate=enable='{en}'[{out}];")),
+            "glitch" => {
+                let a = ((0.02 * s * w as f64).round() as i64).max(1);
+                g.push_str(&format!("[{cur}]rgbashift=rh={}:bh={}:edge=smear:enable='{en}'[{out}];", -a, a));
+            }
+            _ => {
+                // Tremblement : une copie recadrée qui bouge, agrandie à la taille du cadre, montrée seulement pendant l'effet
+                let (cw, ch, x, y) = shake_crop(w, h, s);
+                g.push_str(&format!(
+                    "[{cur}]split[{out}a][{out}b];[{out}b]crop=w={cw}:h={ch}:x='{x}':y='{y}',scale={w}:{h}:flags=bicubic,setsar=1[{out}c];[{out}a][{out}c]overlay=enable='{en}'[{out}];"
+                ));
+            }
+        }
+        cur = out;
+    }
+    cur
 }
 
 const AFMT: &str = "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
@@ -361,8 +420,16 @@ pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64
                 let rr = (l.strength.clamp(1.0, 60.0) as u32).min(bw.min(bh) / 2).max(1);
                 format!("boxblur={rr}:3")
             };
+            // Opacité et fondus de la zone (comme l'aperçu) : la copie floutée devient transparente
+            let opacity = l.opacity.clamp(0.0, 1.0);
+            let alpha = if opacity < 0.999 || !fade.is_empty() {
+                let mix = if opacity < 0.999 { format!(",colorchannelmixer=aa={opacity:.4}") } else { String::new() };
+                format!(",format=rgba{mix}{fade}")
+            } else {
+                String::new()
+            };
             g.push_str(&format!(
-                "[{cur_v}]split[bl{li}a][bl{li}b];[bl{li}b]crop={bw}:{bh}:x='{cx}':y='{cy}',{blur}[bl{li}c];[bl{li}a][bl{li}c]overlay=x='{}':y='{}':enable='{en}'[L{li}];",
+                "[{cur_v}]split[bl{li}a][bl{li}b];[bl{li}b]crop={bw}:{bh}:x='{cx}':y='{cy}',{blur}{alpha}[bl{li}c];[bl{li}a][bl{li}c]overlay=x='{}':y='{}':enable='{en}'[L{li}];",
                 cx.replace("iw", &w.to_string()).replace("ih", &h.to_string()),
                 cy.replace("iw", &w.to_string()).replace("ih", &h.to_string())
             ));
@@ -431,6 +498,9 @@ pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64
             extra_audio.push(format!("pa{li}"));
         }
     }
+
+    // ---- Effets sur toute l'image (avant les touches, qui restent nettes et immobiles) ----
+    cur_v = effect_filters(&mut g, &spec.effects, w, h, cur_v);
 
     // ---- Touches clavier / souris ----
     if let Some(keys) = &spec.keys
@@ -624,5 +694,25 @@ mod tests {
         assert!(f.contains("val*1.2000"));
         // Saturation 0 : niveaux de gris (chaque ligne de la matrice = 0.213, 0.715, 0.072)
         assert!(f.contains("rr=0.2130:rg=0.7150:rb=0.0720"), "{f}");
+    }
+
+    #[test]
+    fn effets_sur_toute_l_image() {
+        let fx = |kind: &str, at: f64| EffectSpec { kind: kind.into(), at, dur: 1.0, strength: 1.0 };
+        let mut g = String::new();
+        // Ordre fixe (couleur avant tremblement), quel que soit l'ordre reçu ; type inconnu ignoré
+        let out = effect_filters(&mut g, &[fx("shake", 0.0), fx("bw", 2.0), fx("inconnu", 0.0), fx("glitch", 1.0)], 1920, 1080, "L0".into());
+        assert_eq!(out, "FX2");
+        assert!(g.starts_with("[L0]hue=s=0:enable='between(t\\,2\\,3)'[FX0];"), "{g}");
+        assert!(g.contains("[FX0]rgbashift=rh=-38:bh=38:edge=smear"), "{g}");
+        assert!(g.contains("[FX1]split[FX2a][FX2b]"), "{g}");
+        // Tremblement : cadre gardé pair, décalage max = la marge
+        let (cw, ch, x, _) = shake_crop(1920, 1080, 1.0);
+        assert_eq!((cw, ch), (1804, 1014));
+        assert_eq!(x, "58*(1+sin(2*PI*7*t))");
+        // Aucun effet : rien n'est ajouté
+        let mut g2 = String::new();
+        assert_eq!(effect_filters(&mut g2, &[], 1920, 1080, "L0".into()), "L0");
+        assert!(g2.is_empty());
     }
 }

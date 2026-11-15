@@ -9,7 +9,7 @@
 # Une dictée libre en concurrence (-DictationWeight) écarte bien les parasites mais rate la moitié des
 # « Rewind clip » : pas utilisée. La durée de la phrase ne départage rien (1,1 s dans les deux cas).
 # À régler avec une vraie voix : les phrases entendues sous le seuil sont notées dans le journal.
-param([string]$Wav = "", [switch]$Stdin, [double]$MinConfidence = 0.75, [double]$MaxSeconds = 0, [double]$DictationWeight = 0, [int]$Rejection = -1, [switch]$Verbose)
+param([string]$Wav = "", [switch]$Stdin, [double]$MinConfidence = 0.60, [double]$MaxSeconds = 0, [double]$DictationWeight = 0, [int]$Rejection = -1, [switch]$Verbose)
 $ErrorActionPreference = "Stop"
 function Say([string]$line) { [Console]::Out.WriteLine($line); [Console]::Out.Flush() }
 try {

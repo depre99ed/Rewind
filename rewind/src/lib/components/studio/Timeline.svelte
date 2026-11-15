@@ -2,10 +2,10 @@
   // Frise multi-pistes : calques en haut (la piste du haut s'affiche par-dessus), vidéo principale, son en bas.
   import {
     Scissors, Trash2, CopyPlus, Undo2, Redo2, Magnet, ZoomIn, ZoomOut, Maximize2, Snowflake, Eye, EyeOff, Lock, LockOpen,
-    ChevronUp, ChevronDown, Volume2, VolumeX, Type, Image as ImageIcon, Film, Music, Mic, Droplets, Video, Blend, AudioLines,
+    ChevronUp, ChevronDown, Volume2, VolumeX, Type, Image as ImageIcon, Film, Music, Mic, Droplets, Video, Blend, AudioLines, Sparkles, FileX,
   } from "@lucide/svelte";
   import { studio, media, fmtTime } from "$lib/studio/store.svelte";
-  import { outLen, localAt, type Layer, type AudioItem, type Piece, type Track } from "$lib/studio/model";
+  import { outLen, localAt, fxInfo, isFullBlur, type Layer, type AudioItem, type Piece, type Track } from "$lib/studio/model";
   import { momentTone } from "$lib/moments";
   import { fontOf } from "$lib/studio/fonts";
   import MomentIcon from "../MomentIcon.svelte";
@@ -100,8 +100,10 @@
   }
 
   // ---------- aimantation ----------
-  function snapPoints(exclude?: string): number[] {
-    const pts = [studio.t, 0];
+  /** Instant où l'élément s'est calé (trait vertical affiché pendant le glissement). */
+  let snapLine = $state<number | null>(null);
+  function snapPoints(exclude?: string, withHead = true): number[] {
+    const pts = withHead ? [studio.t, 0] : [0];
     L.offsets.forEach((o, i) => {
       pts.push(o, o + L.lens[i]);
       // Les kills aussi : un texte ou un son se cale pile sur le moment
@@ -113,10 +115,14 @@
     for (const tr of P.tracks) for (const it of tr.items as { uid: string; at: number; dur: number }[]) if (it.uid !== exclude) pts.push(it.at, it.at + it.dur);
     return pts;
   }
-  function snap(v: number, exclude?: string): number {
-    if (!studio.snap) return v;
-    let best = v, d = SNAP_PX / pps;
-    for (const p of snapPoints(exclude)) if (Math.abs(p - v) < d) { d = Math.abs(p - v); best = p; }
+  function snap(v: number, exclude?: string, withHead = true): number {
+    if (!studio.snap) {
+      snapLine = null;
+      return v;
+    }
+    let best = v, d = SNAP_PX / pps, hit = false;
+    for (const p of snapPoints(exclude, withHead)) if (Math.abs(p - v) < d) { d = Math.abs(p - v); best = p; hit = true; }
+    snapLine = hit ? best : null;
     return best;
   }
 
@@ -146,7 +152,7 @@
     if (e.button !== 0) return;
     studio.playing = false;
     drag = { kind: "scrub" };
-    studio.seek(snap(tAt(e.clientX)));
+    studio.seek(snap(tAt(e.clientX), undefined, false));
   }
   function itemDown(e: PointerEvent, it: Layer | AudioItem, tr: Track) {
     if (e.button !== 0) return;
@@ -180,7 +186,7 @@
   function onMove(e: PointerEvent) {
     const d = drag;
     if (!d) return;
-    if (d.kind === "scrub") return studio.seek(snap(tAt(e.clientX)));
+    if (d.kind === "scrub") return studio.seek(snap(tAt(e.clientX), undefined, false));
     const dt = (e.clientX - ("x0" in d ? d.x0 : 0)) / pps;
     if (d.kind === "item") {
       if (!d.started && Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0) < 4) return;
@@ -218,21 +224,29 @@
     } else if (d.kind === "trimPiece") {
       const p = P.pieces.find((x) => x.uid === d.id);
       if (!p) return;
+      const i = P.pieces.indexOf(p);
+      const off = L.offsets[i] ?? 0;
       if (d.freeze) {
-        const hold = Math.max(0.2, Math.min(10, d.v0 + (d.side === "end" ? dt : -dt)));
+        let hold = Math.max(0.2, Math.min(10, d.v0 + (d.side === "end" ? dt : -dt)));
+        // Bord droit aimanté (tête de lecture, autres éléments, kills)
+        if (d.side === "end") hold = Math.max(0.2, Math.min(10, snap(off + hold, p.uid) - off));
         studio.updatePiece(d.id, { hold }, false);
-        tip = { x: e.clientX - scroller!.getBoundingClientRect().left + scroller!.scrollLeft, text: fmtTime(hold, true) };
+        tip = { x: X(off + hold), text: fmtTime(hold, true) };
         return;
       }
       const src = dt * d.speed;
       if (d.side === "start") {
         const start = Math.max(0, Math.min(p.end - 0.2, d.v0 + src));
         studio.updatePiece(d.id, { start }, false);
-        tip = { x: e.clientX - scroller!.getBoundingClientRect().left + scroller!.scrollLeft, text: fmtTime(outLen({ ...p, start }), true) };
+        tip = { x: X(off), text: fmtTime(outLen({ ...p, start }), true) };
       } else {
-        const end = Math.min(p.srcDur, Math.max(p.start + 0.2, d.v0 + src));
+        let end = Math.min(p.srcDur, Math.max(p.start + 0.2, d.v0 + src));
+        if (!p.ramp) {
+          const edge = snap(off + (end - p.start) / d.speed, p.uid);
+          end = Math.min(p.srcDur, Math.max(p.start + 0.2, p.start + (edge - off) * d.speed));
+        }
         studio.updatePiece(d.id, { end }, false);
-        tip = { x: e.clientX - scroller!.getBoundingClientRect().left + scroller!.scrollLeft, text: fmtTime(outLen({ ...p, end }), true) };
+        tip = { x: X(off + outLen({ ...p, end })), text: fmtTime(outLen({ ...p, end }), true) };
       }
     } else if (d.kind === "piece") {
       if (!d.started && Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0) < 5) return;
@@ -249,6 +263,7 @@
     drag = null;
     tip = null;
     over = null;
+    snapLine = null;
     if (!d) return;
     if (d.kind === "piece" && d.started) {
       // Un clip monté dans une piste de calques devient une vidéo par-dessus
@@ -331,9 +346,13 @@
     if (x > scroller.scrollLeft + width - 80) scroller.scrollLeft = x - HEAD - 40;
   });
 
-  const kindIcon = { text: Type, image: ImageIcon, gif: ImageIcon, video: Video, blur: Droplets } as const;
+  const kindIcon = { text: Type, image: ImageIcon, gif: ImageIcon, video: Video, blur: Droplets, fx: Sparkles } as const;
   const audioIcon = { music: Music, sfx: AudioLines, voice: Mic } as const;
-  const itemLabel = (l: Layer) => (l.kind === "text" ? l.text.replace(/\n/g, " ") || t("Texte") : l.kind === "blur" ? t("Zone floutée") : l.name);
+  const itemLabel = (l: Layer) =>
+    l.kind === "text" ? l.text.replace(/\n/g, " ") || t("Texte")
+    : l.kind === "blur" ? t(isFullBlur(l) ? (l.mode === "pixel" ? "Image pixelisée" : "Image floutée") : "Zone floutée")
+    : l.kind === "fx" ? t(fxInfo(l.fx).label)
+    : l.name;
   const isSel = (id: string) => (studio.sel && studio.sel.type !== "keys" ? studio.sel.id === id : false);
   const kfOf = (it: Layer | AudioItem) => it.kf.map((k) => k.t).filter((x, i, a) => a.indexOf(x) === i);
 </script>
@@ -350,7 +369,7 @@
     <button class="btn icon small ghost" onclick={() => studio.removeSel()} disabled={!studio.sel} title={t("Supprimer (Suppr)")}><Trash2 size={15} /></button>
     <button class="btn small ghost" onclick={() => studio.freezeFrame()} disabled={studio.indexAt(studio.t) < 0} title={t("Figer l'image à la tête de lecture pendant 2 s")}><Snowflake size={15} />{t("Figer")}</button>
     <span class="hint faint">{studio.hint}</span>
-    <button class="btn icon small ghost" class:on={studio.snap} onclick={() => (studio.snap = !studio.snap)} title={t("Aimanter aux bords et à la tête de lecture")}><Magnet size={15} /></button>
+    <button class="magnet" class:on={studio.snap} onclick={() => { studio.snap = !studio.snap; studio.say(studio.snap ? "Aimant activé : les éléments se calent sur les bords, la tête de lecture et les kills" : "Aimant désactivé : placement libre"); }} aria-pressed={studio.snap} title={t(studio.snap ? "Aimant activé : les éléments se calent sur les bords, la tête de lecture et les kills" : "Aimant désactivé : placement libre")}><Magnet size={15} /></button>
     <button class="btn icon small ghost" onclick={() => (studio.zoom = Math.max(1, studio.zoom / 1.4))} title={t("Dézoomer (-)")}><ZoomOut size={15} /></button>
     <input class="zoom" type="range" min="1" max="60" step="0.1" bind:value={studio.zoom} aria-label={t("Zoom de la frise")} />
     <button class="btn icon small ghost" onclick={() => (studio.zoom = Math.min(60, studio.zoom * 1.4))} title={t("Zoomer (+)")}><ZoomIn size={15} /></button>
@@ -419,6 +438,7 @@
               class="piece"
               class:sel={isSel(p.uid)}
               class:freeze={p.kind === "freeze"}
+              class:missing={media.missing[p.path]}
               class:moving={drag?.kind === "piece" && drag.id === p.uid && drag.started}
               style="left:{left}px;width:{w}px"
               onpointerdown={(e) => pieceDown(e, p, i)}
@@ -427,13 +447,17 @@
             >
               <div class="strip">{#each tl.list as tile}<i style="left:{tile.left}px;width:{tl.tileW}px;{tl.s ? `background-image:url('${fileUrl(tl.s.sprite)}');background-size:${tl.s.frames * tl.tileW}px 100%;background-position:${tile.pos}px 0` : ''}"></i>{/each}</div>
               {#if p.kind !== "freeze"}<canvas class="wave" use:wave={{ w: media.waves[p.path], start: p.start, end: p.end, width: w, height: 18, v: p.volume }}></canvas>{/if}
-              <span class="ptitle">{#if p.kind === "freeze"}<Snowflake size={11} />{/if}{p.kind === "freeze" ? t("Image figée") : p.title}{#if p.speed !== 1 || p.ramp} · {p.ramp ? t("ralenti") : `${p.speed}×`}{/if}</span>
-              {#if p.kind !== "freeze"}
+              {#if p.kind === "freeze"}
+                <!-- Image figée : la vignette de l'image tenue + un flocon ; le nom seulement s'il y a la place -->
+                <span class="ptitle frz" class:narrow={w < 110} title={t("Image figée")}><Snowflake size={11} />{#if w >= 110}{t("Image figée")}{/if}</span>
+              {:else}
+                <span class="ptitle" class:after={i > 0}>{p.title}{#if p.speed !== 1 || p.ramp} · {p.ramp ? t("ralenti") : `${p.speed}×`}{/if}</span>
                 {#each p.markers as m}
                   {@const lt = localAt(p, m.time)}
-                  {#if lt !== null}<span class="mk {momentTone(m.kind)}" style="left:{lt * pps}px" title={m.label}><MomentIcon kind={m.kind} size={12} /></span>{/if}
+                  {#if lt !== null}<span class="mk {momentTone(m.kind)}" style="left:{lt * pps}px" title={m.label}><MomentIcon kind={m.kind} size={13} /></span>{/if}
                 {/each}
               {/if}
+              {#if media.missing[p.path]}<span class="lost" title={p.path}><FileX size={12} />{t("Fichier introuvable")}</span>{/if}
               {#if isSel(p.uid)}{#each p.zoom as z}<i class="kf" style="left:{z.t * pps}px"></i>{/each}{/if}
               <span class="grip l" onpointerdown={(e) => pieceTrimDown(e, p, "start")} role="presentation"></span>
               <span class="grip r" onpointerdown={(e) => pieceTrimDown(e, p, "end")} role="presentation"></span>
@@ -478,6 +502,8 @@
         </div>
       {/if}
 
+      <!-- Aimant : trait à l'endroit où l'élément s'est calé -->
+      {#if snapLine !== null && drag}<i class="snapline" style="left:{X(snapLine)}px"></i>{/if}
       <!-- Tête de lecture -->
       <div class="playhead" style="left:{X(studio.t)}px"><i></i></div>
       {#if tip}<span class="tip mono" style="left:{tip.x}px">{tip.text}</span>{/if}
@@ -488,7 +514,6 @@
 <style>
   .tl { height: 100%; display: flex; flex-direction: column; border-top: 1px solid var(--line); background: var(--bg-2); min-height: 0; }
   .tools { display: flex; align-items: center; gap: 2px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
-  .tools :global(.btn.on) { color: var(--hi); }
   .sep { width: 1px; height: 18px; background: var(--line); margin: 0 6px; }
   .hint { flex: 1; text-align: center; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .zoom { width: 90px; }
@@ -548,12 +573,27 @@
   .strip { position: absolute; left: 0; right: 0; top: 0; height: 40px; overflow: hidden; }
   .strip i { position: absolute; top: 0; height: 100%; background-repeat: no-repeat; background-color: #15171d; }
   .wave { position: absolute; left: 0; bottom: 1px; height: 18px; }
-  .ptitle { position: absolute; left: 6px; top: 4px; display: flex; align-items: center; gap: 4px; max-width: calc(100% - 12px); padding: 1px 6px; border-radius: 5px; background: rgba(0, 0, 0, 0.6); font-size: 11px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  /* Repères de kills (pictos du lecteur), en bas des vignettes */
-  .mk { position: absolute; top: 24px; z-index: 2; translate: -50% 0; display: grid; place-items: center; color: #f2f3f5; pointer-events: none; filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); }
+  .ptitle { position: absolute; left: 6px; top: 4px; display: flex; align-items: center; gap: 4px; max-width: calc(100% - 12px); padding: 1px 6px; border-radius: 5px; background: rgba(0, 0, 0, 0.72); font-size: 11px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Après une jonction, le titre laisse la place au bouton de transition */
+  .ptitle.after { left: 14px; max-width: calc(100% - 22px); }
+  .ptitle.frz { left: 50%; translate: -50% 0; max-width: calc(100% - 26px); }
+  .ptitle.frz.narrow { padding: 2px 4px; }
+  .piece.freeze .strip { opacity: 0.75; }
+  /* Fichier déplacé ou supprimé : seul endroit rouge de la frise (c'est une erreur) */
+  .piece.missing { border-color: color-mix(in srgb, var(--rec) 60%, transparent); background: repeating-linear-gradient(45deg, #1a0d0d 0 8px, #120909 8px 16px); }
+  .lost { position: absolute; left: 8px; bottom: 6px; z-index: 3; display: flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 500; color: #fff; background: color-mix(in srgb, var(--rec) 80%, #000); }
+  /* Repères de kills : picto dans une pastille sombre (lisible sur n'importe quelle image) + trait à l'instant exact */
+  .mk { position: absolute; top: 22px; z-index: 2; translate: -50% 0; width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; color: #f2f3f5; background: rgba(8, 9, 12, 0.88); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16), 0 2px 6px rgba(0, 0, 0, 0.6); pointer-events: none; }
+  .mk::after { content: ""; position: absolute; left: 50%; top: 100%; width: 1px; height: 12px; margin-left: -0.5px; background: rgba(255, 255, 255, 0.55); }
   .mk.gold { color: #ffd25a; }
   .mk.green { color: #3ddc97; }
   .mk.dim { color: #9aa3b5; }
+  /* Aimant : état visible d'un coup d'œil (fond plein quand il est actif) */
+  .magnet { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; color: var(--text-3); border: 1px solid transparent; transition: color var(--dur) var(--ease), background var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+  .magnet:hover { color: var(--text); background: var(--panel-2); }
+  .magnet.on { color: var(--hi-ink); background: var(--hi); }
+  .snapline { position: absolute; top: 24px; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--accent); z-index: 7; pointer-events: none; }
+  .item.fx { --tc: #b9bec9; background: color-mix(in srgb, var(--tc) 10%, var(--panel-2)); background-image: radial-gradient(color-mix(in srgb, var(--tc) 30%, transparent) 1px, transparent 1.2px); background-size: 7px 7px; }
   .junction { position: absolute; top: 50%; z-index: 4; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 6px; display: grid; place-items: center; background: var(--panel-3); border: 1px solid var(--line-2); color: var(--text-3); }
   .junction.has { color: var(--text); background: var(--panel-2); }
   .junction.on { outline: 2px solid #fff; color: var(--text); }

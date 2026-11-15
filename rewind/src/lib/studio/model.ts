@@ -83,7 +83,30 @@ export type TextLayer = LayerBase & {
 export type ImageLayer = LayerBase & { kind: "image" | "gif"; path: string; name: string; iw: number; ih: number };
 export type VideoLayer = LayerBase & { kind: "video"; path: string; name: string; iw: number; ih: number; srcStart: number; srcDur: number; speed: number; volume: number };
 export type BlurLayer = LayerBase & { kind: "blur"; w: number; h: number; mode: "blur" | "pixel"; strength: number };
-export type Layer = TextLayer | ImageLayer | VideoLayer | BlurLayer;
+/**
+ * Effet posé sur la frise comme un calque :
+ *  - « filtres » (FX_FILTER) : changent toute l'image pendant leur durée (vidéo + calques, pas les touches) ;
+ *  - « voiles » (les autres) : une image plein cadre dessinée par render.ts (flash, noir, vignette, bandes).
+ */
+export type FxKind = "shake" | "glitch" | "bw" | "invert" | "flash" | "black" | "vignette" | "bars";
+export type FxLayer = LayerBase & { kind: "fx"; fx: FxKind; strength: number };
+export type Layer = TextLayer | ImageLayer | VideoLayer | BlurLayer | FxLayer;
+
+export const FX_FILTER: FxKind[] = ["bw", "invert", "glitch", "shake"];
+export const isFilterFx = (l: Layer): boolean => l.kind === "fx" && FX_FILTER.includes(l.fx);
+
+/** Effets proposés (ordre d'affichage) : nom, explication, durée et réglages de départ. */
+export const FX_LIST: { fx: FxKind; label: string; hint: string; dur: number; strength: number; fadeIn?: number; fadeOut?: number; slider: boolean }[] = [
+  { fx: "shake", label: "Tremblement", hint: "La caméra tremble", dur: 0.6, strength: 0.5, slider: true },
+  { fx: "flash", label: "Flash", hint: "Éclair blanc qui s'efface", dur: 0.5, strength: 0.9, fadeOut: 0.45, slider: true },
+  { fx: "glitch", label: "Glitch", hint: "Couleurs décalées", dur: 0.5, strength: 0.5, slider: true },
+  { fx: "bw", label: "Noir et blanc", hint: "Sans couleurs", dur: 2, strength: 1, slider: true },
+  { fx: "invert", label: "Négatif", hint: "Couleurs inversées", dur: 0.25, strength: 1, slider: false },
+  { fx: "black", label: "Fondu au noir", hint: "Passage par le noir", dur: 1, strength: 1, fadeIn: 0.5, fadeOut: 0.5, slider: true },
+  { fx: "vignette", label: "Vignette", hint: "Bords assombris", dur: 5, strength: 0.6, slider: true },
+  { fx: "bars", label: "Bandes cinéma", hint: "Bandes noires haut et bas", dur: 5, strength: 0.5, slider: true },
+];
+export const fxInfo = (fx: FxKind) => FX_LIST.find((f) => f.fx === fx) ?? FX_LIST[0];
 
 export type AudioItem = {
   uid: string;
@@ -190,9 +213,20 @@ export function newMediaLayer(kind: "image" | "gif" | "video", path: string, nam
   return { ...b, kind, path, name, iw, ih };
 }
 
-export function newBlur(at: number, dur: number): BlurLayer {
+export function newBlur(at: number, dur: number, full: "" | "blur" | "pixel" = ""): BlurLayer {
+  // Flou de tout le cadre : même calque que la zone floutée, à la taille du cadre
+  if (full) return { ...base(at, dur), kind: "blur", w: 1, h: 1, mode: full, strength: full === "pixel" ? 24 : 20, x: 0.5, y: 0.5 };
   return { ...base(at, dur), kind: "blur", w: 0.24, h: 0.08, mode: "blur", strength: 16, x: 0.5, y: 0.15 };
 }
+
+export function newFx(fx: FxKind, at: number, room: number): FxLayer {
+  const info = fxInfo(fx);
+  const dur = Math.max(0.2, Math.min(info.dur, room > 0.2 ? room : info.dur));
+  return { ...base(at, dur), kind: "fx", fx, strength: info.strength, fadeIn: info.fadeIn ?? 0, fadeOut: Math.min(dur, info.fadeOut ?? 0) };
+}
+
+/** Zone floutée qui couvre tout le cadre (affichée « Flou de l'image » dans la frise). */
+export const isFullBlur = (l: Layer) => l.kind === "blur" && l.w >= 0.99 && l.h >= 0.99;
 
 export function newAudio(kind: AudioItem["kind"], path: string, name: string, srcDur: number, at: number, total: number): AudioItem {
   const dur = kind === "music" ? Math.max(0.5, Math.min(srcDur, Math.max(total - at, 1))) : srcDur;
@@ -403,6 +437,24 @@ export function frameSize(format: Format, short = 1080): { w: number; h: number 
 }
 
 export const FORMAT_RATIO: Record<Format, number> = { "16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1 };
+
+// ---------------------------------------------------------------------------
+// Effets « filtres » : mêmes nombres que render.rs (effect_filters, shake_crop)
+// ---------------------------------------------------------------------------
+
+/** Tremblement à l'instant t (temps du montage) : agrandissement et décalage, en fraction du cadre. */
+export function shakeAt(t: number, strength: number, W: number, H: number): { kx: number; ky: number; x: number; y: number } {
+  const f = 0.03 * Math.max(0, Math.min(1, strength));
+  const cw = Math.floor((W * (1 - 2 * f)) / 2) * 2;
+  const ch = Math.floor((H * (1 - 2 * f)) / 2) * 2;
+  const mx = (W - cw) / 2, my = (H - ch) / 2;
+  const x = mx * (1 + Math.sin(2 * Math.PI * 7 * t));
+  const y = my * (1 + Math.sin(2 * Math.PI * 11 * t + 1));
+  return { kx: W / cw, ky: H / ch, x: x / W, y: y / H };
+}
+
+/** Décalage des couleurs du glitch, en pixels de sortie (largeur W). */
+export const glitchShift = (strength: number, W: number) => Math.max(1, Math.round(0.02 * Math.max(0, Math.min(1, strength)) * W));
 
 // ---------------------------------------------------------------------------
 // Ancien montage (avant la 0.3.0, gardé dans le navigateur) → projet

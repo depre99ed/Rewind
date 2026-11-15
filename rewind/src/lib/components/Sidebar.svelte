@@ -46,13 +46,25 @@
     return clock(Date.now() / 1000 - since);
   }
 
-  // État de l'enregistrement en une ligne : la seule couleur est le point rouge quand ça enregistre
+  // État de l'enregistrement en une ligne : la seule couleur est le point rouge quand ça enregistre.
+  // En marche : la qualité réelle (définition, images par seconde, encodeur) ; la durée en mémoire est dans l'infobulle.
   const rec = $derived.by(() => {
     if (!s || !st) return { kind: "off", text: "" };
     if (!s.recording_enabled) return { kind: "paused", text: t("En pause") };
     if (st.error) return { kind: "error", text: t("Enregistrement arrêté") };
     if (st.starting || !st.recording) return { kind: "starting", text: t("Démarrage…") };
     return { kind: "rec", text: clock(Math.min(st.buffered, st.buffer_target)) };
+  });
+  /** « NVENC », « AMD », « QuickSync », « x264 » + le codec, à partir du nom FFmpeg (h264_nvenc…). */
+  function encoderLabel(e: string) {
+    const chip = e.includes("nvenc") ? "NVENC" : e.includes("amf") ? "AMD" : e.includes("qsv") ? "QuickSync" : e.includes("x264") ? "x264" : e.toUpperCase();
+    const codec = e.startsWith("hevc") ? "H.265" : e.startsWith("av1") ? "AV1" : "H.264";
+    return { chip, codec };
+  }
+  const quality = $derived.by(() => {
+    if (!st?.encoder || !st.width || !st.height) return null;
+    const enc = encoderLabel(st.encoder);
+    return { res: `${Math.min(st.width, st.height)}p`, fps: `${st.fps} FPS`, enc: enc.chip, full: `${st.width}×${st.height} · ${st.fps} ${t("i/s")} · ${enc.chip} ${enc.codec}` };
   });
 
   function onKey(e: KeyboardEvent) {
@@ -132,8 +144,12 @@
       </button>
 
       <div class="status">
-        <span class="state {rec.kind}" title={rec.kind === "rec" ? t("{t} en mémoire, prêtes à clipper", { t: rec.text }) : rec.text}>
-          <i class="dot"></i>{#if rec.kind === "rec"}<span class="mono">{rec.text}</span><span class="faint">{t("en mémoire")}</span>{:else}<span>{rec.text}</span>{/if}
+        <span class="state {rec.kind}" title={rec.kind === "rec" ? `${t("{t} en mémoire, prêtes à clipper", { t: rec.text })}${quality ? ` · ${quality.full}` : ""}` : rec.text}>
+          <i class="dot"></i>
+          {#if rec.kind === "rec" && quality}
+            <span class="q mono">{quality.res}</span><i class="sep"></i><span class="q mono">{quality.fps}</span><i class="sep"></i><span class="q">{quality.enc}</span>
+          {:else if rec.kind === "rec"}<span class="mono">{rec.text}</span><span class="faint">{t("en mémoire")}</span>
+          {:else}<span>{rec.text}</span>{/if}
         </span>
         <button bind:this={moreBtn} class="more" class:on={menu} onclick={() => (menu = !menu)} aria-label={t("Plus d'actions")} aria-expanded={menu}>
           <Ellipsis size={16} strokeWidth={1.75} />
@@ -177,8 +193,8 @@
               {/each}
             </div>
           {/if}
-          {#if st?.encoder}
-            <div class="tech mono">{st.width}×{st.height} · {st.fps} {t("i/s")} · {st.encoder.replace("_", " ")}</div>
+          {#if rec.kind === "rec"}
+            <div class="tech mono">{t("{t} en mémoire, prêtes à clipper", { t: rec.text })}</div>
           {/if}
         </div>
       {/if}
@@ -236,6 +252,9 @@
   .status { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 0 6px; height: 28px; }
   .state { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-3); min-width: 0; }
   .state .mono { color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .state .q { color: var(--text-2); font-size: 11px; white-space: nowrap; }
+  .state:has(.q) { gap: 6px; }
+  .state .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--text-3); opacity: 0.6; flex: none; }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex: none; }
   .state.rec .dot, .dot.rec { background: var(--rec); box-shadow: 0 0 0 3px color-mix(in srgb, var(--rec) 16%, transparent); }
   .state.error { color: var(--rec); }

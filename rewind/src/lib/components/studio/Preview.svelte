@@ -1,12 +1,15 @@
 <script lang="ts">
   // Aperçu du Studio : piste principale (deux lecteurs pour enchaîner sans trou, transitions), zoom animé,
-  // couleurs, arrêts sur image, calques (texte, images, GIF, vidéos, flou), touches et sons.
+  // couleurs, arrêts sur image, calques (texte, images, GIF, vidéos, flou), effets, touches et sons.
   // Toutes les positions passent par model.ts : l'export (render.rs) reçoit exactement les mêmes.
+  // Ce qu'on règle s'entend et se voit tout de suite : volumes (même au-dessus de 100 %), pistes séparées,
+  // musique qui baisse, zones floutées, effets.
   import { onMount } from "svelte";
-  import { Play, Pause, SkipBack, SkipForward, Maximize, Film, Sparkles, RotateCw } from "@lucide/svelte";
+  import { Play, Pause, SkipBack, SkipForward, Maximize, Film, Sparkles, RotateCw, FileX } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { studio, media, fmtTime } from "$lib/studio/store.svelte";
-  import { FORMAT_RATIO, kfValue, layerState, speedAt, type Layer } from "$lib/studio/model";
+  import { FORMAT_RATIO, frameSize, glitchShift, isFilterFx, kfValue, layerState, shakeAt, speedAt, type BlurLayer, type Layer, type Piece } from "$lib/studio/model";
+  import { mixer, newAudioEl, Ducker } from "$lib/studio/mixer";
   import { fileUrl } from "$lib/api";
   import { t } from "$lib/i18n.svelte";
   import LayerView from "./LayerView.svelte";
@@ -25,6 +28,9 @@
   let flash: HTMLDivElement | undefined = $state();
   let blurCanvas: HTMLCanvasElement | undefined = $state();
   let zoomBox: HTMLDivElement | undefined = $state();
+  let sceneEl: HTMLDivElement | undefined = $state();
+  let glitchR: SVGFEOffsetElement | undefined = $state();
+  let glitchB: SVGFEOffsetElement | undefined = $state();
 
   const empty = $derived(!P.pieces.length && !P.tracks.length);
   const k = $derived(studio.indexAt(studio.t));
@@ -49,9 +55,21 @@
   $effect(() => {
     for (const p of P.pieces) {
       media.load(p.path);
+      media.loadStrip(p.path);
       media.loadInputs(p.clipId);
+      if (customTracks(p)) media.loadStems(p.path);
+    }
+    for (const tr of P.tracks) {
+      if (tr.kind === "layer") for (const l of tr.items) if (l.kind === "video") media.loadStrip(l.path);
+      if (tr.kind === "audio") for (const a of tr.items) media.load(a.path);
     }
   });
+
+  /** Volumes par piste réglés (micro coupé, Discord plus fort…) : l'aperçu joue alors les pistes séparées. */
+  function customTracks(p: Piece) {
+    return p.kind !== "freeze" && media.separateTracks(p.path).length > 0 && p.trackVolumes.some((v) => Math.abs(v - 1) > 0.001);
+  }
+  const stemsOf = (p: Piece) => (customTracks(p) ? media.stems[p.path] ?? null : null);
 
   // ---------------------------------------------------------------------------
   // Lecteur principal : deux vidéos. Pendant que l'une joue, l'autre attend au début du morceau suivant.
@@ -61,6 +79,8 @@
   let raf = 0;
   let lastNow = 0;
   const audios = new Map<string, HTMLAudioElement>();
+  const stemEls = new Map<string, HTMLAudioElement>();
+  const ducker = new Ducker();
 
   function prepare(s: Slot, idx: number) {
     const p = P.pieces[idx];
@@ -89,9 +109,12 @@
       if (drift > 0.015 && !el.seeking) el.currentTime = target;
     }
     // Couleur : mêmes formules que l'export (filtres CSS)
-    const c = p.color;
-    el.style.filter = c.b === 1 && c.c === 1 && c.s === 1 ? "" : `brightness(${c.b}) contrast(${c.c}) saturate(${c.s})`;
+    el.style.filter = colorCss(p);
   }
+  const colorCss = (p: Piece) => {
+    const c = p.color;
+    return c.b === 1 && c.c === 1 && c.s === 1 ? "" : `brightness(${c.b}) contrast(${c.c}) saturate(${c.s})`;
+  };
   function reset(el: HTMLVideoElement) {
     el.style.opacity = "0";
     el.style.transform = "";
@@ -99,12 +122,56 @@
     el.style.zIndex = "1";
   }
 
+  /** Son d'un morceau : la vidéo elle-même (mixage), ou ses pistes séparées si leurs volumes sont réglés. */
+  function pieceSound(el: HTMLVideoElement, idx: number, fade: number, t: number, play: boolean, live: Set<string>) {
+    const p = P.pieces[idx];
+    if (!p || p.kind === "freeze") {
+      el.muted = true;
+      return;
+    }
+    el.muted = false;
+    const stems = stemsOf(p);
+    if (!stems?.length) {
+      mixer.set(el, p.volume * fade);
+      return;
+    }
+    // Pistes séparées : la vidéo se tait, chaque piste joue avec son volume
+    mixer.set(el, 0);
+    const target = studio.srcTime(idx, t);
+    const rate = speedAt(p, target);
+    stems.forEach((path, j) => {
+      const key = `${idx}:${j}`;
+      live.add(key);
+      let a = stemEls.get(key);
+      if (!a) {
+        a = newAudioEl();
+        stemEls.set(key, a);
+      }
+      const url = fileUrl(path);
+      if (a.dataset.src !== url) {
+        a.dataset.src = url;
+        a.src = url;
+      }
+      if (Math.abs(a.playbackRate - rate) > 0.01) a.playbackRate = rate;
+      mixer.set(a, p.volume * (p.trackVolumes[j] ?? 1) * fade);
+      if (a.readyState < 1) return;
+      const drift = Math.abs(a.currentTime - target);
+      if (play) {
+        if (drift > 0.12 && !a.seeking) a.currentTime = target;
+        if (a.paused) a.play().catch(() => {});
+      } else {
+        if (!a.paused) a.pause();
+        if (drift > 0.05 && !a.seeking) a.currentTime = target;
+      }
+    });
+  }
+
   function frame(now: number) {
     raf = requestAnimationFrame(frame);
     const pieces = P.pieces;
     const total = studio.total;
+    const dt = lastNow ? Math.min(0.1, (now - lastNow) / 1000) : 0;
     if (studio.playing) {
-      const dt = lastNow ? Math.min(0.1, (now - lastNow) / 1000) : 0;
       studio.t = Math.min(total, studio.t + dt);
       if (studio.t >= total - 0.001) {
         studio.playing = false;
@@ -114,8 +181,10 @@
     lastNow = now;
     const t = studio.t;
     const play = studio.playing;
-    syncAudio(t, play);
+    syncAudio(t, play, dt);
     syncPip(t, play);
+    applyFx(t);
+    const liveStems = new Set<string>();
     if (!slots.length) return;
     const kk = studio.indexAt(t);
     if (!pieces.length || kk < 0) {
@@ -123,6 +192,8 @@
         if (!s.el.paused) s.el.pause();
         reset(s.el);
       }
+      stopStems(liveStems);
+      drawBlurs(null, t);
       return;
     }
     const overlap = kk > 0 && L.trans[kk] > 0 && t < L.offsets[kk] + L.trans[kk];
@@ -152,8 +223,7 @@
     if (!overlap) {
       reset(main.el);
       main.el.style.opacity = "1";
-      main.el.muted = pieces[kk].kind === "freeze";
-      main.el.volume = Math.min(1, Math.max(0, pieces[kk].volume));
+      pieceSound(main.el, kk, 1, t, play, liveStems);
     } else {
       const out = byIdx.get(kk - 1)!;
       const pr = Math.min(1, Math.max(0, (t - L.offsets[kk]) / L.trans[kk]));
@@ -179,18 +249,20 @@
         main.el.style.transform = `translateX(${(1 - pr) * 100}%)`;
       } else if (type === "wipe") main.el.style.clipPath = `inset(0 0 0 ${(1 - pr) * 100}%)`;
       else main.el.style.opacity = String(pr);
-      out.el.muted = main.el.muted = false;
-      out.el.volume = Math.min(1, Math.max(0, pieces[kk - 1].volume * (1 - pr)));
-      main.el.volume = Math.min(1, Math.max(0, pieces[kk].volume * pr));
+      // Son croisé, comme acrossfade à l'export
+      pieceSound(out.el, kk - 1, 1 - pr, t, play, liveStems);
+      pieceSound(main.el, kk, pr, t, play, liveStems);
     }
+    stopStems(liveStems);
     // Zoom animé du morceau affiché (même courbe que l'export)
+    let zoom = { z: 1, x: 0.5, y: 0.5 };
     if (zoomBox) {
       const p = pieces[kk];
       const lt = t - L.offsets[kk];
       if (p.zoom.length) {
-        const z = kfValue(p.zoom, "z", lt, 1), x = kfValue(p.zoom, "x", lt, 0.5), y = kfValue(p.zoom, "y", lt, 0.5);
-        zoomBox.style.transformOrigin = `${x * 100}% ${y * 100}%`;
-        zoomBox.style.transform = z > 1.001 ? `scale(${z})` : "";
+        zoom = { z: kfValue(p.zoom, "z", lt, 1), x: kfValue(p.zoom, "x", lt, 0.5), y: kfValue(p.zoom, "y", lt, 0.5) };
+        zoomBox.style.transformOrigin = `${zoom.x * 100}% ${zoom.y * 100}%`;
+        zoomBox.style.transform = zoom.z > 1.001 ? `scale(${zoom.z})` : "";
       } else zoomBox.style.transform = "";
     }
     // Fond flou d'un format vertical ou carré
@@ -205,19 +277,138 @@
         ctx.drawImage(main.el, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, cw, ch);
       }
     }
+    drawBlurs({ el: main.el, piece: pieces[kk], zoom }, t);
+  }
+  function stopStems(live: Set<string>) {
+    for (const [key, a] of stemEls) {
+      if (live.has(key)) continue;
+      a.pause();
+      a.removeAttribute("src");
+      a.load();
+      stemEls.delete(key);
+    }
   }
 
-  // Sons (musique, bruitages, voix off) : un lecteur par élément
-  function syncAudio(t: number, play: boolean) {
+  // ---------------------------------------------------------------------------
+  // Zones floutées : l'image sous la zone est redessinée floutée (ou pixelisée) à chaque image,
+  // comme l'export (crop + boxblur, ou réduction puis agrandissement sans lissage).
+  // ---------------------------------------------------------------------------
+  let tiny: HTMLCanvasElement | null = null;
+  function drawBlurs(src: { el: HTMLVideoElement; piece: Piece; zoom: { z: number; x: number; y: number } } | null, t: number) {
+    if (!frameEl) return;
+    const cvs = frameEl.querySelectorAll<HTMLCanvasElement>("canvas[data-blur]");
+    if (!cvs.length) return;
+    const el = src?.el;
+    const vw = el?.videoWidth ?? 0, vh = el?.videoHeight ?? 0;
+    const cover = P.fit === "crop" && P.format !== "16:9";
+    for (const c of cvs) {
+      const l = studio.findLayer(c.dataset.blur!) as BlurLayer | null;
+      if (!l || l.kind !== "blur") continue;
+      const st = layerState(l, t - l.at);
+      const bw = Math.max(2, Math.round(l.w * fw)), bh = Math.max(2, Math.round(l.h * fh));
+      if (c.width !== bw || c.height !== bh) {
+        c.width = bw;
+        c.height = bh;
+      }
+      const ctx = c.getContext("2d");
+      if (!ctx) continue;
+      ctx.clearRect(0, 0, bw, bh);
+      if (!el || !src || !vw || !vh || el.readyState < 2) continue;
+      // Cadre de l'aperçu → image source : zoom (autour de son centre) puis « contain » ou « cover »
+      const s = cover ? Math.max(fw / vw, fh / vh) : Math.min(fw / vw, fh / vh);
+      const dx = (fw - vw * s) / 2, dy = (fh - vh * s) / 2;
+      const z = Math.max(1, src.zoom.z), ox = src.zoom.x * fw, oy = src.zoom.y * fh;
+      const toSrc = (qx: number, qy: number) => [((ox + (qx - ox) / z) - dx) / s, ((oy + (qy - oy) / z) - dy) / s];
+      const left = st.x * fw - bw / 2, top = st.y * fh - bh / 2;
+      const color = colorCss(src.piece);
+      if (l.mode === "pixel") {
+        const cell = Math.max(1, (l.strength * fh) / 1080);
+        const tw = Math.max(1, Math.round(bw / cell)), th = Math.max(1, Math.round(bh / cell));
+        tiny ??= document.createElement("canvas");
+        tiny.width = tw;
+        tiny.height = th;
+        const tc = tiny.getContext("2d")!;
+        const [sx, sy] = toSrc(left, top), [ex, ey] = toSrc(left + bw, top + bh);
+        tc.filter = color || "none";
+        tc.imageSmoothingEnabled = true;
+        tc.drawImage(el, sx, sy, ex - sx, ey - sy, 0, 0, tw, th);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(tiny, 0, 0, tw, th, 0, 0, bw, bh);
+      } else {
+        // Marge autour de la zone : le flou ne s'éclaircit pas sur les bords
+        const r = (l.strength * fh) / 1080;
+        const m = Math.ceil(r * 3);
+        const [sx, sy] = toSrc(left - m, top - m), [ex, ey] = toSrc(left + bw + m, top + bh + m);
+        ctx.filter = `${color} blur(${r.toFixed(2)}px)`.trim();
+        ctx.drawImage(el, sx, sy, ex - sx, ey - sy, -m, -m, bw + 2 * m, bh + 2 * m);
+        ctx.filter = "none";
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Effets sur toute l'image (vidéo + calques) : mêmes formules que render.rs
+  // ---------------------------------------------------------------------------
+  let glitchPx = 0;
+  function applyFx(t: number) {
+    if (!sceneEl) return;
+    const { w: W, h: H } = frameSize(P.format);
+    const filters: string[] = [];
+    let transform = "";
+    let gl = 0;
+    let bw = 0, inv = false;
+    let shake: { kx: number; ky: number; x: number; y: number } | null = null;
+    for (const tr of P.tracks) {
+      if (tr.kind !== "layer" || tr.hidden) continue;
+      for (const l of tr.items) {
+        if (l.kind !== "fx" || !isFilterFx(l) || t < l.at || t >= l.at + l.dur) continue;
+        if (l.fx === "bw") bw = Math.max(bw, Math.max(0, Math.min(1, l.strength)));
+        else if (l.fx === "invert") inv = true;
+        else if (l.fx === "glitch") gl = Math.max(gl, glitchShift(l.strength, W));
+        else if (l.fx === "shake" && !shake) shake = shakeAt(t, l.strength, W, H);
+      }
+    }
+    if (bw > 0) filters.push(`grayscale(${bw})`);
+    if (inv) filters.push("invert(1)");
+    if (gl > 0) {
+      const px = (gl * fw) / W;
+      if (Math.abs(px - glitchPx) > 0.05) {
+        glitchPx = px;
+        glitchR?.setAttribute("dx", String(-px));
+        glitchB?.setAttribute("dx", String(px));
+      }
+      filters.push("url(#rw-glitch)");
+    }
+    if (shake) transform = `scale(${shake.kx}, ${shake.ky}) translate(${-shake.x * fw}px, ${-shake.y * fh}px)`;
+    const f = filters.join(" ");
+    if (sceneEl.style.filter !== f) sceneEl.style.filter = f;
+    if (sceneEl.style.transform !== transform) sceneEl.style.transform = transform;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sons (musique, bruitages, voix off) : un lecteur par élément, volume, fondus et baisse auto
+  // ---------------------------------------------------------------------------
+  /** Niveau du son du jeu à l'instant t (forme d'onde du morceau, linéaire 0..1). */
+  function gameLevel(t: number): number {
+    const kk = studio.indexAt(t);
+    const p = P.pieces[kk];
+    if (!p || p.kind === "freeze") return 0;
+    const w = media.waves[p.path];
+    if (!w) return 0;
+    const v = w.peaks[Math.floor(studio.srcTime(kk, t) * w.rate)] ?? 0;
+    return Math.pow(v / 255, 1 / 0.6) * Math.max(0, p.volume);
+  }
+  function syncAudio(t: number, play: boolean, dt: number) {
     const alive = new Set<string>();
+    const duck = play ? ducker.gain(gameLevel(t) * 0.7, dt) : 1;
+    if (!play) ducker.reset();
     for (const tr of P.tracks) {
       if (tr.kind !== "audio") continue;
       for (const a of tr.items) {
         alive.add(a.uid);
         let el = audios.get(a.uid);
         if (!el) {
-          el = new Audio();
-          el.preload = "auto";
+          el = newAudioEl();
           audios.set(a.uid, el);
         }
         const url = fileUrl(a.path);
@@ -233,7 +424,8 @@
           let v = a.kf.length ? kfValue(a.kf, "v", local, a.volume) : a.volume;
           if (a.fadeIn > 0) v *= Math.min(1, local / a.fadeIn);
           if (a.fadeOut > 0) v *= Math.min(1, Math.max(0, (a.dur - local) / a.fadeOut));
-          el.volume = Math.min(1, Math.max(0, v));
+          if (a.duck) v *= duck;
+          mixer.set(el, v);
           if (el.paused) el.play().catch(() => {});
         } else if (!el.paused) el.pause();
       }
@@ -249,7 +441,7 @@
       const local = t - l.at;
       const target = l.srcStart + local * l.speed;
       if (Math.abs(el.playbackRate - l.speed) > 0.01) el.playbackRate = l.speed;
-      el.volume = Math.min(1, Math.max(0, l.volume));
+      mixer.set(el, l.volume);
       if (el.readyState < 1) continue;
       if (play) {
         if (Math.abs(el.currentTime - target) > 0.25) el.currentTime = target;
@@ -271,15 +463,21 @@
       studio.playing = false;
       for (const s of slots) s.el.pause();
       for (const el of audios.values()) el.pause();
+      stopStems(new Set());
       window.removeEventListener("rewind-pause", pause);
     };
   });
 
   function toggle() {
     if (empty) return;
+    mixer.unlock();
     if (!studio.playing && studio.t >= studio.total - 0.05) studio.t = 0;
     studio.playing = !studio.playing;
   }
+  // La barre d'espace (Studio.svelte) lance aussi la lecture : le son doit être réveillé là aussi
+  $effect(() => {
+    if (studio.playing) mixer.unlock();
+  });
   function fullscreen() {
     if (document.fullscreenElement) document.exitFullscreen();
     else stage?.requestFullscreen().catch(() => {});
@@ -304,7 +502,7 @@
   // ---------------------------------------------------------------------------
   const sel = $derived(studio.layer);
   const selState = $derived(sel ? layerState(sel, studio.t - sel.at) : null);
-  const selActive = $derived(!!sel && studio.t >= sel.at - 1e-3 && studio.t < sel.at + sel.dur);
+  const selActive = $derived(!!sel && sel.kind !== "fx" && studio.t >= sel.at - 1e-3 && studio.t < sel.at + sel.dur);
   let selBox = $state<{ w: number; h: number }>({ w: 0, h: 0 });
   $effect(() => {
     // Taille affichée du calque choisi (mesurée dans l'aperçu)
@@ -362,7 +560,7 @@
   }
   const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
   function pick(l: Layer, e: PointerEvent) {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || l.kind === "fx") return;
     studio.select({ type: "layer", id: l.uid });
     start(e, "move");
   }
@@ -373,7 +571,8 @@
   }
   function frameDown(e: PointerEvent) {
     // Clic dans le vide : on choisit le morceau sous la tête de lecture
-    if (e.target === e.currentTarget || (e.target as HTMLElement).tagName === "VIDEO") {
+    const tg = e.target as HTMLElement;
+    if (tg === e.currentTarget || tg.tagName === "VIDEO" || tg.classList.contains("scene")) {
       const p = P.pieces[studio.indexAt(studio.t)];
       studio.select(p ? { type: "piece", id: p.uid } : null);
     }
@@ -381,6 +580,19 @@
 </script>
 
 <svelte:window onpointermove={move} onpointerup={end} />
+
+<!-- Glitch : couleurs rouge et bleue décalées (rgbashift à l'export) -->
+<svg class="defs" aria-hidden="true">
+  <filter id="rw-glitch" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+    <feColorMatrix in="SourceGraphic" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="r" />
+    <feOffset bind:this={glitchR} in="r" dx="0" dy="0" result="r2" />
+    <feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="g" />
+    <feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="b" />
+    <feOffset bind:this={glitchB} in="b" dx="0" dy="0" result="b2" />
+    <feComposite in="r2" in2="g" operator="arithmetic" k2="1" k3="1" result="rg" />
+    <feComposite in="rg" in2="b2" operator="arithmetic" k2="1" k3="1" />
+  </filter>
+</svg>
 
 <div class="preview">
   <div
@@ -394,19 +606,22 @@
     aria-label={t("Aperçu")}
   >
     <div class="frame" class:hidden={empty} style="--r:{ratio}" bind:this={frameEl} bind:clientWidth={fw} bind:clientHeight={fh} onpointerdown={frameDown} role="presentation">
-      {#if P.fit === "blur" && P.format !== "16:9"}<canvas class="blurbg" width="54" height="96" bind:this={blurCanvas}></canvas>{/if}
-      <div class="zoombox" class:cover={P.fit === "crop" && P.format !== "16:9"} bind:this={zoomBox}>
-        <!-- svelte-ignore a11y_media_has_caption -->
-        <video bind:this={vA} playsinline preload="auto"></video>
-        <!-- svelte-ignore a11y_media_has_caption -->
-        <video bind:this={vB} playsinline preload="auto"></video>
-        <div class="flash" bind:this={flash}></div>
-      </div>
-      {#each visible as v (v.l.uid)}
-        <div class="lz" style="z-index:{v.z}">
-          <LayerView layer={v.l} local={studio.t - v.l.at} {fw} {fh} onpick={(e) => pick(v.l, e)} />
+      <!-- Tout ce que les effets transforment : vidéo et calques (pas les touches ni les poignées) -->
+      <div class="scene" bind:this={sceneEl}>
+        {#if P.fit === "blur" && P.format !== "16:9"}<canvas class="blurbg" width="54" height="96" bind:this={blurCanvas}></canvas>{/if}
+        <div class="zoombox" class:cover={P.fit === "crop" && P.format !== "16:9"} bind:this={zoomBox}>
+          <!-- svelte-ignore a11y_media_has_caption -->
+          <video bind:this={vA} playsinline preload="auto" crossorigin="anonymous"></video>
+          <!-- svelte-ignore a11y_media_has_caption -->
+          <video bind:this={vB} playsinline preload="auto" crossorigin="anonymous"></video>
+          <div class="flash" bind:this={flash}></div>
         </div>
-      {/each}
+        {#each visible as v (v.l.uid)}
+          <div class="lz" style="z-index:{v.z}">
+            <LayerView layer={v.l} local={studio.t - v.l.at} {fw} {fh} onpick={(e) => pick(v.l, e)} />
+          </div>
+        {/each}
+      </div>
       {#if P.keys.on && hasKeys && keyEvents.length}
         <div class="keysbox" class:on={studio.sel?.type === "keys"} style="left:{P.keys.x * fw}px;top:{P.keys.y * fh}px" onpointerdown={pickKeys} role="presentation">
           <KeysOverlay events={keyEvents} time={keyTime} width={P.keys.scale * fw} floating={false} />
@@ -431,6 +646,15 @@
         </div>
       {/if}
     </div>
+    {#if current && media.missing[current.path]}
+      <!-- Fichier déplacé ou supprimé : on le dit au lieu d'un écran noir -->
+      <div class="lostclip">
+        <FileX size={26} />
+        <strong>{t("Ce clip est introuvable")}</strong>
+        <span>{t("Le fichier a été déplacé ou supprimé. S'il est encore dans ton dossier des clips, le montage le retrouve tout seul.")}</span>
+        <small class="mono">{current.path}</small>
+      </div>
+    {/if}
     {#if empty}
       <div class="empty">
         <Film size={36} />
@@ -460,12 +684,14 @@
 </div>
 
 <style>
+  .defs { position: absolute; width: 0; height: 0; overflow: hidden; }
   .preview { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 12px 14px 8px; gap: 8px; }
   .stage { position: relative; flex: 1; min-height: 0; display: grid; place-items: center; border-radius: 14px; background: #08090c; container-type: size; overflow: hidden; transition: box-shadow var(--dur); }
   .stage.over { box-shadow: inset 0 0 0 2px var(--hi); }
   .stage:fullscreen { border-radius: 0; background: #000; }
   .frame { position: relative; width: min(100cqw, calc(100cqh * var(--r))); aspect-ratio: var(--r); background: #000; overflow: hidden; border-radius: 4px; box-shadow: 0 24px 60px -30px rgba(0, 0, 0, 0.9); touch-action: none; }
   .frame.hidden { visibility: hidden; }
+  .scene { position: absolute; inset: 0; transform-origin: 0 0; }
   .zoombox { position: absolute; inset: 0; will-change: transform; }
   .zoombox video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0; }
   .zoombox.cover video { object-fit: cover; }
@@ -487,6 +713,11 @@
   .h.bm { left: 50%; top: 100%; cursor: ns-resize; }
   .keysbox .h.br { position: absolute; }
   .rot { position: absolute; left: 50%; top: -30px; width: 22px; height: 22px; margin-left: -11px; border-radius: 50%; display: grid; place-items: center; background: #fff; color: #0b0c0f; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55); pointer-events: auto; cursor: grab; }
+  .lostclip { position: absolute; inset: 0; z-index: 90; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: #fff; background: rgba(8, 9, 12, 0.88); pointer-events: none; }
+  .lostclip :global(svg) { color: var(--rec); }
+  .lostclip strong { font-size: 15px; font-weight: 600; }
+  .lostclip span { max-width: 440px; font-size: 12.5px; line-height: 1.5; color: rgba(255, 255, 255, 0.72); }
+  .lostclip small { max-width: 90%; font-size: 11px; color: rgba(255, 255, 255, 0.45); word-break: break-all; }
   .empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 10px; padding: 24px; color: #fff; }
   .empty h3 { margin: 4px 0 0; font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
   .empty p { margin: 0 0 6px; max-width: 460px; font-size: 13.5px; line-height: 1.6; color: rgba(255, 255, 255, 0.7); }

@@ -1,8 +1,12 @@
 <script lang="ts">
   // Colonne de gauche du Studio : tout ce qu'on peut ajouter au montage.
-  import { Clapperboard, Type, Image as ImageIcon, Music, Sparkles, Plus, Search, Layers, Mic, Square, Upload, Droplets, Snowflake, ZoomIn, Gauge } from "@lucide/svelte";
+  import {
+    Clapperboard, Type, Image as ImageIcon, Music, Sparkles, Plus, Search, Layers, Mic, Square, Upload, Droplets, Snowflake, ZoomIn, Gauge,
+    Vibrate, Zap, ScanLine, Contrast, SunMoon, Moon, Aperture, RectangleHorizontal, Grid3x3,
+  } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { studio, fmtTime } from "$lib/studio/store.svelte";
+  import { FX_LIST, type FxKind } from "$lib/studio/model";
   import { fileUrl, formatDuration, api } from "$lib/api";
   import { fit } from "$lib/fit";
   import { t } from "$lib/i18n.svelte";
@@ -88,6 +92,10 @@
     }
   }
 
+  const FX_ICON: Record<FxKind, typeof Vibrate> = {
+    shake: Vibrate, flash: Zap, glitch: ScanLine, bw: Contrast, invert: SunMoon, black: Moon, vignette: Aperture, bars: RectangleHorizontal,
+  };
+
   const TEXTS: { id: "title" | "subtitle" | "caption" | "gothic"; label: string; hint: string }[] = [
     { id: "gothic", label: "Edit", hint: "Gothique, comme sur les edits TikTok" },
     { id: "title", label: "TITRE", hint: "Gros titre avec contour, entrée « pop »" },
@@ -158,6 +166,18 @@
       {/if}
 
     {:else}
+      <p class="note">{t("Un effet se pose à la tête de lecture, sur sa piste. Allonge-le ou déplace-le sur la frise : l'aperçu le montre tout de suite.")}</p>
+      <span class="mini">{t("Sur toute l'image")}</span>
+      <div class="fxgrid">
+        {#each FX_LIST as f}
+          {@const Icon = FX_ICON[f.fx]}
+          <button class="fxb" onclick={() => studio.addFx(f.fx)} title={t(f.hint)}><Icon size={17} /><b>{t(f.label)}</b><small>{t(f.hint)}</small></button>
+        {/each}
+        <button class="fxb" onclick={() => studio.addBlur("blur")} title={t("Tout le cadre flou")}><Droplets size={17} /><b>{t("Image floutée")}</b><small>{t("Tout le cadre flou")}</small></button>
+        <button class="fxb" onclick={() => studio.addBlur("pixel")} title={t("Tout le cadre en gros pixels")}><Grid3x3 size={17} /><b>{t("Image pixelisée")}</b><small>{t("Tout le cadre en gros pixels")}</small></button>
+      </div>
+      <span class="mini">{t("Sur le clip")}</span>
+      <button class="big" onclick={() => studio.zoomPunch()} disabled={studio.indexAt(studio.t) < 0}><ZoomIn size={18} /><span><b>{t("Zoom rapide")}</b><small>{t("L'image plonge puis revient, à la tête de lecture")}</small></span></button>
       <button class="big" onclick={() => studio.addBlur()}><Droplets size={18} /><span><b>{t("Zone floutée")}</b><small>{t("Cache un pseudo, le chat, une notification")}</small></span></button>
       <button class="big" onclick={() => studio.freezeFrame()} disabled={studio.indexAt(studio.t) < 0}><Snowflake size={18} /><span><b>{t("Arrêt sur image")}</b><small>{t("Fige l'image à la tête de lecture pendant 2 s")}</small></span></button>
       <div class="tip"><ZoomIn size={16} /><span>{t("Zoom animé : choisis un morceau, puis « Zoom » à droite.")}</span></div>
@@ -210,4 +230,11 @@
   .recent:hover { background: var(--panel); color: var(--text); }
   .recent span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tip { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; font-size: 12px; line-height: 1.45; color: var(--text-3); border: 1px dashed var(--line-2); }
+  /* Effets : grille de deux colonnes, icône + nom + petite explication */
+  .fxgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .fxb { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; padding: 10px; border-radius: 10px; text-align: left; background: var(--panel); border: 1px solid var(--line); color: var(--text-2); transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+  .fxb:hover { border-color: var(--line-2); color: var(--text); }
+  .fxb:active { transform: scale(0.98); }
+  .fxb b { font-size: 12.5px; font-weight: 600; color: var(--text); margin-top: 3px; }
+  .fxb small { font-size: 10.5px; line-height: 1.35; color: var(--text-3); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 </style>

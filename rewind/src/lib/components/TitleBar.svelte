@@ -43,7 +43,7 @@
 
   <div class="controls">
     {#if app.update?.available}
-      <button class="upd" onclick={() => { app.settingsSection = "general"; app.view = "settings"; }} title={t("Une nouvelle version de Rewind est prête (Réglages › Démarrage)")}>
+      <button class="upd" onclick={() => { app.settingsSection = "general"; app.view = "settings"; }} title={t("Une nouvelle version de Rewind est prête (Réglages › Système)")}>
         <ArrowDownCircle size={14} />{t("Mise à jour")} {app.update.available}
       </button>
     {/if}

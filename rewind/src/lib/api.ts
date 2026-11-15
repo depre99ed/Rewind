@@ -243,6 +243,7 @@ export const api = {
   mediaInfo: (path: string) => invoke<MediaInfo>("media_info", { path }),
   mediaFilmstrip: (path: string) => invoke<Filmstrip>("media_filmstrip", { path }),
   mediaWaveform: (path: string) => invoke<Waveform>("media_waveform", { path }),
+  mediaStems: (path: string) => invoke<string[]>("media_stems", { path }),
   trim: (id: string, start: number, end: number, exact: boolean) => invoke<Clip>("edit_trim", { id, start, end, exact }),
   merge: (ids: string[]) => invoke<Clip>("edit_merge", { ids }),
   vertical: (id: string, mode: string, start: number, end: number) => invoke<Clip>("edit_vertical", { id, mode, start, end }),

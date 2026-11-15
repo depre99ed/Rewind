@@ -10,7 +10,7 @@
   import { momentTone } from "$lib/moments";
   import MomentIcon from "../MomentIcon.svelte";
   import Slider from "./Slider.svelte";
-  import { kfValue, outLen, localAt, type Color, type Fit, type Format, type TextAnimIn, type TextAnimOut } from "$lib/studio/model";
+  import { kfValue, outLen, localAt, fxInfo, isFilterFx, isFullBlur, type Color, type Fit, type Format, type TextAnimIn, type TextAnimOut } from "$lib/studio/model";
   import { FONTS, FONT_GROUPS } from "$lib/studio/fonts";
   import { t } from "$lib/i18n.svelte";
 
@@ -173,7 +173,7 @@
     </div>
 
   {:else if layer}
-    <div class="title">{#if layer.kind === "text"}<Type size={15} />{:else if layer.kind === "blur"}<Droplets size={15} />{:else}<Film size={15} />{/if}<h3>{layer.kind === "text" ? t("Texte") : layer.kind === "blur" ? t("Zone floutée") : layer.name}</h3></div>
+    <div class="title">{#if layer.kind === "text"}<Type size={15} />{:else if layer.kind === "blur"}<Droplets size={15} />{:else if layer.kind === "fx"}<Sparkles size={15} />{:else}<Film size={15} />{/if}<h3>{layer.kind === "text" ? t("Texte") : layer.kind === "blur" ? t(isFullBlur(layer) ? (layer.mode === "pixel" ? "Image pixelisée" : "Image floutée") : "Zone floutée") : layer.kind === "fx" ? t(fxInfo(layer.fx).label) : layer.name}</h3></div>
     {#if layer.kind === "text"}
       <textarea class="field area" value={layer.text} onfocus={begin} oninput={(e) => studio.updateLayer(layer.uid, { text: e.currentTarget.value }, false)} rows="2"></textarea>
       <section>
@@ -240,8 +240,20 @@
         <Slider label={t("Largeur")} value={layer.w} min={0.02} max={1} step={0.01} def={0.24} format={pct} parse={parsePct} onstart={begin} oninput={(v) => studio.updateLayer(layer.uid, { w: v }, false)} />
         <Slider label={t("Hauteur")} value={layer.h} min={0.02} max={1} step={0.01} def={0.08} format={pct} parse={parsePct} onstart={begin} oninput={(v) => studio.updateLayer(layer.uid, { h: v }, false)} />
       </section>
+    {:else if layer.kind === "fx"}
+      {@const info = fxInfo(layer.fx)}
+      <section>
+        <header><Sparkles size={14} /><h4>{t("Effet")}</h4></header>
+        <p class="note">{t(info.hint)}. {t(isFilterFx(layer) ? "Agit sur toute l'image (vidéo et calques), pas sur les touches." : "Image plein cadre : une piste au-dessus passe devant.")}</p>
+        {#if info.slider}
+          <Slider label={t("Intensité")} value={layer.strength} min={0.05} max={1} step={0.01} def={info.strength} format={pct} parse={parsePct} onstart={begin} oninput={(v) => studio.updateLayer(layer.uid, { strength: v }, false)} />
+        {/if}
+        <Slider label={t("Durée")} value={layer.dur} min={0.1} max={Math.max(10, layer.dur)} step={0.05} def={info.dur} format={(v) => `${v.toFixed(2)} s`} onstart={begin} oninput={(v) => studio.updateLayer(layer.uid, { dur: v, fadeIn: Math.min(layer.fadeIn, v), fadeOut: Math.min(layer.fadeOut, v) }, false)} />
+        <button class="btn small" onclick={() => studio.updateLayer(layer.uid, { at: studio.t })}><MousePointerClick size={14} />{t("Placer à la tête de lecture")}</button>
+      </section>
     {/if}
 
+    {#if layer.kind !== "fx"}
     <section>
       <header><Move size={14} /><h4>{t("Mouvement")}</h4>
         <button class="hbtn" class:on={onKf} onclick={() => studio.toggleKf(layer.uid)} title={t("Point clé à la tête de lecture")}><Diamond size={13} /></button>
@@ -254,11 +266,14 @@
       <Slider label={t("Opacité")} value={lv("opacity", layer.opacity)} min={0} max={1} step={0.01} def={1} format={pct} parse={parsePct} onstart={begin} oninput={(v) => studio.setAnimated(layer.uid, { opacity: v }, false)} />
       {#if layer.kf.length}<button class="btn small ghost" onclick={() => studio.updateLayer(layer.uid, { kf: [] })}><Trash2 size={14} />{t("Retirer les points clés")}</button>{/if}
     </section>
+    {/if}
+    {#if !isFilterFx(layer)}
     <section>
       <header><SunMoon size={14} /><h4>{t("Fondus")}</h4></header>
-      <Slider label={t("Entrée")} value={layer.fadeIn} min={0} max={3} step={0.1} def={0} format={sec} onstart={begin} oninput={(v) => studio.updateLayer(layer.uid, { fadeIn: v }, false)} />
-      <Slider label={t("Sortie")} value={layer.fadeOut} min={0} max={3} step={0.1} def={0} format={sec} onstart={begin} oninput={(v) => studio.updateLayer(layer.uid, { fadeOut: v }, false)} />
+      <Slider label={t("Entrée")} value={layer.fadeIn} min={0} max={3} step={0.05} def={0} format={sec} onstart={begin} oninput={(v) => studio.updateLayer(layer.uid, { fadeIn: v }, false)} />
+      <Slider label={t("Sortie")} value={layer.fadeOut} min={0} max={3} step={0.05} def={0} format={sec} onstart={begin} oninput={(v) => studio.updateLayer(layer.uid, { fadeOut: v }, false)} />
     </section>
+    {/if}
     <div class="acts">
       <button class="btn small" onclick={() => studio.duplicate()}><CopyPlus size={14} />{t("Dupliquer")}</button>
       <button class="btn small danger" onclick={() => studio.removeSel()}><Trash2 size={14} />{t("Supprimer")}</button>

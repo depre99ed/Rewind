@@ -52,8 +52,9 @@ et ce qui vient de se passer est sauvé, avec le son de ton PC, ton micro et Dis
 <td width="50%" valign="top">
 
 ### Monter et partager
-- Studio de montage : projets, pistes empilées, texte animé (10 polices), images, GIF, vidéo en incrustation, zone floutée
+- Studio de montage : projets, pistes empilées, texte animé (16 polices, dont des gothiques), images, GIF, vidéo en incrustation, zone floutée
 - Zoom animé, ralenti progressif, couleurs, arrêt sur image, plusieurs pistes son, voix off, points clés
+- Effets : tremblement, flash, glitch, noir et blanc, négatif, fondu au noir, vignette, bandes cinéma ; tout se voit et s'entend en direct dans l'aperçu
 - Formats prêts : 16:9, 9:16 ou 1:1 (fond flou ou recadré), fichiers de 10 ou 20 Mo
 - « Copier pour Discord » compresse à la bonne taille et met le clip dans le presse-papiers
 - Touches du clavier et de la souris affichées sur la vidéo, si tu le souhaites

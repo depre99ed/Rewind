@@ -42,6 +42,20 @@ fn main() {
         let out = args.get(3).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
         std::process::exit(rewind_lib::render_test(spec, out));
     }
+    if args.get(1).map(String::as_str) == Some("--sounds") {
+        // Écrit les sons de clip en .wav (pour les écouter hors de l'appli)
+        let dir = std::path::PathBuf::from(args.get(2).cloned().unwrap_or_default());
+        std::process::exit(rewind_lib::sounds_test(dir));
+    }
+    if args.get(1).map(String::as_str) == Some("--medal-import") {
+        // Test : copie les clips Medal vers un dossier (REWIND_DATA_DIR vers un dossier de test)
+        let dest = std::path::PathBuf::from(args.get(2).cloned().unwrap_or_default());
+        std::process::exit(rewind_lib::medal_import_test(dest));
+    }
+    if args.get(1).map(String::as_str) == Some("--medal-detect") {
+        // Diagnostic : ce que Rewind trouve de Medal sur ce PC
+        std::process::exit(rewind_lib::medal_detect_test());
+    }
     if args.get(1).map(String::as_str) == Some("--input-helper") {
         // Assistant lancé en administrateur : relaie clavier et souris des jeux lancés en administrateur
         std::process::exit(rewind_lib::input_helper());

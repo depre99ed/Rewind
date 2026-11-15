@@ -104,6 +104,10 @@ export type Settings = {
   discord_max_mb: number;
   max_library_gb: number;
   first_run_done: boolean;
+  clip_sound: string;
+  clip_sound_name: string;
+  welcome_done: boolean;
+  medal_prompt_dismissed: boolean;
 };
 
 /** Règles d'un profil CS2 (legit ou HvH) */
@@ -244,6 +248,10 @@ export const api = {
   mediaFilmstrip: (path: string) => invoke<Filmstrip>("media_filmstrip", { path }),
   mediaWaveform: (path: string) => invoke<Waveform>("media_waveform", { path }),
   mediaStems: (path: string) => invoke<string[]>("media_stems", { path }),
+  medalDetect: () => invoke<MedalInfo>("medal_detect"),
+  medalImport: () => invoke<{ copied: number; skipped: number; failed: number }>("medal_import"),
+  soundPreview: (kind: string) => invoke<void>("sound_preview", { kind }),
+  soundImport: (path: string) => invoke<string>("sound_import", { path }),
   adminInputStatus: () => invoke<AdminInput>("admin_input_status"),
   adminInputSet: (on: boolean) => invoke<void>("admin_input_set", { on }),
   trim: (id: string, start: number, end: number, exact: boolean) => invoke<Clip>("edit_trim", { id, start, end, exact }),
@@ -259,6 +267,9 @@ export const api = {
   diagnosticReport: (copy: boolean, save: boolean) => invoke<DiagnosticOut>("diagnostic_report", { copy, save }),
   quit: () => invoke<void>("quit_app"),
 };
+
+/** Medal sur ce PC (clips à importer, réglages repris à l'accueil). */
+export type MedalInfo = { found: boolean; folder: string; clips: number; size_mb: number; imported: number; hotkey: string | null; clip_seconds: number | null; fps: number | null; resolution: number | null; bitrate: number | null };
 
 /** Jeux lancés en administrateur : leurs touches ne sont visibles qu'avec l'assistant. */
 export type AdminInput = { game_admin: boolean; helper: boolean; enabled: boolean; rewind_admin: boolean };

@@ -1,6 +1,7 @@
 //! Rewind — application de clips instantanés pour Windows.
 
 mod admin;
+mod medal;
 mod audio;
 mod cs2;
 mod rapport;
@@ -81,27 +82,127 @@ struct Progress {
 }
 
 // ---------------------------------------------------------------------------
-// Son de confirmation (petit « ding » synthétisé, aucun fichier externe)
+// Son de confirmation : synthétisé (aucun fichier externe), quatre styles au choix (Réglages › Notifications)
 // ---------------------------------------------------------------------------
 
-fn clip_sound(volume: u32) -> PathBuf {
-    let path = util::data_dir().join(format!("clip-{volume}.wav"));
+/// Petit générateur de bruit (reproductible : le son est le même à chaque fois).
+struct Noise(u32);
+impl Noise {
+    fn next(&mut self) -> f64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        self.0 as f64 / u32::MAX as f64 * 2.0 - 1.0
+    }
+}
+
+/// Échantillons (48 kHz, -1..1) du son `kind`.
+fn synth(kind: &str) -> Vec<f64> {
+    use std::f64::consts::PI;
+    let rate = 48_000.0;
+    let mut n = Noise(0x2545_F491);
+    let mut out: Vec<f64>;
+    match kind {
+        // Déclic d'obturateur : deux claquements secs (bruit filtré + petit choc grave), très courts
+        "shutter" => {
+            out = vec![0.0; (rate * 0.16) as usize];
+            let (mut lp, mut prev) = (0.0, 0.0);
+            for (i, o) in out.iter_mut().enumerate() {
+                let t = i as f64 / rate;
+                let click = |t0: f64, a: f64| if t >= t0 { a * (-(t - t0) * 110.0).exp() } else { 0.0 };
+                let thump = |t0: f64, a: f64| if t >= t0 { a * (2.0 * PI * 140.0 * (t - t0)).sin() * (-(t - t0) * 70.0).exp() } else { 0.0 };
+                let raw = n.next();
+                // passe-haut puis passe-bas : un « tic » mat, pas un souffle
+                let hp = raw - prev;
+                prev = raw;
+                lp += (hp - lp) * 0.45;
+                *o = lp * (click(0.0, 1.0) + click(0.058, 0.7)) * 0.9 + thump(0.0, 0.35) + thump(0.058, 0.25);
+            }
+        }
+        // Carillon doux : deux notes de cloche (partiels inharmoniques), la 2e un peu plus haute
+        "chime" => {
+            out = vec![0.0; (rate * 0.75) as usize];
+            for (t0, f, a) in [(0.0, 880.0, 0.7), (0.085, 1318.5, 0.6)] {
+                for (i, o) in out.iter_mut().enumerate() {
+                    let t = i as f64 / rate - t0;
+                    if t < 0.0 {
+                        continue;
+                    }
+                    let att = (t / 0.004).min(1.0);
+                    let v = (2.0 * PI * f * t).sin() * (-t * 7.0).exp()
+                        + 0.28 * (2.0 * PI * f * 2.76 * t).sin() * (-t * 16.0).exp()
+                        + 0.12 * (2.0 * PI * f * 5.40 * t).sin() * (-t * 28.0).exp();
+                    *o += a * att * v;
+                }
+            }
+        }
+        // Rembobinage : bande qui accélère (glissando qui monte, frottement), puis arrêt net
+        "rewind" => {
+            out = vec![0.0; (rate * 0.30) as usize];
+            let (mut phase, mut lp) = (0.0, 0.0);
+            for (i, o) in out.iter_mut().enumerate() {
+                let t = i as f64 / rate;
+                phase += 2.0 * PI * 220.0 * (t * 7.5).exp() / rate;
+                let scrub = 0.65 + 0.35 * (2.0 * PI * 38.0 * t).sin();
+                let tone = phase.sin() * 0.6 + (phase * 2.0).sin() * 0.2;
+                lp += (n.next() - lp) * 0.25;
+                let env = (t / 0.012).min(1.0) * ((0.30 - t) / 0.05).clamp(0.0, 1.0);
+                *o = (tone * 0.75 + lp * 0.35) * scrub * env;
+            }
+        }
+        // Ancien son (deux notes pures), gardé pour qui le préfère
+        _ => {
+            out = vec![0.0; (rate * 0.32) as usize];
+            for (i, o) in out.iter_mut().enumerate() {
+                let t = i as f64 / rate;
+                let f = if t < 0.09 { 1046.5 } else { 1568.0 };
+                let local = if t < 0.09 { t } else { t - 0.09 };
+                let env = (local * 400.0).min(1.0) * (-local * 14.0).exp();
+                *o = ((2.0 * PI * f * t).sin() * 0.8 + (2.0 * PI * f * 2.0 * t).sin() * 0.2) * env;
+            }
+        }
+    }
+    // Même volume crête pour les quatre, fondu de 3 ms à la fin (pas de clic)
+    let peak = out.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-9);
+    let tail = (rate * 0.003) as usize;
+    let len = out.len();
+    for (i, v) in out.iter_mut().enumerate() {
+        *v /= peak;
+        if i + tail > len {
+            *v *= (len - i) as f64 / tail as f64;
+        }
+    }
+    out
+}
+
+fn custom_sound() -> PathBuf {
+    util::data_dir().join("son-perso.wav")
+}
+
+/// Échantillons du son importé (format écrit par `sound_import` : 16 bits mono 48 kHz), -1..1.
+fn custom_samples() -> Vec<f64> {
+    let bytes = std::fs::read(custom_sound()).unwrap_or_default();
+    let data = bytes.windows(4).position(|w| w == b"data").map(|p| p + 8).unwrap_or(44).min(bytes.len());
+    let mut out: Vec<f64> = bytes[data..].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f64 / i16::MAX as f64).collect();
+    let peak = out.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-9);
+    for v in out.iter_mut() {
+        *v /= peak;
+    }
+    out
+}
+
+fn clip_sound(kind: &str, volume: u32) -> PathBuf {
+    let path = util::data_dir().join(format!("son-{kind}-{volume}.wav"));
     if path.is_file() {
         return path;
     }
-    let rate = 44_100u32;
-    let len = (rate as f64 * 0.32) as usize;
-    let mut samples: Vec<i16> = Vec::with_capacity(len);
+    let rate = 48_000u32;
     let amp = (volume.min(100) as f64 / 100.0) * 0.5;
-    for i in 0..len {
-        let t = i as f64 / rate as f64;
-        // deux notes rapides (do6 puis sol6) avec attaque douce et décroissance
-        let f = if t < 0.09 { 1046.5 } else { 1568.0 };
-        let local = if t < 0.09 { t } else { t - 0.09 };
-        let env = (local * 400.0).min(1.0) * (-local * 14.0).exp();
-        let v = (2.0 * std::f64::consts::PI * f * t).sin() * 0.8 + (2.0 * std::f64::consts::PI * f * 2.0 * t).sin() * 0.2;
-        samples.push((v * env * amp * i16::MAX as f64) as i16);
+    let raw = if kind == "custom" { custom_samples() } else { synth(kind) };
+    if raw.is_empty() {
+        return clip_sound("shutter", volume);
     }
+    let samples: Vec<i16> = raw.into_iter().map(|v| (v * amp * i16::MAX as f64) as i16).collect();
     let mut wav: Vec<u8> = Vec::new();
     let data_len = (samples.len() * 2) as u32;
     wav.extend(b"RIFF");
@@ -123,15 +224,62 @@ fn clip_sound(volume: u32) -> PathBuf {
     path
 }
 
+fn play_file(path: &std::path::Path) {
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT};
+    let w = util::wide(&path.to_string_lossy());
+    unsafe {
+        PlaySoundW(w.as_ptr(), std::ptr::null_mut(), SND_ASYNC | SND_FILENAME | SND_NODEFAULT);
+    }
+}
+
 fn play_sound(settings: &Settings) {
     if !settings.sound_on_clip || settings.sound_volume == 0 {
         return;
     }
-    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT};
-    let path = util::wide(&clip_sound(settings.sound_volume).to_string_lossy());
-    unsafe {
-        PlaySoundW(path.as_ptr(), std::ptr::null_mut(), SND_ASYNC | SND_FILENAME | SND_NODEFAULT);
+    play_file(&clip_sound(&settings.clip_sound, settings.sound_volume));
+}
+
+/// Réglages : importer son propre son de clip (n'importe quel fichier son : converti, 3 s au plus).
+#[tauri::command(async)]
+fn sound_import(app: AppHandle, state: State<AppState>, path: String) -> Res<String> {
+    let tools = ffmpeg::tools().map_err(err)?;
+    let tmp = util::data_dir().join("son-perso.tmp.wav");
+    let out = util::command(&tools.ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(&path)
+        .args(["-vn", "-af", "silenceremove=start_periods=1:start_threshold=-50dB", "-t", "3", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le"])
+        .arg(&tmp)
+        .output()
+        .map_err(err)?;
+    if !out.status.success() || std::fs::metadata(&tmp).map(|m| m.len() < 2000).unwrap_or(true) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err("ce fichier n'a pas de son lisible"));
     }
+    std::fs::rename(&tmp, custom_sound()).map_err(err)?;
+    // Anciennes versions du son importé (une par volume) : à refaire
+    if let Ok(entries) = std::fs::read_dir(util::data_dir()) {
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().starts_with("son-custom-") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    let name = std::path::Path::new(&path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let mut settings = state.settings.lock().clone();
+    settings.clip_sound = "custom".into();
+    settings.clip_sound_name = name.clone();
+    let _ = settings.save();
+    *state.settings.lock() = settings.clone();
+    let _ = app.emit("settings-changed", settings);
+    play_file(&clip_sound("custom", state.settings.lock().sound_volume.max(20)));
+    Ok(name)
+}
+
+/// Réglages : écouter un son de clip avant de le choisir.
+#[tauri::command(async)]
+fn sound_preview(state: State<AppState>, kind: String) {
+    let volume = state.settings.lock().sound_volume.max(20);
+    play_file(&clip_sound(&kind, volume));
 }
 
 // ---------------------------------------------------------------------------
@@ -1209,6 +1357,52 @@ async fn diagnostic_report(app: AppHandle, state: State<'_, AppState>, copy: boo
     Ok(DiagnosticOut { text: report.text, problems: report.problems, path, copied })
 }
 
+/// Medal sur ce PC : dossier, nombre de clips, déjà importés, réglages.
+#[tauri::command(async)]
+fn medal_detect() -> medal::MedalInfo {
+    medal::detect()
+}
+
+/// Copie les clips Medal pas encore importés dans le dossier des clips (progression : « edit-progress », op « medal »).
+#[tauri::command(async)]
+fn medal_import(app: AppHandle, state: State<AppState>) -> Res<medal::ImportResult> {
+    let (folder, per_game) = {
+        let s = state.settings.lock();
+        (PathBuf::from(&s.clip_folder), s.folder_per_game)
+    };
+    let res = medal::import(&folder, per_game, &|v| {
+        let _ = app.emit("edit-progress", Progress { op: "medal".into(), value: v });
+    })
+    .map_err(err)?;
+    {
+        let mut lib = state.library.lock();
+        lib.scan(&folder);
+        lib.sort();
+        let _ = lib.save();
+    }
+    let _ = app.emit("library-changed", ());
+    // Miniatures et durées des clips copiés, sans bloquer
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let state = handle.state::<AppState>();
+        // Copie : la bibliothèque n'est pas bloquée pendant le calcul des miniatures
+        let mut copy = Library { clips: state.library.lock().clips.clone() };
+        if copy.fill_missing() {
+            let mut l = state.library.lock();
+            for c in copy.clips {
+                if let Some(x) = l.get_mut(&c.id) {
+                    x.duration = c.duration;
+                    x.thumb = c.thumb;
+                }
+            }
+            let _ = l.save();
+            drop(l);
+            let _ = handle.emit("library-changed", ());
+        }
+    });
+    Ok(res)
+}
+
 #[tauri::command(async)]
 fn refresh_library(state: State<AppState>) -> Vec<Clip> {
     let folder = PathBuf::from(&state.settings.lock().clip_folder);
@@ -1637,6 +1831,30 @@ pub fn render_test(spec: PathBuf, out: PathBuf) -> i32 {
             1
         }
     }
+}
+
+/// Test : `rewind.exe --sounds <dossier>` écrit les quatre sons de clip.
+pub fn sounds_test(dir: PathBuf) -> i32 {
+    let _ = std::fs::create_dir_all(&dir);
+    for (k, name) in [("shutter", "1-declic"), ("chime", "2-carillon"), ("rewind", "3-rembobinage"), ("ding", "4-ancien")] {
+        let _ = std::fs::copy(clip_sound(k, 80), dir.join(format!("son-{name}.wav")));
+    }
+    0
+}
+
+/// Test : `rewind.exe --medal-import <dossier>`.
+pub fn medal_import_test(dest: PathBuf) -> i32 {
+    let t = std::time::Instant::now();
+    match medal::import(&dest, true, &|_| {}) {
+        Ok(r) => { println!("{} copiés, {} déjà là, {} en échec ({:.1} s)", r.copied, r.skipped, r.failed, t.elapsed().as_secs_f64()); 0 }
+        Err(e) => { println!("ÉCHEC : {e:#}"); 1 }
+    }
+}
+
+/// Diagnostic : `rewind.exe --medal-detect`.
+pub fn medal_detect_test() -> i32 {
+    println!("{}", serde_json::to_string_pretty(&medal::detect()).unwrap_or_default());
+    0
 }
 
 /// Au lancement : passe la main à un Rewind administrateur si possible (voir admin.rs).
@@ -2601,6 +2819,10 @@ pub fn run() {
             media_waveform,
             media_stems,
             admin_input_status,
+            medal_detect,
+            medal_import,
+            sound_preview,
+            sound_import,
             admin_input_set,
             edit_trim,
             edit_merge,

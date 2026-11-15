@@ -11,6 +11,7 @@
   import Studio from "$lib/components/Studio.svelte";
   import SettingsView from "$lib/components/SettingsView.svelte";
   import Toasts from "$lib/components/Toasts.svelte";
+  import Welcome from "$lib/components/Welcome.svelte";
 
   let ready = $state(false);
   onMount(async () => {
@@ -26,6 +27,8 @@
       if (open) app.openClip = app.clips.find((c) => c.id === "m" + open) ?? null;
     }
     ready = true;
+    // Premier démarrage : la fenêtre d'accueil (import Medal, dossier, raccourcis, qualité, options)
+    if (app.settings && !app.settings.welcome_done) app.showWelcome = true;
   });
 
   function onKey(e: KeyboardEvent) {
@@ -59,6 +62,9 @@
   {/if}
   {#if app.openClip}
     <Viewer clip={app.openClip} />
+  {/if}
+  {#if ready && app.showWelcome && app.settings}
+    <Welcome onclose={() => (app.showWelcome = false)} />
   {/if}
   <Toasts />
 </div>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Clapperboard, Crosshair, Settings2, Camera, Mic, MicOff, Pause, Play, Film, Scissors, Timer, Ellipsis, History, Send, ShieldExclamationPoint } from "@lucide/svelte";
+  import { Clapperboard, Crosshair, Settings2, Camera, Mic, MicOff, Pause, Play, Film, Scissors, Timer, Ellipsis, History, Send, Download, X, ShieldExclamationPoint } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { api, fileUrl, relativeDate } from "$lib/api";
   import { fit } from "$lib/fit";
@@ -74,6 +74,13 @@
     const id = setInterval(read, 5000);
     return () => clearInterval(id);
   });
+  // Medal détecté avec des clips pas encore importés (une fois l'accueil passé) : petite carte discrète
+  let medalLeft = $state(0);
+  $effect(() => {
+    void app.clips.length; // relu après un import (la bibliothèque change)
+    if (!s?.welcome_done || s.medal_prompt_dismissed) return;
+    api.medalDetect().then((m) => (medalLeft = m.found ? m.clips - m.imported : 0)).catch(() => {});
+  });
   const adminBlocked = $derived(!!app.adminInput?.game_admin && !app.adminInput.helper);
 
   function onKey(e: KeyboardEvent) {
@@ -132,6 +139,15 @@
           <ShieldExclamationPoint size={15} strokeWidth={1.75} />
           <span><b>{t("Raccourcis bloqués en jeu")}</b><small>{t("Jeu en administrateur · Corriger")}</small></span>
         </button>
+      {/if}
+
+      {#if medalLeft > 0 && s.welcome_done && !s.medal_prompt_dismissed}
+        <div class="medal">
+          <button class="mopen" onclick={() => { app.settingsSection = "clips"; app.view = "settings"; }}>
+            <Download size={15} strokeWidth={1.75} /><span><b>{t("Clips Medal trouvés")}</b><small>{t("{n} à importer", { n: medalLeft })}</small></span>
+          </button>
+          <button class="mx" onclick={() => app.patch((x) => (x.medal_prompt_dismissed = true))} aria-label={t("Masquer")} title={t("Masquer")}><X size={13} /></button>
+        </div>
       {/if}
 
       <!-- Dernier clip : le retrouver d'un clic après un round -->
@@ -278,6 +294,13 @@
   .more { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; color: var(--text-3); transition: color var(--dur) var(--ease), background var(--dur) var(--ease); }
   .more:hover, .more.on { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
 
+  .medal { display: flex; align-items: center; gap: 2px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--panel); }
+  .mopen { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 8px 4px 8px 10px; text-align: left; color: var(--text-2); }
+  .mopen span { display: flex; flex-direction: column; min-width: 0; }
+  .mopen b { font-size: 12px; font-weight: 600; color: var(--text); }
+  .mopen small { font-size: 11px; color: var(--text-3); }
+  .mx { width: 26px; height: 26px; margin-right: 4px; border-radius: 7px; display: grid; place-items: center; color: var(--text-3); }
+  .mx:hover { color: var(--text); background: var(--panel-3); }
   .adminwarn { display: flex; align-items: flex-start; gap: 9px; padding: 9px 10px; border-radius: 10px; text-align: left; color: var(--rec); background: color-mix(in srgb, var(--rec) 9%, transparent); border: 1px solid color-mix(in srgb, var(--rec) 28%, transparent); transition: background var(--dur) var(--ease); }
   .adminwarn:hover { background: color-mix(in srgb, var(--rec) 14%, transparent); }
   .adminwarn span { display: flex; flex-direction: column; gap: 1px; min-width: 0; }

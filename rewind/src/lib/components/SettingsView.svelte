@@ -2,7 +2,7 @@
   import { t } from "$lib/i18n.svelte";
   import { onMount } from "svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
-  import { Video, AudioLines, Keyboard, HardDrive, Share2, Palette, Power, Stethoscope, Plus, Trash2, FolderOpen, MonitorUp, Layers, Bell } from "@lucide/svelte";
+  import { Video, AudioLines, Keyboard, HardDrive, Share2, Palette, Power, Stethoscope, Plus, Trash2, FolderOpen, MonitorUp, Layers, Bell, Play, Upload } from "@lucide/svelte";
   import KeysOverlay from "./KeysOverlay.svelte";
   import type { KeysPreset } from "$lib/studio/render";
 
@@ -19,7 +19,7 @@
     return () => clearInterval(id);
   });
   import { app } from "$lib/state.svelte";
-  import { api, type Hardware, type AudioSource, type VoiceHeard } from "$lib/api";
+  import { api, type Hardware, type AudioSource, type VoiceHeard, type MedalInfo } from "$lib/api";
   import HotkeyInput from "./HotkeyInput.svelte";
 
   let section = $derived((typeof window !== "undefined" && (window as any).__REWIND_MOCK__ && new URLSearchParams(location.search).get("section")) || app.settingsSection);
@@ -104,6 +104,37 @@
     }
     app.adminInput = await api.adminInputStatus().catch(() => app.adminInput);
     admBusy = false;
+  }
+
+  // Son du clip (synthétisés par Rewind)
+  const SOUNDS = [["shutter", "Déclic"], ["chime", "Carillon"], ["rewind", "Rembobinage"], ["ding", "Ancien"]] as const;
+  // Son personnel : n'importe quel fichier son (converti par Rewind, 3 s au plus)
+  async function importSound() {
+    const file = await openDialog({ multiple: false, directory: false, filters: [{ name: t("Son"), extensions: ["wav", "mp3", "ogg", "m4a", "aac", "flac", "opus", "wma"] }] }).catch(() => null);
+    if (typeof file !== "string") return;
+    try {
+      const name = await api.soundImport(file);
+      app.toast("ok", t("Son importé"), name);
+    } catch (e) {
+      app.toast("err", t("Son illisible"), String(e));
+    }
+  }
+  // Medal : détecté quand la page Clips et stockage s'ouvre
+  let medal = $state<MedalInfo | null>(null);
+  let medalBusy = $state(false);
+  $effect(() => {
+    if (section === "clips") api.medalDetect().then((m) => (medal = m)).catch(() => {});
+  });
+  async function importMedal() {
+    medalBusy = true;
+    try {
+      const r = await api.medalImport();
+      app.toast("ok", t("Clips Medal importés"), t("{n} clips copiés", { n: r.copied }));
+    } catch (e) {
+      app.toast("err", t("Import Medal impossible"), String(e));
+    }
+    medal = await api.medalDetect().catch(() => medal);
+    medalBusy = false;
   }
 
   // Mises à jour
@@ -247,6 +278,19 @@
               </div>
             </div>
             <p class="faint note">{t("Rien n'est jamais supprimé définitivement : la suppression envoie à la Corbeille de Windows.")}</p>
+            <h3>{t("Importer depuis Medal")}</h3>
+            <div class="group">
+              <div class="item">
+                <div class="lbl">
+                  <strong>{medal?.found ? t("Medal trouvé sur ce PC") : t("Medal introuvable")}</strong>
+                  <span>{medal?.found ? t("{n} clips · {g} Go · {i} déjà importés. Les clips sont copiés dans ton dossier des clips ; Medal garde les siens.", { n: medal.clips, g: (medal.size_mb / 1024).toFixed(1), i: medal.imported }) : t("Aucun clip Medal trouvé sur ce PC.")}</span>
+                  {#if medalBusy}<span class="mono">{app.progress?.op === "medal" ? Math.round(app.progress.value * 100) : 0} %</span>{/if}
+                </div>
+                {#if medal?.found}
+                  <button class="btn" class:primary={medal.imported < medal.clips} onclick={importMedal} disabled={medalBusy || medal.imported >= medal.clips}>{medalBusy ? t("Import…") : medal.imported >= medal.clips ? t("Tout est importé") : t("Importer {n} clips", { n: medal.clips - medal.imported })}</button>
+                {/if}
+              </div>
+            </div>
           {:else if section === "audio"}
             <h2>{t("Audio")}</h2>
             <p class="lead muted">{t("Chaque source est enregistrée sur sa propre piste en plus du mixage : tu peux couper un pote ou ton micro au montage.")}</p>
@@ -311,6 +355,13 @@
                   {#each [["auto", "Mon clavier"], ["qwerty", "QWERTY"], ["azerty", "AZERTY"]] as [id, label]}
                     <button class:on={s.overlay_layout === id} onclick={() => app.patch((x) => (x.overlay_layout = id))}>{t(label)}</button>
                   {/each}
+                  {#if s.clip_sound_name}
+                    <div class="snd" class:on={s.clip_sound === "custom"}>
+                      <button class="sname" onclick={() => app.patch((x) => (x.clip_sound = "custom"))} title={s.clip_sound_name}>{t("Le mien")}</button>
+                      <button class="play" onclick={() => api.soundPreview("custom")} aria-label={t("Écouter")} title={t("Écouter")}><Play size={12} fill="currentColor" /></button>
+                    </div>
+                  {/if}
+                  <button class="btn small ghost" onclick={importSound}><Upload size={14} />{t(s.clip_sound_name ? "Changer mon son" : "Importer un son")}</button>
                 </div>
               </div>
             </div>
@@ -395,6 +446,17 @@
                   </select>
                 </div>
               {/if}
+              <div class="item">
+                <div class="lbl"><strong>{t("Son du clip")}</strong><span>{t("Clique sur ▶ pour l'écouter.")}</span></div>
+                <div class="sounds">
+                  {#each SOUNDS as [id, label]}
+                    <div class="snd" class:on={s.clip_sound === id}>
+                      <button class="sname" onclick={() => app.patch((x) => (x.clip_sound = id))}>{t(label)}</button>
+                      <button class="play" onclick={() => api.soundPreview(id)} aria-label={t("Écouter")} title={t("Écouter")}><Play size={12} fill="currentColor" /></button>
+                    </div>
+                  {/each}
+                </div>
+              </div>
               <div class="item"><div class="lbl"><strong>{t("Volume du son")} : {s.sound_volume} %</strong></div><input type="range" min="5" max="100" step="5" value={s.sound_volume} oninput={(e) => app.patch((x) => (x.sound_volume = +e.currentTarget.value))} /></div>
             </div>
             <h3>{t("Au lancement d'un jeu")}</h3>
@@ -486,6 +548,9 @@
               </div>
               <div class="item"><div class="lbl"><strong>{t("Rechercher automatiquement")}</strong><span>{t("Au démarrage puis toutes les 4 heures. Installation à ta demande.")}</span></div><span class="switch"><input type="checkbox" checked={s.auto_update} onchange={(e) => app.patch((x) => (x.auto_update = e.currentTarget.checked))} /><span></span></span></div>
             </div>
+            <div class="group">
+              <div class="item"><div class="lbl"><strong>{t("Fenêtre d'accueil")}</strong><span>{t("Import Medal, dossier, raccourcis, qualité et options, comme au premier démarrage.")}</span></div><button class="btn" onclick={() => (app.showWelcome = true)}>{t("Revoir l'accueil")}</button></div>
+            </div>
             <button class="btn danger" onclick={() => api.quit()}><Power size={15} />{t("Quitter Rewind")}</button>
           {:else if section === "diag"}
             <h2>{t("Diagnostic")}</h2>
@@ -564,6 +629,13 @@
   .preset .pv { width: 100%; height: 150px; display: grid; place-items: center; margin-bottom: 6px; border-radius: 10px; background: linear-gradient(160deg, #23262e, #121318); }
   .preset b { font-size: 13.5px; font-weight: 600; }
   .preset small { font-size: 12px; color: var(--text-3); line-height: 1.4; }
+  .sounds { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; align-items: center; max-width: 520px; }
+  .snd { display: flex; align-items: center; border-radius: 9px; border: 1px solid var(--line-2); background: var(--bg-2); transition: border-color var(--dur) var(--ease); }
+  .snd.on { border-color: var(--hi); }
+  .sname { height: 30px; padding: 0 4px 0 12px; font-size: 13px; color: var(--text-2); }
+  .snd.on .sname { color: var(--text); }
+  .play { width: 30px; height: 30px; display: grid; place-items: center; color: var(--text-3); border-radius: 0 8px 8px 0; }
+  .play:hover { color: var(--text); background: var(--panel-3); }
   .vstate { margin-top: 4px; font-size: 12px; font-weight: 600; color: var(--text-3); }
   .vstate.ok { color: var(--accent); }
   .vstate.bad { color: var(--rec); }

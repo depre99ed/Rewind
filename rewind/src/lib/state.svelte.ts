@@ -15,6 +15,8 @@ class AppState {
   toasts = $state<Toast[]>([]);
   view = $state<"library" | "studio" | "cs2" | "settings">("library");
   settingsSection = $state("video");
+  /** Fenêtre d'accueil affichée (premier démarrage ou « Revoir l'accueil ») */
+  showWelcome = $state(false);
   /** Jeux lancés en administrateur (relu toutes les 5 s par la barre de gauche) */
   adminInput = $state<import("./api").AdminInput | null>(null);
   openClip = $state<Clip | null>(null);

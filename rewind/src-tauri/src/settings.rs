@@ -316,6 +316,14 @@ pub struct Settings {
     // --- Notifications
     pub sound_on_clip: bool,
     pub sound_volume: u32,
+    /// Son du clip : « shutter » (déclic), « chime » (carillon), « rewind » (rembobinage), « ding » (ancien)
+    pub clip_sound: String,
+    /// Nom du son importé par l'utilisateur (fichier : <données>\son-perso.wav)
+    pub clip_sound_name: String,
+    /// Fenêtre d'accueil vue (import Medal, dossier, raccourcis, qualité, options)
+    pub welcome_done: bool,
+    /// « Clips Medal trouvés » masqué par l'utilisateur
+    pub medal_prompt_dismissed: bool,
     pub toast_on_clip: bool,
     /// Mini-bandeau à l'écran quand un clip est gardé
     pub notify_overlay: bool,
@@ -392,6 +400,10 @@ impl Default for Settings {
             hotkeys: Hotkeys::default(),
             sound_on_clip: true,
             sound_volume: 60,
+            clip_sound: "shutter".into(),
+            clip_sound_name: String::new(),
+            welcome_done: false,
+            medal_prompt_dismissed: false,
             toast_on_clip: true,
             notify_overlay: true,
             notify_position: "top-left".into(),
@@ -462,6 +474,9 @@ impl Settings {
         let longest = self.clip_seconds.max(self.clip_long_seconds);
         self.buffer_seconds = self.buffer_seconds.clamp(10, 3600).max(longest);
         self.sound_volume = self.sound_volume.min(100);
+        if !["shutter", "chime", "rewind", "ding", "custom"].contains(&self.clip_sound.as_str()) {
+            self.clip_sound = "shutter".into();
+        }
         if self.discord_max_mb == 0 {
             self.discord_max_mb = 20;
         }

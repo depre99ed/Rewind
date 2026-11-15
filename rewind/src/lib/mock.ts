@@ -77,7 +77,7 @@ if (typeof window !== "undefined" && !inTauri) {
         ),
       },
     },
-    theme: "dark", accent: "#c8f031", animations: true, density: "comfortable", webhooks: [], discord_max_mb: 20, max_library_gb: 0, first_run_done: true,
+    theme: "dark", accent: "#c8f031", animations: true, density: "comfortable", webhooks: [], discord_max_mb: 20, max_library_gb: 0, first_run_done: true, clip_sound: "shutter", clip_sound_name: "", welcome_done: !new URLSearchParams(location.search).has("welcome"), medal_prompt_dismissed: false,
   };
   const params = new URLSearchParams(location.search);
   if (params.get("theme") === "light") settings.theme = "light";
@@ -161,6 +161,10 @@ if (typeof window !== "undefined" && !inTauri) {
         case "media_info": return { duration: 34, width: 1920, height: 1080, fps: 50, tracks: ["Mixage", "Son du PC", "Micro", "Discord"] };
         case "media_filmstrip": throw "pas de vignettes en aperçu";
         case "media_stems": return [];
+        case "medal_detect": return { found: true, folder: "C:\\Users\\Moi\\Videos\\Medal", clips: 39, size_mb: 2278, imported: new URLSearchParams(location.search).has("medalok") ? 39 : 0, hotkey: "F8", clip_seconds: 30, fps: 60, resolution: 1080, bitrate: 10 };
+        case "medal_import": return { copied: 39, skipped: 0, failed: 0 };
+        case "sound_preview": return null;
+        case "sound_import": return "mon-son";
         case "admin_input_status": return { game_admin: new URLSearchParams(location.search).has("admin"), helper: false, enabled: false, rewind_admin: false };
         case "admin_input_set": return null;
         case "media_waveform": {

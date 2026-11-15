@@ -858,7 +858,12 @@ impl Journal {
     }
 
     fn open() -> Self {
-        // Ménage : plus de 3 jours
+        Self::prune();
+        Self { day: String::new(), file: None }
+    }
+
+    /// Ménage : plus de 3 jours (au démarrage et à chaque nouveau jour : Rewind reste ouvert des semaines)
+    fn prune() {
         if let Ok(entries) = std::fs::read_dir(Self::dir()) {
             for e in entries.flatten() {
                 let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a.as_secs() > 3 * 86400);
@@ -867,13 +872,16 @@ impl Journal {
                 }
             }
         }
-        Self { day: String::new(), file: None }
     }
 
     fn write(&mut self, body: &str) {
         use std::io::Write;
         let day = chrono::Local::now().format("%Y-%m-%d").to_string();
         if day != self.day || self.file.is_none() {
+            if !self.day.is_empty() && day != self.day {
+                self.file = None;
+                Self::prune();
+            }
             self.day = day.clone();
             self.file = std::fs::OpenOptions::new().create(true).append(true).open(Self::dir().join(format!("{day}.jsonl"))).ok();
         }

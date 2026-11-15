@@ -1538,7 +1538,7 @@ fn show_main(app: &AppHandle) {
             .iter()
             .find(|w| w.label == "main")
             .and_then(|cfg| tauri::WebviewWindowBuilder::from_config(app, cfg).ok())
-            .and_then(|b| b.build().ok()),
+            .and_then(|b| b.build().map_err(|e| log::error!("fenêtre principale impossible à recréer : {e}")).ok()),
     };
     if let Some(w) = window {
         let _ = w.unminimize();
@@ -1870,6 +1870,11 @@ pub fn medal_detect_test() -> i32 {
 /// Au lancement : passe la main à un Rewind administrateur si possible (voir admin.rs).
 pub fn start_elevated() -> bool {
     admin::start_elevated(std::env::args().any(|a| a == "--tray"))
+}
+
+/// Au lancement, avant tout : un Rewind tourne déjà → il ouvre sa fenêtre, celui-ci s'arrête.
+pub fn wake_running_instance() -> bool {
+    admin::wake_running(std::env::args().any(|a| a == "--tray"))
 }
 
 /// Assistant d'entrées lancé en administrateur (`rewind.exe --input-helper`, voir admin.rs).
@@ -2500,7 +2505,14 @@ pub fn run() {
     }
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // Démarrage de Windows alors que Rewind tourne déjà : on ne montre rien
+            if args.iter().any(|a| a == "--tray") {
+                return;
+            }
+            log::info!("nouveau lancement : la fenêtre s'ouvre");
+            show_main(app)
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--tray"])))
@@ -2511,6 +2523,12 @@ pub fn run() {
             let handle = app.handle().clone();
             // Ici seulement : un 2e lancement s'arrête avant (extension « une seule instance »)
             recorder::clean_buffer();
+            // Raccourci cliqué pendant que Rewind tourne (même en administrateur) : la fenêtre s'ouvre
+            // (debug : REWIND_TEST_NO_WAKE_FILTER sert de témoin dans le test, comportement d'avant la 0.3.6)
+            if !(cfg!(debug_assertions) && std::env::var_os("REWIND_TEST_NO_WAKE_FILTER").is_some()) {
+                admin::accept_wake_messages();
+            }
+            admin::repair_main_task();
             build_tray(&handle)?;
             toast::create(&handle);
             // Moteur d'entrées (Raw Input) : raccourcis toujours, touches à l'écran selon l'option

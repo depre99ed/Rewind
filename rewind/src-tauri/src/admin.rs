@@ -163,6 +163,18 @@ pub fn main_enabled() -> bool {
 
 /// Crée une tâche « droits les plus élevés » qui lance cet exécutable (une invite Windows).
 fn create_task(name: &str, args: &str, what: &str) -> Result<()> {
+    let file = write_task_xml(args, what)?;
+    let res = elevated_schtasks(&format!("/Create /TN \"{name}\" /XML \"{}\" /F", file.display()));
+    let _ = std::fs::remove_file(&file);
+    res
+}
+
+/// Description XML de la tâche (UTF-16), écrite dans un fichier temporaire.
+///
+/// `Parallel` (et non `IgnoreNew`, jusqu'à la 0.3.5) : si un Rewind lancé par la tâche tourne déjà,
+/// Windows IGNORAIT un nouveau lancement ; le raccourci ne faisait alors plus rien, fenêtre fermée
+/// (bug du 2026-11-15). Le nouveau Rewind démarre, voit l'ancien et lui passe la main (une seule instance).
+fn write_task_xml(args: &str, what: &str) -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     let xml = format!(
@@ -171,7 +183,7 @@ fn create_task(name: &str, args: &str, what: &str) -> Result<()> {
   <RegistrationInfo><Description>{}</Description></RegistrationInfo>
   <Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
   <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
@@ -184,15 +196,47 @@ fn create_task(name: &str, args: &str, what: &str) -> Result<()> {
         esc(&exe.to_string_lossy()),
         esc(args)
     );
-    let file = std::env::temp_dir().join("rewind-tache.xml");
+    let file = std::env::temp_dir().join(format!("rewind-tache-{}.xml", std::process::id()));
     let mut bytes = vec![0xFF, 0xFE];
     for u in xml.encode_utf16() {
         bytes.extend_from_slice(&u.to_le_bytes());
     }
     std::fs::write(&file, bytes)?;
-    let res = elevated_schtasks(&format!("/Create /TN \"{name}\" /XML \"{}\" /F", file.display()));
-    let _ = std::fs::remove_file(&file);
-    res
+    Ok(file)
+}
+
+/// Rewind administrateur : une tâche créée avant la 0.3.6 (règle `IgnoreNew`) est réécrite avec la
+/// nouvelle règle. Déjà administrateur : aucune invite Windows.
+pub fn repair_main_task() {
+    if cfg!(debug_assertions) || std::env::var_os("REWIND_DATA_DIR").is_some() || util::process_elevated(0) != Some(true) {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("tache-admin".into()).spawn(|| {
+        let Ok(out) = util::command(&schtasks()).args(["/Query", "/TN", MAIN_TASK, "/XML"]).output() else { return };
+        let xml = String::from_utf8_lossy(&out.stdout).to_lowercase();
+        // Seulement la tâche de CET exécutable (une autre copie de Rewind ne la détourne pas)
+        let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if !out.status.success() || !xml.contains("ignorenew") || exe.is_empty() || !xml.contains(&exe) {
+            return;
+        }
+        let res = write_task_xml("", "Rewind : clips instantanés, lancé en administrateur pour voir les touches des jeux").and_then(|file| {
+            let out = util::command(&schtasks())
+                .args(["/Create", "/TN", MAIN_TASK, "/XML"])
+                .arg(&file)
+                .arg("/F")
+                .output();
+            let _ = std::fs::remove_file(&file);
+            match out {
+                Ok(o) if o.status.success() => Ok(()),
+                Ok(o) => bail!("{}", String::from_utf8_lossy(&o.stderr).trim()),
+                Err(e) => Err(e.into()),
+            }
+        });
+        match res {
+            Ok(()) => log::info!("tâche « {MAIN_TASK} » réparée : un nouveau lancement n'est plus ignoré"),
+            Err(e) => log::warn!("tâche « {MAIN_TASK} » : réparation impossible ({e})"),
+        }
+    });
 }
 
 fn tray_flag() -> PathBuf {
@@ -200,13 +244,103 @@ fn tray_flag() -> PathBuf {
 }
 
 /// Rewind relancé par la tâche après un démarrage de Windows : rester caché.
+/// Le drapeau ne vaut que 2 minutes : un drapeau resté là (lancement ignoré, plantage) cachait la
+/// fenêtre d'un lancement normal beaucoup plus tard.
 pub fn take_tray_flag() -> bool {
     let f = tray_flag();
-    let on = f.is_file();
-    if on {
-        let _ = std::fs::remove_file(f);
+    let fresh = std::fs::metadata(&f)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age.as_secs() < 120);
+    let _ = std::fs::remove_file(f);
+    fresh
+}
+
+// ---------------------------------------------------------------------------
+// Un Rewind tourne déjà (fenêtre fermée, enregistrement en arrière-plan) : le nouveau lancement
+// (raccourci, menu Démarrer) lui demande d'ouvrir sa fenêtre puis s'arrête.
+//
+// Avant la 0.3.6, le raccourci ne faisait rien quand Rewind tournait en administrateur : le lancement
+// passait par la tâche, que Windows ignorait (`IgnoreNew`), et le message de l'extension « une seule
+// instance » d'un programme normal vers un programme administrateur est bloqué par Windows (UIPI).
+// Il fallait tuer Rewind dans le gestionnaire des tâches.
+// ---------------------------------------------------------------------------
+
+/// Doit rester égal à `identifier` dans tauri.conf.json (noms choisis par l'extension « une seule instance »).
+/// Test seulement : `REWIND_APP_ID` à la compilation, avec `TAURI_CONFIG={"identifier":…}`, pour essayer
+/// pendant que le vrai Rewind tourne.
+const APP_ID: &str = match option_env!("REWIND_APP_ID") {
+    Some(id) => id,
+    None => "com.rewind.app",
+};
+
+/// Petite fenêtre invisible de l'extension « une seule instance » du Rewind déjà ouvert.
+fn instance_window() -> Option<windows_sys::Win32::Foundation::HWND> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
+    let class = util::wide(&format!("{APP_ID}-sic"));
+    let name = util::wide(&format!("{APP_ID}-siw"));
+    let hwnd = unsafe { FindWindowW(class.as_ptr(), name.as_ptr()) };
+    (!hwnd.is_null()).then_some(hwnd)
+}
+
+/// Au lancement, avant tout : true si un Rewind tourne déjà (ce lancement doit alors s'arrêter).
+/// Jamais deux Rewind en même temps (deux enregistreurs), même si le message ne passe pas.
+pub fn wake_running(tray: bool) -> bool {
+    use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        AllowSetForegroundWindow, GetWindowThreadProcessId, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_COPYDATA,
+    };
+    let Some(hwnd) = instance_window() else { return false };
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    if pid == 0 || pid == unsafe { GetCurrentProcessId() } {
+        return false;
     }
-    on
+    if tray {
+        return true; // démarrage de Windows alors que Rewind tourne : rien à faire
+    }
+    unsafe { AllowSetForegroundWindow(pid) };
+    // Même format que l'extension (dossier courant puis arguments, séparés par un zéro)
+    let mut data = std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned();
+    for arg in std::env::args_os() {
+        data.push('\0');
+        data.push_str(&arg.to_string_lossy());
+    }
+    let cds = COPYDATASTRUCT { dwData: 1543, cbData: data.len() as u32, lpData: data.as_ptr() as _ };
+    let mut answer = 0usize;
+    let sent = unsafe { SendMessageTimeoutW(hwnd, WM_COPYDATA, 0, &cds as *const _ as isize, SMTO_ABORTIFHUNG, 5000, &mut answer) };
+    if sent != 0 && answer == 1 {
+        return true;
+    }
+    // Refusé (Rewind administrateur d'avant la 0.3.6) ou fenêtre figée : la tâche lance un Rewind
+    // administrateur, qui peut, lui, passer le message.
+    if util::process_elevated(0) == Some(false) && main_enabled() {
+        task_run(MAIN_TASK);
+    }
+    true
+}
+
+/// Rewind déjà ouvert : accepter le message « ouvre ta fenêtre » d'un lancement sans droits
+/// administrateur (sinon Windows le bloque quand Rewind est administrateur).
+pub fn accept_wake_messages() {
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        ChangeWindowMessageFilterEx, GetWindowThreadProcessId, MSGFLT_ALLOW, WM_COPYDATA,
+    };
+    let Some(hwnd) = instance_window() else {
+        log::warn!("une seule instance : fenêtre de réveil introuvable");
+        return;
+    };
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    if pid != unsafe { GetCurrentProcessId() } {
+        return;
+    }
+    if unsafe { ChangeWindowMessageFilterEx(hwnd, WM_COPYDATA, MSGFLT_ALLOW, std::ptr::null_mut()) } == 0 {
+        log::warn!("une seule instance : message de réveil non autorisé");
+    }
 }
 
 /// Au lancement (avant tout) : true si un Rewind administrateur prend le relais (celui-ci s'arrête).

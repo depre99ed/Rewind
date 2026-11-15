@@ -442,13 +442,6 @@
                   {#each [["auto", "Mon clavier"], ["qwerty", "QWERTY"], ["azerty", "AZERTY"]] as [id, label]}
                     <button class:on={s.overlay_layout === id} onclick={() => app.patch((x) => (x.overlay_layout = id))}>{t(label)}</button>
                   {/each}
-                  {#if s.clip_sound_name}
-                    <div class="snd" class:on={s.clip_sound === "custom"}>
-                      <button class="sname" onclick={() => app.patch((x) => (x.clip_sound = "custom"))} title={s.clip_sound_name}>{t("Le mien")}</button>
-                      <button class="play" onclick={() => api.soundPreview("custom")} aria-label={t("Écouter")} title={t("Écouter")}><Play size={12} fill="currentColor" /></button>
-                    </div>
-                  {/if}
-                  <button class="btn small ghost" onclick={importSound}><Upload size={14} />{t(s.clip_sound_name ? "Changer mon son" : "Importer un son")}</button>
                 </div>
               </div>
             </div>
@@ -542,6 +535,13 @@
                       <button class="play" onclick={() => api.soundPreview(id)} aria-label={t("Écouter")} title={t("Écouter")}><Play size={12} fill="currentColor" /></button>
                     </div>
                   {/each}
+                  {#if s.clip_sound_name}
+                    <div class="snd" class:on={s.clip_sound === "custom"}>
+                      <button class="sname" onclick={() => app.patch((x) => (x.clip_sound = "custom"))} title={s.clip_sound_name}>{t("Le mien")}</button>
+                      <button class="play" onclick={() => api.soundPreview("custom")} aria-label={t("Écouter")} title={t("Écouter")}><Play size={12} fill="currentColor" /></button>
+                    </div>
+                  {/if}
+                  <button class="btn small ghost" onclick={importSound}><Upload size={14} />{t(s.clip_sound_name ? "Changer mon son" : "Importer un son")}</button>
                 </div>
               </div>
               <div class="item"><div class="lbl"><strong>{t("Volume du son")} : {s.sound_volume} %</strong></div><input type="range" min="5" max="100" step="5" value={s.sound_volume} oninput={(e) => app.patch((x) => (x.sound_volume = +e.currentTarget.value))} /></div>

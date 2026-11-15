@@ -18,6 +18,9 @@ export function t(fr: string, vars?: Record<string, string | number>): string {
   const plain = fr.includes("§") ? fr.slice(0, fr.indexOf("§")) : fr;
   let s = lang() === "fr" ? plain : (EN[fr] ?? plain);
   if (vars) for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, String(v));
+  // Typographie française : espace insécable avant « : ; ! ? » % » et après « « » (une ligne ne commence
+  // jamais par « : », comme on le voyait quand la fenêtre est étroite)
+  if (lang() === "fr") s = s.replace(/ ([:;!?»%])/g, " $1").replace(/« /g, "« ");
   return s;
 }
 

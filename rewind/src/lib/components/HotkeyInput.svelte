@@ -5,6 +5,7 @@
   import { onDestroy } from "svelte";
   import { api } from "../api";
   import { t } from "../i18n.svelte";
+  import { keyParts } from "../keys";
 
   let { value, onchange }: { value: string; onchange: (v: string) => void } = $props();
   let listening = $state(false);
@@ -18,7 +19,6 @@
   };
   /** Touches acceptées seules : elles ne servent pas à écrire du texte. */
   const alone = /^(F\d{1,2}|Pause|PrintScreen|Insert|Home|End|PageUp|PageDown|ScrollLock|Num.+|Mouse4|Mouse5|MouseMiddle)$/;
-  const mouseNames: Record<string, string> = { Mouse4: "Souris 4", Mouse5: "Souris 5", MouseMiddle: "Clic molette" };
 
   function mods(e: KeyboardEvent | MouseEvent) {
     return [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Win"].filter(Boolean) as string[];
@@ -89,7 +89,6 @@
   }
   onDestroy(stop);
 
-  const label = (k: string) => (mouseNames[k] ? t(mouseNames[k]) : k);
 </script>
 
 <div class="hk" class:on={listening}>
@@ -97,7 +96,7 @@
     {#if listening}
       <span class="wait">{hint || t("Appuie sur une touche ou un bouton de souris…")}</span>
     {:else if value}
-      {#each value.split("+") as k, i}{#if i}<span class="plus">+</span>{/if}<span class="kbd">{label(k)}</span>{/each}
+      {#each keyParts(value) as k, i}{#if i}<span class="plus">+</span>{/if}<span class="kbd">{k}</span>{/each}
     {:else}
       <span class="faint">{t("Aucun")}</span>
     {/if}

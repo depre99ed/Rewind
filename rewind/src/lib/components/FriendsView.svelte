@@ -220,6 +220,9 @@
     <span class="when faint">{ago(s.created)}</span>
     {#if waiting}
       <button class="btn small ghost icon" onclick={() => friends.run(() => api.shareCancel(s.id))} title={t("Annuler l'envoi")} aria-label={t("Annuler l'envoi")}><X size={14} /></button>
+    {:else}
+      <!-- même place que le bouton d'annulation : les dates restent alignées -->
+      <span class="slot"></span>
     {/if}
   </div>
 {/snippet}
@@ -467,7 +470,7 @@
               {/if}
               <div class="row2">
                 <button class="btn small" onclick={showRecovery}><KeyRound size={14} />{recovery ? t("Masquer") : t("Afficher")}</button>
-                <button class="btn small" onclick={saveRecovery}><Save size={14} />{t("Enregistrer dans un fichier")}</button>
+                <button class="btn small" onclick={saveRecovery} title={t("Enregistrer dans un fichier")}><Save size={14} />{t("Enregistrer")}</button>
               </div>
             {:else}
               <small class="warn">{t("La clé de secours n'est plus sur ce PC. Si tu l'as notée, elle marche toujours ; sinon, crée-en une nouvelle.")}</small>
@@ -573,6 +576,7 @@
   .stext em { font-style: normal; color: var(--text-3); }
   .stext em.ok { color: var(--text); }
   .when { font-size: 12px; white-space: nowrap; }
+  .slot { width: 28px; flex-shrink: 0; }
   .prog { position: relative; width: 120px; height: 4px; border-radius: 2px; background: var(--panel-3); overflow: hidden; }
   .prog i { position: absolute; left: 0; top: 0; bottom: 0; width: calc(var(--p) * 100%); background: var(--hi); transition: width 300ms linear; }
   .pct { width: 38px; text-align: right; font-size: 12px; }

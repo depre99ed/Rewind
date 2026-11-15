@@ -1179,4 +1179,7 @@ export const EN: Record<string, string> = {
   "Cette clé de secours ne correspond à aucun compte (remplacée par une plus récente, ou identité supprimée).": "This recovery key doesn't match any account (replaced by a newer one, or identity deleted).",
   "La clé de secours n'est plus sur ce PC : crée-en une nouvelle.": "The recovery key is no longer on this PC: create a new one.",
   "Cette clé de secours sert déjà à un autre compte.": "This recovery key is already used by another account.",
+  // --- Audit visuel (2026-11-15)
+  "Choisir un raccourci": "Choose a hotkey",
+  "Enregistrer": "Save",
 };

@@ -677,7 +677,7 @@
       <button class="btn icon ghost" onclick={() => studio.jumpCut(1)} disabled={empty} title={t("Coupe suivante (↓)")}><SkipForward size={17} /></button>
     </div>
     <div class="right">
-      <span class="mono time">{fmtTime(studio.t, true)}<span class="faint"> / {fmtTime(studio.total, true)}</span></span>
+      <span class="mono time">{fmtTime(studio.t, true)}<span class="faint">{" / "}{fmtTime(studio.total, true)}</span></span>
       <button class="btn icon ghost" onclick={fullscreen} disabled={empty} title={t("Plein écran")}><Maximize size={16} /></button>
     </div>
   </div>
@@ -721,7 +721,9 @@
   .empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 10px; padding: 24px; color: #fff; }
   .empty h3 { margin: 4px 0 0; font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
   .empty p { margin: 0 0 6px; max-width: 460px; font-size: 13.5px; line-height: 1.6; color: rgba(255, 255, 255, 0.7); }
-  .transport { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; }
+  .transport { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; container-type: inline-size; }
+  /* Aperçu étroit : le titre du clip n'a plus la place (il n'en restait qu'un bout) → masqué */
+  @container (max-width: 440px) { .now { visibility: hidden; } }
   .now { min-width: 0; font-size: 12.5px; color: var(--text-2); }
   .cur { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ctrl { display: flex; align-items: center; gap: 6px; }
@@ -730,5 +732,5 @@
   .playbtn:active:not(:disabled) { transform: scale(0.95); }
   .playbtn:disabled { opacity: 0.4; }
   .right { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
-  .time { font-size: 13px; }
+  .time { font-size: 13px; white-space: nowrap; }
 </style>

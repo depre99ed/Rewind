@@ -165,7 +165,7 @@
   <div class="glow"></div>
   <div class="left">
     <div class="top">
-      <button class="btn ghost small" onclick={() => (app.openClip = null)}><ArrowLeft size={16} />{received ? t("Amis") : t("Bibliothèque")}</button>
+      <button class="btn ghost small" onclick={() => (app.openClip = null)}><ArrowLeft size={16} />{received ? t("Amis") : t("Clips")}</button>
       <span class="crumb"><i></i>{clip.game || t("Bureau")}<span class="faint">· {relativeDate(clip.created)}</span></span>
       <div class="nav">
         <span class="faint mono">{index + 1} / {list.length}</span>
@@ -203,7 +203,7 @@
         <button class="btn icon play" onclick={toggle} aria-label={playing ? t("Pause") : t("Lecture")}>
           {#if playing}<Pause size={18} fill="currentColor" />{:else}<Play size={18} fill="currentColor" />{/if}
         </button>
-        <span class="time mono">{formatDuration(time)}<span class="faint"> / {formatDuration(total)}</span></span>
+        <span class="time mono">{formatDuration(time)}<span class="faint">{" / "}{formatDuration(total)}</span></span>
         <div class="track" bind:this={track} bind:clientWidth={trackW} role="slider" tabindex="-1" aria-valuenow={time} onpointerdown={down} onpointermove={move} onpointerleave={() => (hoverT = null)}>
           <div class="rail"><div class="played" style="width:{pct(time)}%"></div></div>
           {#each placed as { m, lane }}

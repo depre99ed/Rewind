@@ -9,6 +9,7 @@
   import { api, dayGroup, fileUrl, formatDuration, formatSize, relativeDate, badges, gameTone, sessions, type Clip } from "$lib/api";
   import ClipCard from "./ClipCard.svelte";
   import { t } from "$lib/i18n.svelte";
+  import { keyParts } from "$lib/keys";
 
   let query = $state("");
   let filter = $state<"all" | "fav" | "auto" | "manual" | "edit" | "screenshot">("all");
@@ -128,6 +129,16 @@
   const totalSize = $derived(app.ownClips.reduce((a, c) => a + c.size, 0));
 </script>
 
+<!-- Raccourci (touches séparées, comme dans la barre latérale) puis ce qu'il fait ; sans raccourci : lien vers les réglages -->
+{#snippet hotkeyLine(hotkey: string, what: string)}
+  <span class="muted">{what}</span>
+  {#if hotkey}
+    <span class="keys">{#each keyParts(hotkey) as k, i}{#if i}<span class="plus">+</span>{/if}<span class="kbd">{k}</span>{/each}</span>
+  {:else}
+    <button class="setkey" onclick={() => (app.view = "settings")}>{t("Choisir un raccourci")}</button>
+  {/if}
+{/snippet}
+
 <section class="lib">
   <div class="scroll">
     {#if app.ownClips.length === 0}
@@ -135,8 +146,8 @@
         <h2>{t("Rewind enregistre en continu.")}</h2>
         <p class="muted">{t("Un fou rire sur Discord, une action folle en jeu ? Appuie sur le raccourci : les dernières secondes sont gardées. Rien n'est envoyé sur Internet.")}</p>
         <div class="tips">
-          <div class="tip"><Keyboard size={18} /><div><strong>{t("Clip instantané")}</strong><span class="muted"><span class="kbd">{app.settings?.hotkeys.clip}</span> {t("garde les {n} dernières secondes.", { n: app.settings?.clip_seconds ?? 30 })}</span></div></div>
-          <div class="tip"><Keyboard size={18} /><div><strong>{t("Clip long")}</strong><span class="muted"><span class="kbd">{app.settings?.hotkeys.clip_long}</span> {t("garde {n} secondes.", { n: app.settings?.clip_long_seconds ?? 120 })}</span></div></div>
+          <div class="tip"><Keyboard size={18} /><div><strong>{t("Clip instantané")}</strong>{@render hotkeyLine(app.settings?.hotkeys.clip ?? "", t("Garde les {n} dernières secondes.", { n: app.settings?.clip_seconds ?? 30 }))}</div></div>
+          <div class="tip"><Keyboard size={18} /><div><strong>{t("Clip long")}</strong>{@render hotkeyLine(app.settings?.hotkeys.clip_long ?? "", t("Garde {n} secondes.", { n: app.settings?.clip_long_seconds ?? 120 }))}</div></div>
           <div class="tip"><Crosshair size={18} /><div><strong>Counter-Strike 2</strong><span class="muted">{t("Un clip par round : 2K, ACE, one tap, séries…")}</span></div></div>
         </div>
       </div>
@@ -267,6 +278,8 @@
   .hinfo h1 { margin: 0; font-weight: 600; font-size: clamp(22px, 2.2vw, 28px); line-height: 1.12; letter-spacing: -0.028em; text-wrap: balance; }
   .hmeta { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 12.5px; color: var(--text-3); }
   .hactions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  /* Fenêtre étroite : vignette plus petite, les boutons restent sur une ligne (l'étoile ne passe plus seule dessous) */
+  @media (max-width: 1240px) { .hero { grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 22px; } }
   .hdots { position: absolute; right: 0; top: 8px; display: flex; gap: 5px; }
   .hdots button { width: 6px; height: 6px; border-radius: 99px; background: var(--line-2); transition: width 300ms var(--ease-out), background var(--dur) var(--ease); }
   .hdots button.on { width: 18px; background: var(--text-2); }
@@ -321,6 +334,10 @@
   .tip { display: flex; gap: 12px; padding: 16px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--line); }
   .tip :global(svg) { color: var(--text-2); flex: none; margin-top: 2px; }
   .tip div { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  .tip .keys { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+  .tip .plus { color: var(--text-3); font-size: 11px; }
+  .setkey { align-self: flex-start; margin-top: 2px; padding: 0; font-size: 12.5px; color: var(--text-2); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-2); transition: color var(--dur) var(--ease); }
+  .setkey:hover { color: var(--text); }
 
   .bar { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 16px; border-radius: 16px; z-index: 7; }
   .bar > :global(*) { position: relative; z-index: 2; }

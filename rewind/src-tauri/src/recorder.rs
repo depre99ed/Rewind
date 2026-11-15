@@ -37,6 +37,33 @@ pub struct Segment {
     pub end: f64,
     pub bytes: u64,
     pub session: u64,
+    /// Segment gardé en RAM (`ram::get(nom du fichier)`), pas sur le disque
+    pub ram: bool,
+}
+
+impl Segment {
+    fn ram_name(&self) -> String {
+        self.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    }
+
+    /// Copie le segment vers `dst` (lien physique si possible, sinon copie ; depuis la RAM sinon).
+    pub fn freeze(&self, dst: &Path) -> Result<()> {
+        if self.ram {
+            let data = crate::ram::get(&self.ram_name()).context("segment sorti de la mémoire")?;
+            fs::write(dst, &*data)?;
+        } else if fs::hard_link(&self.path, dst).is_err() {
+            fs::copy(&self.path, dst)?;
+        }
+        Ok(())
+    }
+
+    fn discard(&self) {
+        if self.ram {
+            crate::ram::remove(&self.ram_name());
+        } else {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 
 struct Capture {
@@ -58,6 +85,10 @@ struct Capture {
     monitors: String,
     tracks: Vec<String>,
     encoder: String,
+    /// Mode RAM : réception des segments image et son (arrêtée après FFmpeg, voir Drop)
+    ram: Option<(crate::ram::Sink, Option<crate::ram::Sink>)>,
+    /// Mode RAM : nombre de passages où le segment annoncé n'était pas encore reçu
+    ram_wait: u32,
     width: u32,
     height: u32,
     fps: u32,
@@ -299,7 +330,7 @@ impl Recorder {
             "{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{}",
             s.capture_mode, s.monitor, s.window_exe, fps, res, br, s.encoder, s.show_cursor,
             s.audio_sources, s.separate_tracks
-        ) + &format!("|{}|{}", s.audio_offset_ms, s.mic_denoise)
+        ) + &format!("|{}|{}|{}", s.audio_offset_ms, s.mic_denoise, s.buffer_in_ram)
     }
 
     pub fn apply_settings(&mut self, settings: Settings) {
@@ -330,8 +361,9 @@ impl Recorder {
     }
 
     fn read_lists(c: &mut Capture, video: &mut VecDeque<Segment>, audio: &mut VecDeque<Segment>) {
-        read_list(&c.dir, "video.csv", &mut c.vcsv, c.session, video);
-        read_list(&c.dir, "audio.csv", &mut c.acsv, c.session, audio);
+        let ram = c.ram.is_some();
+        read_list(&c.dir, "video.csv", &mut c.vcsv, c.session, video, ram, &mut c.ram_wait);
+        read_list(&c.dir, "audio.csv", &mut c.acsv, c.session, audio, ram, &mut c.ram_wait);
     }
 
     /// Appelé ~4 fois par seconde par le fil de surveillance.
@@ -433,15 +465,22 @@ impl Recorder {
             if seg.end >= limit {
                 break;
             }
-            let _ = fs::remove_file(&seg.path);
+            seg.discard();
             self.segments.pop_front();
         }
         while let Some(seg) = self.audio_segments.front() {
             if seg.end >= limit {
                 break;
             }
-            let _ = fs::remove_file(&seg.path);
+            seg.discard();
             self.audio_segments.pop_front();
+        }
+        // RAM : segments reçus mais jamais listés (fin de session coupée), ou d'une ancienne session
+        {
+            let used: std::collections::HashSet<String> =
+                self.segments.iter().chain(self.audio_segments.iter()).filter(|s| s.ram).map(|s| s.ram_name().to_lowercase()).collect();
+            let live = self.capture.as_ref().filter(|c| c.ram.is_some()).map(|c| format!("rw-{}-", c.session));
+            crate::ram::retain(|k| used.contains(k) || live.as_ref().is_some_and(|p| k.starts_with(p.as_str())));
         }
         // Fiches des sessions qui n'ont plus aucun segment
         let active_session = self.capture.as_ref().map(|c| c.session);
@@ -548,6 +587,11 @@ impl Recorder {
         let dir = buffer_root().join(format!("s{}-{session}", (util::now() * 1000.0) as u64));
         fs::create_dir_all(&dir)?;
 
+        // Mode RAM : FFmpeg écrit chaque segment dans un tuyau, Rewind le garde en mémoire
+        let stamp = (util::now() * 1000.0) as u64;
+        let ram_video = if s.buffer_in_ram { Some(crate::ram::Sink::start(&format!("rw-{session}-{stamp}-v"), "mkv")?) } else { None };
+        let video_out = ram_video.as_ref().map(|r| r.pattern()).unwrap_or_else(|| "v%08d.mkv".into());
+
         let audio = audio::Inputs::start(&s.audio_sources, Arc::clone(&self.mic_muted))?;
         let n = audio.pipes.len();
         let job = util::Job::new();
@@ -568,7 +612,7 @@ impl Recorder {
         push(&[
             "-fps_mode", "passthrough", "-f", "segment", "-segment_format", "matroska", "-segment_time", "1",
             "-reset_timestamps", "1", "-segment_list", "video.csv", "-segment_list_type", "csv",
-            "-segment_list_size", "0", "v%08d.mkv",
+            "-segment_list_size", "0", &video_out,
         ]);
         fs::write(dir.join("command.txt"), vargs.join(" ")).ok();
         let child = util::command(&tools.ffmpeg)
@@ -586,7 +630,12 @@ impl Recorder {
         // 2) Son : mixage + une piste par source, segments de 2 s calés sur l'horloge
         let mut tracks: Vec<String> = Vec::new();
         let mut audio_child = None;
+        let mut ram_audio: Option<crate::ram::Sink> = None;
         if n > 0 {
+            if s.buffer_in_ram {
+                ram_audio = Some(crate::ram::Sink::start(&format!("rw-{session}-{stamp}-a"), "mka")?);
+            }
+            let audio_out = ram_audio.as_ref().map(|r| r.pattern()).unwrap_or_else(|| "a%08d.mka".into());
             let mut aargs: Vec<String> = Vec::new();
             let mut push = |items: &[&str]| aargs.extend(items.iter().map(|x| x.to_string()));
             push(&["-hide_banner", "-loglevel", "warning", "-nostats", "-y", "-copyts"]);
@@ -646,7 +695,7 @@ impl Recorder {
             push(&[
                 "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-f", "segment", "-segment_format", "matroska",
                 "-segment_time", "2", "-segment_atclocktime", "1", "-reset_timestamps", "1", "-segment_list",
-                "audio.csv", "-segment_list_type", "csv", "-segment_list_size", "0", "a%08d.mka",
+                "audio.csv", "-segment_list_type", "csv", "-segment_list_size", "0", &audio_out,
             ]);
             fs::write(dir.join("command-audio.txt"), aargs.join(" ")).ok();
             let a = util::command(&tools.ffmpeg)
@@ -662,7 +711,7 @@ impl Recorder {
             }
             audio_child = Some(a);
         }
-        log::info!("capture démarrée : {encoder} {width}x{height}@{fps} {n} pistes audio");
+        log::info!("capture démarrée : {encoder} {width}x{height}@{fps} {n} pistes audio, tampon {}", if ram_video.is_some() { "en RAM" } else { "sur le disque" });
         Ok(Capture {
             child,
             audio_child,
@@ -678,6 +727,8 @@ impl Recorder {
             monitors: util::monitors_signature(),
             tracks,
             encoder,
+            ram: ram_video.map(|v| (v, ram_audio)),
+            ram_wait: 0,
             width,
             height,
             fps,
@@ -816,9 +867,7 @@ impl Recorder {
             for seg in list {
                 let dst = work.join(format!("{prefix}{counter:06}.{ext}"));
                 counter += 1;
-                if fs::hard_link(&seg.path, &dst).is_err() {
-                    fs::copy(&seg.path, &dst)?;
-                }
+                seg.freeze(&dst)?;
                 files.push(dst);
             }
             // Durée exacte de chaque segment = écart avec le suivant (l'horloge fait foi)
@@ -952,7 +1001,7 @@ pub fn wait_written(recorder: &Mutex<Recorder>, end: f64, max: Duration) -> bool
 }
 
 /// Lit les nouvelles lignes complètes d'une liste de segments (« fichier,début,fin »).
-fn read_list(dir: &Path, list: &str, offset: &mut u64, session: u64, segments: &mut VecDeque<Segment>) {
+fn read_list(dir: &Path, list: &str, offset: &mut u64, session: u64, segments: &mut VecDeque<Segment>, ram: bool, ram_wait: &mut u32) {
     let Ok(mut file) = fs::File::open(dir.join(list)) else { return };
     if file.seek(SeekFrom::Start(*offset)).is_err() {
         return;
@@ -965,8 +1014,12 @@ fn read_list(dir: &Path, list: &str, offset: &mut u64, session: u64, segments: &
         Some(i) => i + 1,
         None => return,
     };
+    let base = *offset;
     *offset += complete as u64;
-    for line in text[..complete].lines() {
+    let mut pos = 0usize;
+    for line in text[..complete].split_inclusive('\n') {
+        let line_start = pos;
+        pos += line.len();
         let parts: Vec<&str> = line.trim().rsplitn(3, ',').collect();
         if parts.len() != 3 {
             continue;
@@ -976,12 +1029,29 @@ fn read_list(dir: &Path, list: &str, offset: &mut u64, session: u64, segments: &
         if start < 1.0e9 {
             start = segments.back().filter(|s| s.session == session).map(|s| s.end).unwrap_or(end - 1.0);
         }
-        let file = dir.join(parts[2].trim_matches('"'));
-        let bytes = fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+        let name = parts[2].trim_matches('"');
+        // Le nom peut être un chemin complet de tuyau : on ne garde que le nom du segment
+        let name = name.rsplit(['\\', '/']).next().unwrap_or(name);
+        let file = dir.join(name);
+        let bytes = if ram {
+            match crate::ram::get(name) {
+                Some(d) => d.len() as u64,
+                // Annoncé avant d'être entièrement reçu : on réessaie au prochain passage (2 s au plus)
+                None if *ram_wait < 8 => {
+                    *ram_wait += 1;
+                    *offset = base + line_start as u64;
+                    return;
+                }
+                None => 0,
+            }
+        } else {
+            fs::metadata(&file).map(|m| m.len()).unwrap_or(0)
+        };
+        *ram_wait = 0;
         if bytes == 0 || end <= start {
             continue;
         }
-        segments.push_back(Segment { path: file, start, end, bytes, session });
+        segments.push_back(Segment { path: file, start, end, bytes, session, ram });
     }
 }
 
@@ -1161,9 +1231,7 @@ pub fn screenshot(recorder: &Mutex<Recorder>, folder: &Path, app: &str) -> Resul
     };
     let tools = ffmpeg::tools()?;
     let tmp = buffer_root().join(format!("shot-{}.mkv", library::new_id()));
-    if fs::hard_link(&seg.path, &tmp).is_err() {
-        fs::copy(&seg.path, &tmp)?;
-    }
+    seg.freeze(&tmp)?;
     fs::create_dir_all(folder)?;
     let stamp = chrono::Local::now().format("%Y-%m-%d %Hh%M-%S");
     let out = folder.join(format!("{} {stamp}.png", util::safe_name(app)));

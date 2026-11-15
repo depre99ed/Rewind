@@ -1,8 +1,9 @@
 <script lang="ts">
   import { t } from "$lib/i18n.svelte";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
-  import { Video, AudioLines, Keyboard, HardDrive, Share2, Palette, Power, Stethoscope, Plus, Trash2, FolderOpen, MonitorUp, Layers, Bell, Play, Upload } from "@lucide/svelte";
+  import { Video, AudioLines, Keyboard, HardDrive, Share2, Palette, Power, Stethoscope, Plus, Trash2, FolderOpen, MonitorUp, Layers, Bell, Play, Upload, Search, X, ChevronRight } from "@lucide/svelte";
+  import { searchSettings, shown, type SettingHit } from "$lib/settings-search";
   import KeysOverlay from "./KeysOverlay.svelte";
   import type { KeysPreset } from "$lib/studio/render";
 
@@ -54,6 +55,39 @@
     ["general", "Système", Power],
     ["diag", "Diagnostic", Stethoscope],
   ] as const;
+  // Recherche : dans la langue affichée ; un clic ouvre la section et montre le réglage
+  let query = $state("");
+  let searchEl = $state<HTMLInputElement | null>(null);
+  const hits = $derived(searchSettings(query, sections));
+  function openSection(id: string) {
+    app.settingsSection = id as typeof app.settingsSection;
+    if (id === "diag") api.engineLog().then((l) => (log = l));
+  }
+  async function goTo(h: SettingHit) {
+    query = "";
+    openSection(h.section);
+    if (h.kind === "section") return;
+    await tick();
+    const pane = document.querySelector(".settings .pane");
+    const els = [...(pane?.querySelectorAll<HTMLElement>(h.kind === "group" ? "h3" : ".item, .lbl") ?? [])];
+    const el = els.find((e) => (h.kind === "group" ? e.textContent : e.querySelector("strong")?.textContent)?.trim().startsWith(h.label));
+    const target = el?.closest<HTMLElement>(".item") ?? el;
+    if (!target) return;
+    target.scrollIntoView({ block: "center", behavior: app.settings?.animations === false ? "auto" : "smooth" });
+    target.classList.add("flash");
+    setTimeout(() => target.classList.remove("flash"), 1600);
+  }
+  function searchKey(e: KeyboardEvent) {
+    if (e.key === "Enter" && hits[0]) goTo(hits[0]);
+    if (e.key === "Escape") query = "";
+  }
+  function globalKey(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      searchEl?.focus();
+      searchEl?.select();
+    }
+  }
   const accents = ["#c8f031", "#ff5d5d", "#ff8a3d", "#ffc53d", "#3ddc97", "#38bdf8", "#8b8cff", "#f472b6", "#eef0f4"];
   const encoderNames: Record<string, string> = {
     auto: "Automatique (recommandé)", // traduit à l'affichage
@@ -68,6 +102,9 @@
     libx264: "Processeur (x264, lent)",
   };
   const est = $derived(Math.round((s.bitrate_mbps / 8) * s.buffer_seconds));
+  // Tampon en RAM : déconseillé si le PC a peu de mémoire (moins de 12 Go) ou si le tampon en prend plus d'un quart
+  const ramGb = $derived(hw?.ram_gb ?? 0);
+  const ramTight = $derived(ramGb > 0 && (ramGb < 12 || est / 1024 > ramGb / 4));
 
   async function chooseFolder() {
     const dir = await openDialog({ directory: true, defaultPath: s.clip_folder, title: t("Dossier des clips") });
@@ -125,16 +162,25 @@
   $effect(() => {
     if (section === "clips") api.medalDetect().then((m) => (medal = m)).catch(() => {});
   });
-  async function importMedal() {
+  async function importMedal(from?: string) {
     medalBusy = true;
     try {
-      const r = await api.medalImport();
+      const r = await api.medalImport(from);
       app.toast("ok", t("Clips Medal importés"), t("{n} clips copiés", { n: r.copied }));
     } catch (e) {
       app.toast("err", t("Import Medal impossible"), String(e));
     }
     medal = await api.medalDetect().catch(() => medal);
     medalBusy = false;
+  }
+  // Dossier choisi à la main (Medal rangé ailleurs, ancien disque, sauvegarde…) : retenu ensuite
+  async function pickMedal() {
+    const dir = await openDialog({ directory: true, title: t("Dossier de Medal") }).catch(() => null);
+    if (typeof dir !== "string") return;
+    const m = await api.medalDetect(dir).catch(() => null);
+    if (!m?.found) app.toast("err", t("Aucune vidéo dans ce dossier"), dir);
+    else if (m.imported >= m.clips) app.toast("ok", t("Tout est importé"), t("{n} clips déjà dans Rewind", { n: m.clips }));
+    else await importMedal(dir);
   }
 
   // Mises à jour
@@ -165,18 +211,43 @@
   }
 </script>
 
+<svelte:window onkeydown={globalKey} />
+
 {#if s}
   <section class="settings">
     <nav>
       <h1>{t("Réglages")}</h1>
+      <label class="search">
+        <Search size={14} />
+        <input bind:this={searchEl} bind:value={query} onkeydown={searchKey} placeholder={t("Chercher un réglage")} aria-label={t("Chercher un réglage")} spellcheck="false" />
+        {#if query}<button class="clear" onclick={() => (query = "")} aria-label={t("Effacer")} title={t("Effacer")}><X size={13} /></button>{/if}
+      </label>
       {#each sections as [id, label, Icon]}
-        <button class:on={section === id} onclick={() => { app.settingsSection = id; if (id === "diag") api.engineLog().then((l) => (log = l)); }}>
+        <button class:on={section === id && !query.trim()} onclick={() => { query = ""; openSection(id); }}>
           <Icon size={16} />{t(label)}
         </button>
       {/each}
     </nav>
 
     <div class="content">
+      {#if query.trim()}
+        <div class="pane appear">
+          <h2>{t("Résultats")}</h2>
+          {#if hits.length}
+            <div class="group results">
+              {#each hits as h (h.section + h.kind + h.label)}
+                {@const sec = sections.find((x) => x[0] === h.section)}
+                <button class="hit" onclick={() => goTo(h)}>
+                  <span class="lbl"><strong>{h.label}</strong>{#if h.hint}<span>{h.hint}</span>{/if}</span>
+                  <span class="where">{sec && h.kind !== "section" ? t(sec[1]) : ""}{#if h.group && h.kind === "item"}<ChevronRight size={12} />{h.group}{/if}</span>
+                </button>
+              {/each}
+            </div>
+          {:else}
+            <p class="muted empty">{t("Aucun réglage ne correspond à « {q} ».", { q: query.trim() })}</p>
+          {/if}
+        </div>
+      {:else}
       {#key section}
         <div class="pane appear">
           {#if section === "video"}
@@ -262,8 +333,19 @@
                 <input type="range" min="10" max="1200" step="10" value={s.clip_long_seconds} oninput={(e) => app.patch((x) => (x.clip_long_seconds = +e.currentTarget.value))} />
               </div>
               <div class="item">
-                <div class="lbl"><strong>{t("Mémoire tampon")} : {s.buffer_seconds >= 60 ? `${(s.buffer_seconds / 60).toFixed(1).replace(".0", "")} min` : `${s.buffer_seconds} s`}</strong><span>{t("Environ {n} Mo sur le disque, effacés en continu.", { n: est })}</span></div>
+                <div class="lbl"><strong>{t("Mémoire tampon")} : {s.buffer_seconds >= 60 ? `${(s.buffer_seconds / 60).toFixed(1).replace(".0", "")} min` : `${s.buffer_seconds} s`}</strong><span>{s.buffer_in_ram ? t("Environ {n} Mo en mémoire vive, remplacés en continu.", { n: est }) : t("Environ {n} Mo sur le disque, effacés en continu.", { n: est })}</span></div>
                 <input type="range" min="30" max="1800" step="30" value={s.buffer_seconds} oninput={(e) => app.patch((x) => (x.buffer_seconds = +e.currentTarget.value))} />
+              </div>
+              <div class="item">
+                <div class="lbl">
+                  <strong>{t("Emplacement de la mémoire tampon")}</strong>
+                  <span>{s.buffer_in_ram ? t("Mémoire vive : rien n'est écrit sur le SSD en continu. Idéal avec beaucoup de RAM.") : t("Disque : léger pour la mémoire, idéal pour les petits PC. Le SSD est écrit en continu.")}{ramGb ? ` ${t("Ce PC : {g} Go de RAM.", { g: Math.round(ramGb) })}` : ""}</span>
+                  {#if s.buffer_in_ram && ramTight}<span class="warn">{t("Peu de RAM pour cette durée : le disque est conseillé, ou un tampon plus court.")}</span>{/if}
+                </div>
+                <div class="seg">
+                  <button class:on={!s.buffer_in_ram} onclick={() => app.patch((x) => (x.buffer_in_ram = false))}>{t("Disque (SSD)")}</button>
+                  <button class:on={s.buffer_in_ram} onclick={() => app.patch((x) => (x.buffer_in_ram = true))}>{t("Mémoire vive (RAM)")}</button>
+                </div>
               </div>
             </div>
             <h3>{t("Rangement")}</h3>
@@ -282,13 +364,18 @@
             <div class="group">
               <div class="item">
                 <div class="lbl">
-                  <strong>{medal?.found ? t("Medal trouvé sur ce PC") : t("Medal introuvable")}</strong>
-                  <span>{medal?.found ? t("{n} clips · {g} Go · {i} déjà importés. Les clips sont copiés dans ton dossier des clips ; Medal garde les siens.", { n: medal.clips, g: (medal.size_mb / 1024).toFixed(1), i: medal.imported }) : t("Aucun clip Medal trouvé sur ce PC.")}</span>
+                  <strong>{medal?.found ? t("Medal trouvé sur ce PC") : medal?.installed ? t("Medal est installé") : t("Medal introuvable")}</strong>
+                  <span>{medal?.found ? t("{n} clips · {g} Go · {i} déjà importés. Les clips sont copiés dans ton dossier des clips ; Medal garde les siens.", { n: medal.clips, g: (medal.size_mb / 1024).toFixed(1), i: medal.imported }) : medal?.installed ? t("Ses clips ne sont pas à l'endroit habituel. Montre le dossier où Medal les range pour les importer.") : t("Aucun clip Medal trouvé sur ce PC.")}</span>
+                  {#if medal?.found}<span class="mono path">{medal.folders.join("  ·  ")}</span>{/if}
                   {#if medalBusy}<span class="mono">{app.progress?.op === "medal" ? Math.round(app.progress.value * 100) : 0} %</span>{/if}
                 </div>
                 {#if medal?.found}
-                  <button class="btn" class:primary={medal.imported < medal.clips} onclick={importMedal} disabled={medalBusy || medal.imported >= medal.clips}>{medalBusy ? t("Import…") : medal.imported >= medal.clips ? t("Tout est importé") : t("Importer {n} clips", { n: medal.clips - medal.imported })}</button>
+                  <button class="btn" class:primary={medal.imported < medal.clips} onclick={() => importMedal()} disabled={medalBusy || medal.imported >= medal.clips}>{medalBusy ? t("Import…") : medal.imported >= medal.clips ? t("Tout est importé") : t("Importer {n} clips", { n: medal.clips - medal.imported })}</button>
                 {/if}
+              </div>
+              <div class="item">
+                <div class="lbl"><strong>{t("Importer depuis un dossier")}</strong><span>{t("Clips Medal rangés ailleurs (autre disque, sauvegarde…) ou n'importe quel dossier de vidéos. Rewind s'en souvient.")}</span></div>
+                <button class="btn" onclick={pickMedal} disabled={medalBusy}><FolderOpen size={15} />{t("Choisir un dossier")}</button>
               </div>
             </div>
           {:else if section === "audio"}
@@ -576,6 +663,7 @@
           {/if}
         </div>
       {/key}
+      {/if}
     </div>
   </section>
 {/if}
@@ -587,6 +675,22 @@
   nav button { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 9px; color: var(--text-2); font-weight: 500; text-align: left; }
   nav button:hover { background: var(--panel); color: var(--text); }
   nav button.on { background: var(--panel-2); color: var(--text); }
+  .search { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 8px 0 10px; margin: 0 0 10px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line); color: var(--text-3); transition: border-color var(--dur); }
+  .search:focus-within { border-color: var(--line-2); }
+  .search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 13px; user-select: text; }
+  .search input::placeholder { color: var(--text-3); }
+  .search .clear { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border-radius: 6px; color: var(--text-3); }
+  .search .clear:hover { background: var(--panel-2); color: var(--text); }
+  .results { padding: 4px 6px; }
+  .hit { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 56px; padding: 9px 12px; border-radius: 9px; text-align: left; width: 100%; }
+  .hit + .hit { box-shadow: 0 -1px 0 var(--line); }
+  .hit:hover, .hit:focus-visible { background: var(--panel-2); box-shadow: none; }
+  .hit:hover + .hit { box-shadow: none; }
+  .hit .lbl strong { color: var(--text); }
+  .hit .lbl { flex: 1 1 60%; }
+  .where { display: flex; align-items: center; justify-content: flex-end; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 40%; font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; }
+  .empty { margin: 0; font-size: 13.5px; }
+  .pane :global(.flash) { background: color-mix(in srgb, var(--accent) 9%, transparent); box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 9%, transparent); border-radius: 4px; transition: background var(--dur), box-shadow var(--dur); }
   .content { flex: 1; overflow-y: auto; padding: 26px 36px 60px; }
   .pane { max-width: 760px; display: flex; flex-direction: column; gap: 14px; }
   h2 { margin: 0; font-size: 20px; font-weight: 650; }
@@ -599,6 +703,7 @@
   .lbl { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .lbl span { font-size: 12.5px; color: var(--text-3); }
   .lbl strong { font-weight: 550; }
+  .lbl span.warn { color: var(--rec); }
   .path { font-size: 12px; word-break: break-all; }
   .item input[type="range"] { width: 220px; flex: none; }
   .item select.field, .item input.field { min-width: 240px; }

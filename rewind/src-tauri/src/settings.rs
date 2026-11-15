@@ -279,6 +279,8 @@ pub struct Settings {
     pub window_exe: String,
     /// Durée gardée en mémoire tampon (secondes)
     pub buffer_seconds: u32,
+    /// Mémoire tampon en RAM plutôt que sur le disque (aucune écriture sur le SSD)
+    pub buffer_in_ram: bool,
     /// Durée du clip « court » (raccourci principal)
     pub clip_seconds: u32,
     /// Durée du clip « long »
@@ -364,6 +366,7 @@ impl Default for Settings {
             monitor: String::new(),
             window_exe: String::new(),
             buffer_seconds: 120,
+            buffer_in_ram: false,
             clip_seconds: 30,
             clip_long_seconds: 120,
             fps: 60,

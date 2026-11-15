@@ -2,6 +2,7 @@
 
 mod admin;
 mod medal;
+mod ram;
 mod audio;
 mod cs2;
 mod rapport;
@@ -1176,6 +1177,8 @@ struct Hardware {
     encoders: Vec<String>,
     apps: Vec<String>,
     ffmpeg: String,
+    /// Mémoire vive du PC (Go), pour le choix « tampon en RAM »
+    ram_gb: f64,
 }
 
 #[tauri::command]
@@ -1205,10 +1208,11 @@ async fn get_hardware() -> Hardware {
             encoders: ffmpeg::working_encoders(),
             apps,
             ffmpeg: ffmpeg::tools().map(|t| t.ffmpeg.to_string_lossy().to_string()).unwrap_or_default(),
+            ram_gb: ram::memory().map(|m| m.0 as f64 / 1_073_741_824.0).unwrap_or(0.0),
         }
     })
     .await
-    .unwrap_or(Hardware { monitors: vec![], outputs: vec![], inputs: vec![], encoders: vec![], apps: vec![], ffmpeg: String::new() })
+    .unwrap_or(Hardware { monitors: vec![], outputs: vec![], inputs: vec![], encoders: vec![], apps: vec![], ffmpeg: String::new(), ram_gb: 0.0 })
 }
 
 #[derive(Serialize)]
@@ -1359,18 +1363,21 @@ async fn diagnostic_report(app: AppHandle, state: State<'_, AppState>, copy: boo
 
 /// Medal sur ce PC : dossier, nombre de clips, déjà importés, réglages.
 #[tauri::command(async)]
-fn medal_detect() -> medal::MedalInfo {
-    medal::detect()
+fn medal_detect(folder: Option<String>) -> medal::MedalInfo {
+    match folder {
+        Some(f) => medal::detect_in(std::path::Path::new(&f)),
+        None => medal::detect(),
+    }
 }
 
 /// Copie les clips Medal pas encore importés dans le dossier des clips (progression : « edit-progress », op « medal »).
 #[tauri::command(async)]
-fn medal_import(app: AppHandle, state: State<AppState>) -> Res<medal::ImportResult> {
+fn medal_import(app: AppHandle, state: State<AppState>, from: Option<String>) -> Res<medal::ImportResult> {
     let (folder, per_game) = {
         let s = state.settings.lock();
         (PathBuf::from(&s.clip_folder), s.folder_per_game)
     };
-    let res = medal::import(&folder, per_game, &|v| {
+    let res = medal::import(&folder, per_game, from.as_deref().map(std::path::Path::new), &|v| {
         let _ = app.emit("edit-progress", Progress { op: "medal".into(), value: v });
     })
     .map_err(err)?;
@@ -1629,6 +1636,9 @@ pub fn selftest(seconds: u64, out: PathBuf) -> i32 {
     if let Ok(enc) = std::env::var("REWIND_ENCODER") {
         settings.encoder = enc;
     }
+    if std::env::var_os("REWIND_RAM").is_some() {
+        settings.buffer_in_ram = true;
+    }
     if let Some(fps) = std::env::var("REWIND_FPS").ok().and_then(|v| v.parse().ok()) {
         settings.fps = fps;
     }
@@ -1845,7 +1855,7 @@ pub fn sounds_test(dir: PathBuf) -> i32 {
 /// Test : `rewind.exe --medal-import <dossier>`.
 pub fn medal_import_test(dest: PathBuf) -> i32 {
     let t = std::time::Instant::now();
-    match medal::import(&dest, true, &|_| {}) {
+    match medal::import(&dest, true, None, &|_| {}) {
         Ok(r) => { println!("{} copiés, {} déjà là, {} en échec ({:.1} s)", r.copied, r.skipped, r.failed, t.elapsed().as_secs_f64()); 0 }
         Err(e) => { println!("ÉCHEC : {e:#}"); 1 }
     }
@@ -1912,6 +1922,7 @@ pub fn hold_test(out: PathBuf) -> i32 {
     settings.clip_seconds = 5;
     settings.clip_long_seconds = 5;
     settings.buffer_seconds = 10;
+    settings.buffer_in_ram = std::env::var_os("REWIND_RAM").is_some();
     recorder::clean_buffer();
     let rec = Arc::new(Mutex::new(Recorder::new(settings)));
     let run = |secs: f64| {
@@ -2186,6 +2197,7 @@ pub fn stress(minutes: u64, out: PathBuf) -> i32 {
     let keep = out.join("clips-recolles");
     let mut settings = Settings::load();
     settings.recording_enabled = true;
+    settings.buffer_in_ram = std::env::var_os("REWIND_RAM").is_some();
     recorder::clean_buffer();
     let rec = Arc::new(Mutex::new(Recorder::new(settings)));
     let start = std::time::Instant::now();

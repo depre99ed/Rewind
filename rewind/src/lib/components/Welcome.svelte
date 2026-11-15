@@ -43,13 +43,25 @@
     voice = s.voice_command;
     quality = s.eco_mode ? "eco" : s.resolution >= 1440 || s.resolution === 0 ? "high" : "balanced";
     [medal, hw] = await Promise.all([api.medalDetect().catch(() => null), api.hardware().catch(() => null)]);
-    if (medal?.found) {
-      doImport = medal.imported < medal.clips;
-      applyMedal(true);
-    }
+    if (medal?.found) doImport = medal.imported < medal.clips;
+    if (medal?.found || medal?.installed) applyMedal(true);
   });
 
-  const hasMedalSettings = $derived(!!medal?.found && !!(medal.hotkey || medal.clip_seconds || medal.fps));
+  const hasMedalSettings = $derived(!!(medal?.found || medal?.installed) && !!(medal?.hotkey || medal?.clip_seconds || medal?.fps));
+  // Medal installé mais clips introuvables : l'utilisateur montre le dossier
+  let medalFrom = $state<string | undefined>(undefined);
+  async function pickMedal() {
+    const dir = await openDialog({ directory: true, title: t("Dossier de Medal") }).catch(() => null);
+    if (typeof dir !== "string" || !medal) return;
+    const m = await api.medalDetect(dir).catch(() => null);
+    if (!m?.found) {
+      app.toast("err", t("Aucune vidéo dans ce dossier"), dir);
+      return;
+    }
+    medal = { ...medal, found: true, folder: m.folder, folders: m.folders, clips: m.clips, size_mb: m.size_mb, imported: m.imported };
+    medalFrom = dir;
+    doImport = m.imported < m.clips;
+  }
   const medalSummary = $derived(
     medal ? [medal.hotkey, medal.clip_seconds && `${medal.clip_seconds} s`, medal.resolution && `${medal.resolution}p`, medal.fps && `${medal.fps} ${t("i/s")}`].filter(Boolean).join(" · ") : "",
   );
@@ -112,7 +124,7 @@
     if (medal?.found && doImport && medal.imported < medal.clips) {
       importing = true;
       try {
-        const r = await api.medalImport();
+        const r = await api.medalImport(medalFrom);
         imported = { copied: r.copied, failed: r.failed };
       } catch (e) {
         app.toast("err", t("Import Medal impossible"), String(e));
@@ -152,6 +164,19 @@
                 <span class="txt"><b>{t("Importer mes clips Medal")}</b><small>{t("Ils sont copiés dans Rewind ; Medal garde les siens.")}</small></span>
                 <span class="switch"><input type="checkbox" bind:checked={doImport} disabled={medal.imported >= medal.clips} /><span></span></span>
               </label>
+              {#if hasMedalSettings}
+                <label class="row opt">
+                  <span class="txt"><b>{t("Reprendre mes réglages Medal")}</b><small>{medalSummary}</small></span>
+                  <span class="switch"><input type="checkbox" checked={useMedal} onchange={(e) => applyMedal(e.currentTarget.checked)} /><span></span></span>
+                </label>
+              {/if}
+            </div>
+          {:else if medal?.installed}
+            <div class="card">
+              <div class="row">
+                <div class="txt"><strong>{t("Medal est installé")}</strong><span>{t("Ses clips ne sont pas à l'endroit habituel. Montre le dossier où Medal les range pour les importer.")}</span></div>
+                <button class="btn" onclick={pickMedal}><FolderOpen size={15} />{t("Choisir le dossier")}</button>
+              </div>
               {#if hasMedalSettings}
                 <label class="row opt">
                   <span class="txt"><b>{t("Reprendre mes réglages Medal")}</b><small>{medalSummary}</small></span>

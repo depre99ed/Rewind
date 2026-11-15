@@ -41,7 +41,7 @@ if (typeof window !== "undefined" && !inTauri) {
   let settings: Settings = {
     launch_at_startup: true, start_minimized: false, close_to_tray: true,
     clip_folder: "C:\\Users\\User\\Videos\\Rewind", folder_per_game: true, recording_enabled: true,
-    capture_mode: "monitor", monitor: "", window_exe: "", buffer_seconds: 120, clip_seconds: 30, clip_long_seconds: 120,
+    capture_mode: "monitor", monitor: "", window_exe: "", buffer_seconds: 120, buffer_in_ram: false, clip_seconds: 30, clip_long_seconds: 120,
     fps: 60, resolution: 1080, bitrate_mbps: 20, encoder: "auto", show_cursor: true, eco_mode: false,
     audio_sources: [
       { id: "system", kind: "system", device: "", app: "", label: "Son du PC", enabled: true, volume: 100 },
@@ -112,7 +112,7 @@ if (typeof window !== "undefined" && !inTauri) {
             ],
             outputs: [{ id: "o1", name: "Casque (USB Audio)", default: true }],
             inputs: [{ id: "i1", name: "Micro (USB Audio)", default: true }],
-            encoders: ["h264_nvenc", "hevc_nvenc", "av1_nvenc", "libx264"], apps: ["cs2.exe", "Discord.exe", "chrome.exe", "Spotify.exe"],
+            encoders: ["h264_nvenc", "hevc_nvenc", "av1_nvenc", "libx264"], ram_gb: 31.9, apps: ["cs2.exe", "Discord.exe", "chrome.exe", "Spotify.exe"],
             ffmpeg: "C:\\Program Files\\Rewind\\bin\\ffmpeg.exe",
           };
         case "cs2_info": return { installs: ["D:\\cfg", "E:\\cfg"], configured: ["D:\\cfg", "E:\\cfg"], running: true, needs_restart: params.get("restart") === "1", since_last: params.get("restart") === "1" ? -1 : 0.4,
@@ -161,7 +161,8 @@ if (typeof window !== "undefined" && !inTauri) {
         case "media_info": return { duration: 34, width: 1920, height: 1080, fps: 50, tracks: ["Mixage", "Son du PC", "Micro", "Discord"] };
         case "media_filmstrip": throw "pas de vignettes en aperçu";
         case "media_stems": return [];
-        case "medal_detect": return { found: true, folder: "C:\\Users\\Moi\\Videos\\Medal", clips: 39, size_mb: 2278, imported: new URLSearchParams(location.search).has("medalok") ? 39 : 0, hotkey: "F8", clip_seconds: 30, fps: 60, resolution: 1080, bitrate: 10 };
+        case "medal_detect": if (new URLSearchParams(location.search).has("medalailleurs") && !(args as any)?.folder) return { found: false, installed: true, folder: "", folders: [], clips: 0, size_mb: 0, imported: 0, hotkey: "F8", clip_seconds: 30, fps: 60, resolution: 1080, bitrate: 10 };
+          return { found: true, installed: true, folder: "C:\\Medal", folders: ["C:\\Medal", "C:\\Users\\Moi\\Videos\\Medal"], clips: 39, size_mb: 2278, imported: new URLSearchParams(location.search).has("medalok") ? 39 : 0, hotkey: "F8", clip_seconds: 30, fps: 60, resolution: 1080, bitrate: 10 };
         case "medal_import": return { copied: 39, skipped: 0, failed: 0 };
         case "sound_preview": return null;
         case "sound_import": return "mon-son";

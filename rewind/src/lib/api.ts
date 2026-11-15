@@ -60,6 +60,7 @@ export type Settings = {
   monitor: string;
   window_exe: string;
   buffer_seconds: number;
+  buffer_in_ram: boolean;
   clip_seconds: number;
   clip_long_seconds: number;
   fps: number;
@@ -145,6 +146,7 @@ export type Status = {
 };
 
 export type Hardware = {
+  ram_gb: number;
   monitors: { index: number; handle: number; name: string; width: number; height: number; primary: boolean; x: number; y: number }[];
   outputs: { id: string; name: string; default: boolean }[];
   inputs: { id: string; name: string; default: boolean }[];
@@ -248,8 +250,8 @@ export const api = {
   mediaFilmstrip: (path: string) => invoke<Filmstrip>("media_filmstrip", { path }),
   mediaWaveform: (path: string) => invoke<Waveform>("media_waveform", { path }),
   mediaStems: (path: string) => invoke<string[]>("media_stems", { path }),
-  medalDetect: () => invoke<MedalInfo>("medal_detect"),
-  medalImport: () => invoke<{ copied: number; skipped: number; failed: number }>("medal_import"),
+  medalDetect: (folder?: string) => invoke<MedalInfo>("medal_detect", { folder: folder ?? null }),
+  medalImport: (from?: string) => invoke<{ copied: number; skipped: number; failed: number }>("medal_import", { from: from ?? null }),
   soundPreview: (kind: string) => invoke<void>("sound_preview", { kind }),
   soundImport: (path: string) => invoke<string>("sound_import", { path }),
   adminInputStatus: () => invoke<AdminInput>("admin_input_status"),
@@ -269,7 +271,7 @@ export const api = {
 };
 
 /** Medal sur ce PC (clips à importer, réglages repris à l'accueil). */
-export type MedalInfo = { found: boolean; folder: string; clips: number; size_mb: number; imported: number; hotkey: string | null; clip_seconds: number | null; fps: number | null; resolution: number | null; bitrate: number | null };
+export type MedalInfo = { found: boolean; installed: boolean; folder: string; folders: string[]; clips: number; size_mb: number; imported: number; hotkey: string | null; clip_seconds: number | null; fps: number | null; resolution: number | null; bitrate: number | null };
 
 /** Jeux lancés en administrateur : leurs touches ne sont visibles qu'avec l'assistant. */
 export type AdminInput = { game_admin: boolean; helper: boolean; enabled: boolean; rewind_admin: boolean };

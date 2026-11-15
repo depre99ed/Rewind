@@ -10,8 +10,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 
-const W: f64 = 400.0;
-const H: f64 = 104.0;
+/// Capsule de 328 × 60 (+ 6 px de marge transparente autour pour l'ombre)
+const W: f64 = 340.0;
+const H: f64 = 72.0;
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Serialize, Default)]
@@ -32,7 +33,7 @@ pub struct Toast {
 
 /// Hauteur de la fenêtre selon le contenu (le bandeau d'accueil liste les raccourcis).
 fn height_for(t: &Toast) -> f64 {
-    if t.state == "welcome" { 98.0 + 27.0 * t.keys.len() as f64 + 12.0 } else { H }
+    if t.state == "welcome" { 12.0 + 22.0 + 40.0 + 10.0 + 24.0 * t.keys.len() as f64 } else { H }
 }
 
 fn hwnd(w: &tauri::WebviewWindow) -> Option<*mut std::ffi::c_void> {
@@ -128,7 +129,7 @@ pub fn show(app: &AppHandle, settings: &Settings, mut toast: Toast) {
             return; // une notification plus récente a pris la place
         }
         let _ = app.emit_to("toast", "toast-hide", ());
-        std::thread::sleep(std::time::Duration::from_millis(420));
+        std::thread::sleep(std::time::Duration::from_millis(260));
         if GENERATION.load(Ordering::SeqCst) == generation
             && let Some(w) = app.get_webview_window("toast")
             && let Some(h) = hwnd(&w)

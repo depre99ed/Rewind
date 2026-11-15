@@ -1,8 +1,12 @@
 <script lang="ts">
+  // Notification en jeu (fenêtre transparente qui ne prend jamais le focus, toast.rs).
+  // Refaite le 2026-11-16 dans le style de l'appli : capsule noire, un seul vert (la coche), police de l'appli,
+  // fondu court à l'entrée et à la sortie, rien qui clignote. Bandeau d'arrivée en jeu : liste des raccourcis.
   import "$lib/styles.css";
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { fileUrl, gameColor } from "$lib/api";
+  import { fileUrl } from "$lib/api";
+  import { keyParts } from "$lib/keys";
   import Logo from "$lib/components/Logo.svelte";
   import { EN } from "$lib/i18n-en";
 
@@ -15,19 +19,24 @@
     document.documentElement.style.background = "transparent";
     document.body.style.background = "transparent";
     const params = new URLSearchParams(location.search);
-    if (params.get("demo") === "welcome") {
-      t = {
-        state: "welcome", title: "Counter-Strike 2", subtitle: "Rewind enregistre · tes raccourcis", game: "Counter-Strike 2", thumb: "", badges: [], seconds: 0,
-        keys: [["Alt+F10", "Clip 30 s"], ["Alt+Shift+F10", "Clip 2 min"], ["Alt+F11", "Clip sur mesure"], ["Alt+F7", "Session complète"]],
+    const demo = params.get("demo");
+    if (demo) {
+      // Aperçu dans un navigateur (captures) : ?demo=saved|saving|shot|failed|marked|welcome
+      const lang = params.get("lang") ?? undefined;
+      const en = lang === "en";
+      const demos: Record<string, Toast> = {
+        saving: { state: "saving", title: en ? "Last 30 seconds" : "30 dernières secondes", subtitle: "Counter-Strike 2", game: "Counter-Strike 2", thumb: "", badges: [], seconds: 30, lang },
+        saved: { state: "saved", title: "CS2 ACE · 2× One Tap", subtitle: "Counter-Strike 2 · 34 s", game: "Counter-Strike 2", thumb: "/mock/t1.jpg", badges: [], seconds: 34, lang },
+        shot: { state: "shot", title: "Counter-Strike 2 2026-11-16 21h04", subtitle: "", game: "Counter-Strike 2", thumb: "/mock/t3.jpg", badges: [], seconds: 0, lang },
+        failed: { state: "failed", title: en ? "Clip failed" : "Clip impossible", subtitle: en ? "The disk is full" : "Le disque est plein", game: "", thumb: "", badges: [], seconds: 0, lang },
+        marked: { state: "marked", title: en ? "Marker added" : "Repère ajouté", subtitle: en ? "It will show on the clip timeline" : "Il apparaîtra sur la frise du clip", game: "", thumb: "", badges: [], seconds: 0, lang },
+        welcome: {
+          state: "welcome", title: "Counter-Strike 2", subtitle: en ? "Rewind is recording · your hotkeys" : "Rewind enregistre · tes raccourcis", game: "Counter-Strike 2", thumb: "", badges: [], seconds: 0, lang,
+          keys: [["Alt+F10", en ? "Clip 30 s" : "Clip 30 s"], ["Alt+Shift+F10", en ? "Clip 2 min" : "Clip 2 min"], ["Alt+F11", en ? "Custom clip" : "Clip sur mesure"], ["Alt+F7", en ? "Full session" : "Session complète"]],
+        },
       };
-      visible = true; key++;
-      return;
-    }
-    if (params.get("demo")) {
-      // Aperçu dans un navigateur : rejoue les états
-      const demo: Toast = { state: "saving", title: "30 dernières secondes", subtitle: "Counter-Strike 2", game: "Counter-Strike 2", thumb: "", badges: [], seconds: 30 };
-      t = demo; visible = true; key++;
-      setTimeout(() => { t = { state: "saved", title: "CS2 ACE · 2× One Tap", subtitle: "Counter-Strike 2 · 34 s", game: "Counter-Strike 2", thumb: "/mock/t1.jpg", badges: ["ACE", "One Tap", params.get("lang") === "en" ? "5 streak" : "Série de 5"], seconds: 34, lang: params.get("lang") ?? undefined }; key++; }, params.get("demo") === "saved" ? 0 : 1600);
+      t = demos[demo] ?? demos.saved;
+      visible = true;
       return;
     }
     const un1 = listen<Toast>("toast", (e) => { t = e.payload; visible = true; key++; });
@@ -35,119 +44,105 @@
     return () => { un1.then((f) => f()); un2.then((f) => f()); };
   });
 
-  const color = $derived(t?.state === "failed" ? "#ff5d5d" : gameColor(t?.game ?? ""));
   // Fenêtre à part : la langue arrive avec chaque notification (réglage de l'appli)
   const L = (fr: string) => (t?.lang === "en" ? (EN[fr] ?? fr) : fr);
-  const label = $derived(
-    L(t?.state === "saving" ? "Enregistrement…" : t?.state === "failed" ? "Échec" : t?.state === "shot" ? "Capture enregistrée" : t?.state === "marked" ? "Rewind" : "Clip enregistré"),
+  // Nom de touche dans la langue de l'appli (cette fenêtre n'a pas les réglages : « Maj » / « Shift »)
+  const keyName = (k: string) => (t?.lang === "en" ? (k === "Maj" ? "Shift" : k) : k === "Shift" ? "Maj" : k);
+  const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+  // Première ligne (ce qui vient de se passer) et seconde ligne (de quoi il s'agit)
+  const line1 = $derived(
+    !t ? "" : t.state === "saving" ? L("Enregistrement…") : t.state === "saved" ? L("Clip enregistré") : t.state === "shot" ? L("Capture enregistrée") : t.title,
+  );
+  const line2 = $derived(
+    !t ? "" : t.state === "saving" ? [t.title, t.game].filter(Boolean).join(" · ") : t.state === "saved" || t.state === "shot" ? t.title : t.subtitle,
   );
 </script>
 
 {#if t && t.state === "welcome"}
-  <!-- Bandeau d'accueil : jeu reconnu + raccourcis (6 s) -->
-  <div class="toast welcome" class:in={visible} style="--c:{color};--life:5.8s">
-    <div class="glow"></div>
+  <!-- Arrivée en jeu : jeu reconnu + raccourcis (6 s) -->
+  <div class="toast welcome" class:in={visible}>
     <div class="whead">
-      <div class="wlogo"><Logo size={26} /></div>
-      <div class="wtext">
-        <div class="kicker"><i class="dot rec"></i>{L("Rewind est prêt")}</div>
-        {#key key}<div class="title pop">{t.title}</div>{/key}
-        <div class="sub"><span class="muted">{t.subtitle}</span></div>
+      <span class="media mark"><Logo size={22} /></span>
+      <div class="text">
+        <div class="l1">{t.title}</div>
+        <div class="l2"><i class="live"></i>{t.subtitle}</div>
       </div>
     </div>
     <div class="keys">
-      {#each t.keys ?? [] as [k, what], i}
-        <div class="krow" style="animation-delay:{120 + i * 70}ms">
-          <span class="kchip">{#each k.split("+") as part, j}{#if j > 0}<b>+</b>{/if}<kbd>{part}</kbd>{/each}</span>
-          <span class="kwhat">{what}</span>
-        </div>
+      {#each t.keys ?? [] as [k, what]}
+        <span class="combo">{#each keyParts(k).map(keyName) as part, j}{#if j > 0}<b>+</b>{/if}<kbd>{part}</kbd>{/each}</span>
+        <span class="what">{what}</span>
       {/each}
     </div>
-    {#key key}<div class="timer"><i></i></div>{/key}
   </div>
 {:else if t}
-  <div class="toast" class:in={visible} class:saving={t.state === "saving"} style="--c:{color}">
-    <div class="glow"></div>
-    <div class="thumb">
+  <div class="toast" class:in={visible}>
+    <span class="media" class:mark={!t.thumb || t.state === "saving"}>
       {#if t.thumb && t.state !== "saving"}
-        {#key key}<img src={fileUrl(t.thumb)} alt="" class="pop" />{/key}
+        <img src={fileUrl(t.thumb)} alt="" />
       {:else}
-        <div class="rew" class:spin={t.state === "saving"}>
-          <Logo size={34} />
-        </div>
+        <Logo size={22} color={t.state === "failed" ? "#6b6b71" : "#c8f031"} />
       {/if}
-    </div>
-    <div class="body">
-      <div class="kicker">
+    </span>
+    <div class="text">
+      <div class="l1">
         {#if t.state === "saved" || t.state === "shot"}
-          <svg class="check" viewBox="0 0 24 24" width="13" height="13"><path d="M5 12.5l4.2 4.2L19 7" fill="none" stroke="var(--c)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" /></svg>
-        {:else}
-          <i class="dot"></i>
+          {#key key}<svg class="icon check" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7" /></svg>{/key}
+        {:else if t.state === "saving"}
+          <svg class="icon spin" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" /></svg>
+        {:else if t.state === "failed"}
+          <svg class="icon cross" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg>
         {/if}
-        {label}
+        <span class="ell">{line1}</span>
       </div>
-      {#key key}
-        <div class="title pop">{t.title}</div>
-      {/key}
-      <div class="sub">
-        {#if t.badges.length}
-          {#each t.badges as b}<span class="badge">{b}</span>{/each}
-        {:else}
-          <span class="muted">{t.subtitle}</span>
-        {/if}
+      <div class="l2">
+        <span class="ell">{line2}</span>
+        {#if t.state === "saved" && t.seconds > 0}<span class="dur">{mmss(t.seconds)}</span>{/if}
       </div>
     </div>
-    {#key key}
-      <div class="timer" class:indeterminate={t.state === "saving"}><i></i></div>
-    {/key}
   </div>
 {/if}
 
 <style>
   :global(html), :global(body) { background: transparent !important; overflow: hidden; }
   .toast {
-    position: fixed; inset: 6px; display: flex; align-items: center; gap: 14px; padding: 12px 16px 12px 12px;
-    border-radius: 18px; overflow: hidden; color: #fff;
-    background: linear-gradient(135deg, rgba(20, 22, 29, 0.96), rgba(11, 12, 16, 0.96));
-    border: 1px solid color-mix(in srgb, var(--c) 45%, rgba(255, 255, 255, 0.08));
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    opacity: 0; transform: translateX(-28px) scale(0.96);
-    transition: opacity 260ms cubic-bezier(0.2, 0.8, 0.2, 1), transform 420ms cubic-bezier(0.16, 1, 0.3, 1);
+    position: fixed; inset: 6px; display: flex; align-items: center; gap: 12px; padding: 8px 16px 8px 8px;
+    border-radius: 14px; color: #ededef; font-family: var(--font); box-sizing: border-box; max-width: calc(100vw - 12px); overflow: hidden;
+    background: rgba(11, 11, 12, 0.94); border: 1px solid rgba(255, 255, 255, 0.09);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+    opacity: 0; transform: translateY(4px);
+    transition: opacity 200ms ease, transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
   .toast.in { opacity: 1; transform: none; }
-  .glow { position: absolute; left: -40px; top: -40px; width: 180px; height: 180px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--c) 45%, transparent), transparent 70%); opacity: 0.55; pointer-events: none; }
-  .toast::before { content: ""; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 0 3px 3px 0; background: var(--c); box-shadow: 0 0 14px var(--c); }
-  .thumb { position: relative; width: 122px; height: 69px; flex: none; border-radius: 11px; overflow: hidden; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08); display: grid; place-items: center; }
-  .thumb img { width: 100%; height: 100%; object-fit: cover; }
-  .rew.spin :global(svg) { animation: rew 1.1s cubic-bezier(0.6, 0, 0.4, 1) infinite; }
-  @keyframes rew { 0% { transform: translateX(6px); opacity: 0.4; } 50% { transform: translateX(-6px); opacity: 1; } 100% { transform: translateX(6px); opacity: 0.4; } }
-  .body { position: relative; min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }
-  .kicker { display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: color-mix(in srgb, var(--c) 80%, #fff); }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c); animation: pulse 1s ease-in-out infinite; }
-  .title { font-family: var(--display); font-weight: 800; font-size: 16px; letter-spacing: -0.02em; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sub { display: flex; gap: 5px; font-size: 12px; color: rgba(255, 255, 255, 0.65); white-space: nowrap; overflow: hidden; }
-  .badge { height: 19px; padding: 0 7px; border-radius: 6px; display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; background: color-mix(in srgb, var(--c) 22%, rgba(255, 255, 255, 0.04)); color: color-mix(in srgb, var(--c) 70%, #fff); }
-  .timer { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(255, 255, 255, 0.06); }
-  .timer i { display: block; height: 100%; background: var(--c); transform-origin: left; animation: drain 3.4s linear both; }
-  .timer.indeterminate i { width: 30%; animation: slide 1.2s ease-in-out infinite; }
-  @keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
-  @keyframes slide { from { transform: translateX(-110%); } to { transform: translateX(380%); } }
-  .pop { animation: popin 380ms cubic-bezier(0.16, 1, 0.3, 1) both; }
-  @keyframes popin { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: none; } }
-  .check { animation: popin 380ms both; }
+  .media { width: 78px; height: 44px; flex: none; border-radius: 8px; overflow: hidden; background: #161618; display: grid; place-items: center; }
+  .media.mark { width: 44px; }
+  .media img { width: 100%; height: 100%; object-fit: cover; }
+  .text { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+  .l1 { display: flex; align-items: center; gap: 6px; font-size: 13.5px; font-weight: 600; line-height: 1.2; }
+  .l2 { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #a0a0a6; line-height: 1.25; }
+  .ell { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dur { flex: none; margin-left: auto; font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; color: #6b6b71; }
+  .icon { width: 15px; height: 15px; flex: none; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .check { stroke: #c8f031; stroke-dasharray: 16; animation: draw 260ms 80ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+  .cross { stroke: #ff453a; }
+  .spin { stroke: #6b6b71; stroke-dasharray: 22 13; animation: turn 900ms linear infinite; transform-origin: center; }
+  @keyframes draw { from { stroke-dashoffset: 16; } to { stroke-dashoffset: 0; } }
+  @keyframes turn { to { transform: rotate(360deg); } }
 
-  /* Bandeau d'accueil */
-  .toast.welcome { flex-direction: column; align-items: stretch; gap: 12px; padding: 14px 16px 16px 16px; }
-  .whead { position: relative; display: flex; align-items: center; gap: 12px; }
-  .wlogo { width: 46px; height: 46px; border-radius: 13px; display: grid; place-items: center; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08); flex: none; }
-  .wtext { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  .dot.rec { background: #ff4d4f; box-shadow: 0 0 8px #ff4d4f; }
-  .keys { position: relative; display: grid; grid-template-columns: max-content 1fr; gap: 5px 12px; align-items: center; padding-left: 58px; }
-  .krow { display: contents; }
-  .krow > * { animation: popin 420ms cubic-bezier(0.16, 1, 0.3, 1) both; animation-delay: inherit; }
-  .kchip { display: inline-flex; align-items: center; gap: 2px; flex: none; justify-self: start; }
-  .kchip b { font-size: 10px; color: rgba(255, 255, 255, 0.4); font-weight: 600; }
-  kbd { font-family: var(--mono); font-size: 10.5px; font-weight: 700; padding: 3px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.09); border: 1px solid rgba(255, 255, 255, 0.14); border-bottom-width: 2px; color: #fff; line-height: 1; }
-  .kwhat { font-size: 12px; color: rgba(255, 255, 255, 0.8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .welcome .timer i { animation-duration: var(--life); }
+  /* Arrivée en jeu */
+  .welcome { flex-direction: column; align-items: stretch; gap: 10px; padding: 10px 16px 12px 10px; }
+  .whead { display: flex; align-items: center; gap: 12px; }
+  .welcome .media { width: 40px; height: 40px; border-radius: 10px; }
+  .live { display: inline-block; width: 6px; height: 6px; margin-right: 2px; border-radius: 50%; background: #c8f031; flex: none; }
+  .keys { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; align-items: center; padding-left: 52px; min-width: 0; }
+  .combo { display: inline-flex; align-items: center; gap: 3px; }
+  .combo b { font-weight: 500; font-size: 10px; color: #6b6b71; }
+  kbd { font-family: var(--mono); font-size: 10.5px; font-weight: 500; line-height: 1; padding: 3px 5px; border-radius: 5px; background: #19191b; border: 1px solid rgba(255, 255, 255, 0.1); color: #ededef; }
+  .what { font-size: 12px; color: #a0a0a6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .toast { transform: none; transition: opacity 120ms linear; }
+    .check { animation: none; }
+    .spin { animation-duration: 2.4s; }
+  }
 </style>

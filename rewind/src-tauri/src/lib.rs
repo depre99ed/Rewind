@@ -7,6 +7,7 @@ mod ram;
 mod audio;
 mod cs2;
 mod discord;
+mod raccourcis;
 mod rapport;
 mod editor;
 mod ffmpeg;
@@ -2678,6 +2679,8 @@ pub fn run() {
             amis::start(handle.clone());
             // Présence Discord (comme Medal ou Spotify), par le canal local de l'application Discord
             discord::start(handle.clone());
+            // Nouveau logo : icône des raccourcis déjà créés (Bureau, Démarrer, barre des tâches)
+            raccourcis::refresh_icons_once();
             // Démarrage automatique avec Windows : jamais depuis un test ni une version de développement
             // (un essai avait écrit le chemin du dossier de compilation dans le registre de l'utilisateur).
             let real_install = !cfg!(debug_assertions) && std::env::var_os("REWIND_DATA_DIR").is_none();

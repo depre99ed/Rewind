@@ -1,6 +1,6 @@
 [package]
 name = "rewind"
-version = "0.4.2"
+version = "0.4.3"
 description = "Rewind : clips instantanés pour Windows (jeux, Discord, bureau)"
 authors = ["Rewind"]
 edition = "2024"
@@ -36,10 +36,12 @@ windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Media_Audio",
   "Win32_Media_Speech",
+  "Win32_Storage_FileSystem",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_Ole",
   "Win32_System_Variant",
+  "Win32_UI_Shell",
 ] }
 windows-core = "0.62"
 # Partage entre amis (amis.rs) : identité Ed25519, empreintes SHA-256

@@ -6,7 +6,7 @@
   } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { fit } from "$lib/fit";
-  import { api, dayGroup, fileUrl, formatDuration, formatSize, relativeDate, badges, gameTone, sessions, type Clip } from "$lib/api";
+  import { api, dayGroup, fileUrl, formatDuration, formatSize, relativeDate, badges, gameTone, sessions, type Clip, gameLabel } from "$lib/api";
   import ClipCard from "./ClipCard.svelte";
   import { t } from "$lib/i18n.svelte";
   import { keyParts } from "$lib/keys";
@@ -40,11 +40,11 @@
   );
   const games = $derived.by(() => {
     const m = new Map<string, number>();
-    for (const c of base) m.set(c.game || t("Bureau"), (m.get(c.game || t("Bureau")) ?? 0) + 1);
+    for (const c of base) m.set(gameLabel(c.game), (m.get(gameLabel(c.game)) ?? 0) + 1);
     return [...m.entries()].sort((a, b) => b[1] - a[1]);
   });
   const visible = $derived.by(() => {
-    const list = base.filter((c) => !game || (c.game || t("Bureau")) === game);
+    const list = base.filter((c) => !game || gameLabel(c.game) === game);
     const by = {
       new: (a: Clip, b: Clip) => b.created - a.created,
       old: (a: Clip, b: Clip) => a.created - b.created,
@@ -68,7 +68,7 @@
     if (group === "session") {
       return sessions(visible).map((s) => ({ key: s.label + s.clips[0].id, title: s.label, sub: `${s.games.slice(0, 3).join(", ")} · ${t(s.clips.length > 1 ? "{n} clips" : "{n} clip", { n: s.clips.length })}`, color: gameTone(s.games[0]), clips: s.clips }));
     }
-    const keyOf = (c: Clip) => (group === "game" ? c.game || t("Bureau") : dayGroup(c.created));
+    const keyOf = (c: Clip) => (group === "game" ? gameLabel(c.game) : dayGroup(c.created));
     const out: { key: string; title: string; sub: string; color: string; clips: Clip[] }[] = [];
     const index = new Map<string, number>();
     for (const c of visible) {
@@ -163,7 +163,7 @@
             <span class="hplay"><Play size={22} fill="currentColor" /></span>
           </button>
           <div class="hinfo">
-            <span class="kicker"><i></i>{t("À la une")} · {hero.game || t("Bureau")}</span>
+            <span class="kicker"><i></i>{t("À la une")} · {gameLabel(hero.game)}</span>
             <h1>{hero.title}</h1>
             <div class="hmeta">
               <span>{relativeDate(hero.created)}</span><span class="mono">{formatDuration(hero.duration)}</span>

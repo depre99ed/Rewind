@@ -808,7 +808,9 @@ impl Recorder {
             }
         }
         counts.sort_by(|a, b| b.1.cmp(&a.1));
-        counts.first().map(|(a, _)| util::friendly_app(a)).unwrap_or_else(|| "Bureau".into())
+        let name = counts.first().map(|(a, _)| util::friendly_app(a)).unwrap_or_else(|| "Bureau".into());
+        // Nom du clip et de son dossier dans la langue de l'appli (« Bureau » restait en anglais)
+        if name == "Bureau" && util::english(&self.settings.language) { "Desktop".into() } else { name }
     }
 
     /// Vrai quand l'image ET le son jusqu'à `end` sont écrits sur le disque.
@@ -1292,6 +1294,20 @@ pub fn clip_folder(settings: &Settings, game: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Clip pris sur le bureau : « Desktop » en anglais, « Bureau » en français ; un jeu garde son nom.
+    #[test]
+    fn nom_du_bureau_selon_la_langue() {
+        let mut r = Recorder::new(Settings { language: "en".into(), ..Settings::default() });
+        r.apps.push_back((100.0, "explorer.exe".into()));
+        assert_eq!(r.main_app(99.0, 101.0), "Desktop");
+        assert_eq!(r.main_app(500.0, 510.0), "Desktop", "aucune appli vue");
+        r.settings.language = "fr".into();
+        assert_eq!(r.main_app(99.0, 101.0), "Bureau");
+        r.apps.push_back((100.5, "cs2.exe".into()));
+        r.apps.push_back((100.8, "cs2.exe".into()));
+        assert_eq!(r.main_app(99.0, 101.0), "Counter-Strike 2");
+    }
 
     fn part(first_start: f64, last_end: f64) -> Part {
         Part { files: vec![], durations: vec![], audio_files: vec![], audio_durations: vec![], audio_start: first_start, audio_end: last_end, first_start, last_end }

@@ -5,13 +5,13 @@
 //! redémarrage. Remède (celui de Chrome) : chaque raccourci QUI POINTE VERS REWIND reçoit comme icône un
 //! fichier .ico dont le nom change avec le logo, puis Windows est prévenu raccourci par raccourci
 //! (SHCNE_UPDATEITEM ; SHCNE_ASSOCCHANGED seul ne rafraîchit pas la barre des tâches).
-//! Fait une seule fois par logo ; les autres raccourcis ne sont jamais ouverts en écriture.
+//! Fait une seule fois par logo ; les autres raccourcis ne sont ouverts qu'en lecture.
 
 use crate::util;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use windows::Win32::Storage::FileSystem::WIN32_FIND_DATAW;
-use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, STGM_READWRITE};
+use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, STGM_READ, STGM_READWRITE};
 use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 use windows::core::{HSTRING, Interface, PCWSTR};
 
@@ -66,11 +66,13 @@ fn same_file(a: &Path, b: &Path) -> bool {
 }
 
 /// Nouvelle icône sur un raccourci s'il pointe vers Rewind. true = modifié.
+/// Lecture seule pour connaître la cible (les raccourcis des autres programmes ne sont jamais ouverts en
+/// écriture : avant la 0.4.4, ceux du Bureau public donnaient « accès refusé ») ; écriture seulement pour Rewind.
 fn retarget_icon(lnk: &Path, exe: &Path, icon: &Path) -> windows::core::Result<bool> {
     unsafe {
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
         let file: IPersistFile = link.cast()?;
-        file.Load(&HSTRING::from(lnk.as_os_str()), STGM_READWRITE)?;
+        file.Load(&HSTRING::from(lnk.as_os_str()), STGM_READ)?;
         let mut target = [0u16; 1024];
         let mut data = WIN32_FIND_DATAW::default();
         link.GetPath(&mut target, &mut data, 0)?;
@@ -79,6 +81,9 @@ fn retarget_icon(lnk: &Path, exe: &Path, icon: &Path) -> windows::core::Result<b
         if target.as_os_str().is_empty() || !same_file(&target, exe) {
             return Ok(false);
         }
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+        let file: IPersistFile = link.cast()?;
+        file.Load(&HSTRING::from(lnk.as_os_str()), STGM_READWRITE)?;
         link.SetIconLocation(&HSTRING::from(icon.as_os_str()), 0)?;
         file.Save(PCWSTR::null(), true)?;
         Ok(true)
@@ -165,8 +170,16 @@ mod tests {
                 file.Save(&HSTRING::from(dir.join(name).as_os_str()), true).unwrap();
             }
         }
+        // Raccourci d'un autre programme en lecture seule (comme ceux du Bureau public) : lu sans erreur, pas touché
+        let autre = dir.join("Autre.lnk");
+        let mut perms = std::fs::metadata(&autre).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&autre, perms.clone()).unwrap();
         assert!(retarget_icon(&dir.join("Rewind.lnk"), &exe, &icon).unwrap());
-        assert!(!retarget_icon(&dir.join("Autre.lnk"), &exe, &icon).unwrap());
+        assert!(!retarget_icon(&autre, &exe, &icon).unwrap(), "lecture seule : aucune erreur");
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&autre, perms).unwrap();
         unsafe {
             let read = |name: &str| {
                 let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();

@@ -467,6 +467,11 @@ const GAME_COLORS: Record<string, string> = {
   bureau: "#9aa3b5",
 };
 
+/** Nom de jeu affiché : les clips du bureau (« Bureau » ou « Desktop » selon la langue à la création) dans la langue actuelle */
+export function gameLabel(game: string | undefined | null): string {
+  return !game || game === "Bureau" || game === "Desktop" ? t("Bureau") : game;
+}
+
 export function gameColor(name: string): string {
   const key = (name || "Bureau").toLowerCase();
   if (GAME_COLORS[key]) return GAME_COLORS[key];
@@ -509,7 +514,7 @@ export function sessions(clips: Clip[]): { label: string; games: string[]; clips
     else s.label = `${start.toLocaleDateString(locale(), { day: "numeric", month: "short" })} · ${t(moment)}`;
     s.label += ` · ${start.toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" })}`;
     const counts = new Map<string, number>();
-    for (const c of s.clips) counts.set(c.game || t("Bureau"), (counts.get(c.game || t("Bureau")) ?? 0) + 1);
+    for (const c of s.clips) counts.set(gameLabel(c.game), (counts.get(gameLabel(c.game)) ?? 0) + 1);
     s.games = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([g]) => g);
   }
   return out;

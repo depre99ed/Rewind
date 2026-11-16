@@ -10,9 +10,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 
-/// Capsule de 328 × 60 (+ 6 px de marge transparente autour pour l'ombre)
-const W: f64 = 340.0;
-const H: f64 = 72.0;
+/// Capsule de 328 × 60 + 16 px de marge transparente autour : l'ombre doit tenir ENTIÈREMENT dans la
+/// fenêtre, sinon Windows la coupe net au bord et on voit un rectangle sombre autour de la capsule.
+const MARGIN: f64 = 16.0;
+const W: f64 = 328.0 + 2.0 * MARGIN;
+const H: f64 = 60.0 + 2.0 * MARGIN;
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Serialize, Default)]
@@ -33,7 +35,7 @@ pub struct Toast {
 
 /// Hauteur de la fenêtre selon le contenu (le bandeau d'accueil liste les raccourcis).
 fn height_for(t: &Toast) -> f64 {
-    if t.state == "welcome" { 12.0 + 22.0 + 40.0 + 10.0 + 24.0 * t.keys.len() as f64 } else { H }
+    if t.state == "welcome" { 2.0 * MARGIN + 22.0 + 40.0 + 10.0 + 24.0 * t.keys.len() as f64 } else { H }
 }
 
 fn hwnd(w: &tauri::WebviewWindow) -> Option<*mut std::ffi::c_void> {
@@ -86,13 +88,16 @@ fn place(w: &tauri::WebviewWindow, settings: &Settings, height: f64) {
     };
     let scale = w.scale_factor().unwrap_or(1.0);
     let (ww, hh) = ((W * scale) as i32, (height * scale) as i32);
-    let margin = (24.0 * scale) as i32;
+    // 30 px entre le bord de l'écran et la capsule (la marge transparente de la fenêtre en fait partie)
+    let margin = ((30.0 - MARGIN) * scale) as i32;
+    // En bas : 78 px (au-dessus de la barre de vie / du chat de la plupart des jeux)
+    let bottom = ((78.0 - MARGIN) * scale) as i32;
     let (x, y) = match settings.notify_position.as_str() {
         "top-left" => (m.x + margin, m.y + margin),
         "top-right" => (m.x + m.width - ww - margin, m.y + margin),
         "top-center" => (m.x + (m.width - ww) / 2, m.y + margin),
-        "bottom-left" => (m.x + margin, m.y + m.height - hh - margin * 3),
-        "bottom-right" => (m.x + m.width - ww - margin, m.y + m.height - hh - margin * 3),
+        "bottom-left" => (m.x + margin, m.y + m.height - hh - bottom),
+        "bottom-right" => (m.x + m.width - ww - margin, m.y + m.height - hh - bottom),
         // Milieu gauche : zone libre dans la plupart des jeux (CS2 : sous le radar, au-dessus du chat)
         _ => (m.x + margin, m.y + (m.height - hh) / 2),
     };

@@ -5,7 +5,7 @@
   } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { friends } from "$lib/friends.svelte";
-  import { api, fileUrl, formatDuration, formatSize, relativeDate, gameTone, badges, KIND_LABEL, type Clip, type InputEvent } from "$lib/api";
+  import { api, fileUrl, formatDuration, formatSize, relativeDate, gameTone, badges, KIND_LABEL, type Clip, type InputEvent, gameLabel } from "$lib/api";
   import KeysOverlay from "./KeysOverlay.svelte";
   import MomentIcon from "./MomentIcon.svelte";
   import Avatar from "./Avatar.svelte";
@@ -167,7 +167,7 @@
   <div class="left">
     <div class="top">
       <button class="btn ghost small" onclick={() => (app.openClip = null)}><ArrowLeft size={16} />{received ? t("Amis") : t("Clips")}</button>
-      <span class="crumb"><i></i>{clip.game || t("Bureau")}<span class="faint">· {relativeDate(clip.created)}</span></span>
+      <span class="crumb"><i></i>{gameLabel(clip.game)}<span class="faint">· {relativeDate(clip.created)}</span></span>
       <div class="nav">
         <span class="faint mono">{index + 1} / {list.length}</span>
         <button class="btn icon small ghost" onclick={() => go(-1)} disabled={index <= 0} title={t("Clip précédent (Page préc.)")}><ChevronLeft size={17} /></button>
@@ -237,7 +237,7 @@
         <input class="title-input" bind:value={title} onblur={saveTitle} onkeydown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()} spellcheck="false" />
       {/if}
       <div class="badges">
-        <span class="gchip"><i></i>{clip.game || t("Bureau")}</span>
+        <span class="gchip"><i></i>{gameLabel(clip.game)}</span>
         {#each badges(clip) as b}<span class="tag" class:hot={b.hot}>{b.label}</span>{/each}
       </div>
     </div>

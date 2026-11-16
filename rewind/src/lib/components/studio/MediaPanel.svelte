@@ -7,7 +7,7 @@
   import { app } from "$lib/state.svelte";
   import { studio, fmtTime } from "$lib/studio/store.svelte";
   import { FX_LIST, type FxKind } from "$lib/studio/model";
-  import { fileUrl, formatDuration, api } from "$lib/api";
+  import { fileUrl, formatDuration, api, gameLabel } from "$lib/api";
   import { fit } from "$lib/fit";
   import { t } from "$lib/i18n.svelte";
 
@@ -24,8 +24,8 @@
   let game = $state("");
 
   const clips = $derived(app.ownClips.filter((c) => c.kind !== "screenshot" && c.duration > 0.3));
-  const games = $derived([...new Set(clips.map((c) => c.game || t("Bureau")))]);
-  const shown = $derived(clips.filter((c) => (!game || (c.game || t("Bureau")) === game) && (!q || c.title.toLowerCase().includes(q.toLowerCase()))));
+  const games = $derived([...new Set(clips.map((c) => gameLabel(c.game)))]);
+  const shown = $derived(clips.filter((c) => (!game || gameLabel(c.game) === game) && (!q || c.title.toLowerCase().includes(q.toLowerCase()))));
 
   function dragClip(e: DragEvent, id: string) {
     e.dataTransfer?.setData("application/x-rewind-clip", id);

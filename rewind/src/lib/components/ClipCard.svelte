@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Star, Check, Image as ImageIcon, Zap, Scissors, Send, Film, Loader2 } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
-  import { type Clip, fileUrl, formatDuration, relativeDate, badges, gameTone } from "$lib/api";
+  import { type Clip, fileUrl, formatDuration, relativeDate, badges, gameTone, gameLabel } from "$lib/api";
   import { t } from "$lib/i18n.svelte";
   import { fit } from "$lib/fit";
 
@@ -82,7 +82,7 @@
         <Star size={15} fill={clip.favorite ? "currentColor" : "none"} />
       </button>
     </div>
-    <div class="sub"><i class="gdot"></i>{clip.game || t("Bureau")} · {relativeDate(clip.created)}</div>
+    <div class="sub"><i class="gdot"></i>{gameLabel(clip.game)} · {relativeDate(clip.created)}</div>
   </div>
 </div>
 

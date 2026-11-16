@@ -787,6 +787,50 @@ pub fn probe_update(out: PathBuf, download: bool) {
         .expect("diagnostic du canal de mises à jour");
 }
 
+/// Test visuel de la notification en jeu, sans l'appli : `rewind.exe --toast-demo <saved|saving|failed|welcome>`
+/// (REWIND_DATA_DIR vers un dossier de test). La notification reste ~4 s puis le programme s'arrête.
+pub fn toast_demo(state: String) -> i32 {
+    init_logging();
+    let mut context = tauri::generate_context!();
+    context.config_mut().app.windows.clear();
+    let mut settings = Settings::load();
+    settings.notify_overlay = true;
+    tauri::Builder::default()
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            toast::create(&handle);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(3)); // page de la notification chargée
+                if state == "flow" {
+                    // Comme en jeu : « Enregistrement… » puis « Clip enregistré »
+                    let saving = toast::Toast { state: "saving".into(), title: "30 dernières secondes".into(), game: "Counter-Strike 2".into(), seconds: 30.0, ..Default::default() };
+                    toast::show(&handle, &settings, saving);
+                    std::thread::sleep(Duration::from_millis(1400));
+                }
+                let toast = match state.as_str() {
+                    "welcome" => toast::Toast {
+                        state: "welcome".into(), title: "Counter-Strike 2".into(), subtitle: "Rewind enregistre · tes raccourcis".into(),
+                        keys: vec![("Alt+F10".into(), "Clip 30 s".into()), ("Alt+F11".into(), "Clip sur mesure".into())],
+                        ..Default::default()
+                    },
+                    "failed" => toast::Toast { state: "failed".into(), title: "Clip impossible".into(), subtitle: "Le disque est plein".into(), ..Default::default() },
+                    "saving" => toast::Toast { state: "saving".into(), title: "30 dernières secondes".into(), game: "Counter-Strike 2".into(), seconds: 30.0, ..Default::default() },
+                    _ => toast::Toast {
+                        state: "saved".into(), title: "CS2 ACE · 2× One Tap".into(), game: "Counter-Strike 2".into(), seconds: 34.0,
+                        thumb: std::env::var("REWIND_TEST_THUMB").unwrap_or_default(), ..Default::default()
+                    },
+                };
+                toast::show(&handle, &settings, toast);
+                std::thread::sleep(Duration::from_secs(5));
+                handle.exit(0);
+            });
+            Ok(())
+        })
+        .run(context)
+        .expect("test de la notification");
+    0
+}
+
 /// Test de la commande vocale : `rewind.exe --voice <dossier de .wav>`.
 pub fn voice_test(dir: PathBuf) -> i32 {
     init_logging();

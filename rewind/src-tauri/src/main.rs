@@ -34,6 +34,9 @@ fn main() {
         let dir = args.get(2).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
         std::process::exit(rewind_lib::voice_test(dir));
     }
+    if args.get(1).map(String::as_str) == Some("--toast-demo") {
+        std::process::exit(rewind_lib::toast_demo(args.get(2).cloned().unwrap_or_default()));
+    }
     if args.get(1).map(String::as_str) == Some("--keys") {
         std::process::exit(rewind_lib::keys_test());
     }

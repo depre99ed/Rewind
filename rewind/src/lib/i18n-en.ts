@@ -327,6 +327,7 @@ export const EN: Record<string, string> = {
   "Captures": "Screenshots",
   "Aucun clip ne correspond.": "No clips match.",
   "{n} éléments": "{n} items",
+  "{n} élément": "{n} item",
   "sélectionnés": "selected",
   "sélectionné": "selected",
   "Monter dans le Studio": "Edit in Studio",

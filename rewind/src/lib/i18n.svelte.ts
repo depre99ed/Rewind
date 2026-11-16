@@ -24,6 +24,13 @@ export function t(fr: string, vars?: Record<string, string | number>): string {
   return s;
 }
 
+/** Choisit la forme singulier/pluriel d'une phrase française selon la langue affichée :
+ *  français : 0 et 1 au singulier ; anglais : 1 seul au singulier (« 0 items », « 1 item »). */
+export function plural(n: number, one: string, many: string, vars?: Record<string, string | number>): string {
+  const single = lang() === "fr" ? Math.abs(n) < 2 : n === 1;
+  return t(single ? one : many, { n, ...vars });
+}
+
 /** Locale pour les dates et nombres. */
 export function locale(): string {
   return lang() === "fr" ? "fr-FR" : "en-US";

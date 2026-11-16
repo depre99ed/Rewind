@@ -8,7 +8,7 @@
   import { fit } from "$lib/fit";
   import { api, dayGroup, fileUrl, formatDuration, formatSize, relativeDate, badges, gameTone, sessions, type Clip, gameLabel } from "$lib/api";
   import ClipCard from "./ClipCard.svelte";
-  import { t } from "$lib/i18n.svelte";
+  import { t, plural } from "$lib/i18n.svelte";
   import { keyParts } from "$lib/keys";
 
   let query = $state("");
@@ -237,7 +237,7 @@
             </div>
           </div>
         {/each}
-        <p class="foot faint">{t("{n} éléments", { n: app.ownClips.length })} · {formatSize(totalSize)}</p>
+        <p class="foot faint">{plural(app.ownClips.length, "{n} élément", "{n} éléments")} · {formatSize(totalSize)}</p>
       {/if}
     {/if}
   </div>

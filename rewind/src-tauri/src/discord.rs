@@ -17,8 +17,9 @@ use tauri::{AppHandle, Manager};
 
 /// Identifiant de l'application Discord « Rewind » (vide = présence inactive). Test : REWIND_DISCORD_CLIENT_ID.
 const CLIENT_ID: &str = "1571581651333414922";
-const DOWNLOAD_URL: &str = "https://github.com/depre99ed/Rewind/releases/latest";
-const PAGE_URL: &str = "https://github.com/depre99ed/Rewind";
+/// Site de Rewind : bouton « Télécharger Rewind » et logo cliquable de la présence (avant la 0.4.5 : GitHub)
+const DOWNLOAD_URL: &str = "https://depre99ed.github.io/";
+const PAGE_URL: &str = DOWNLOAD_URL;
 
 /// Logos des jeux connus de Discord (application Discord du jeu, empreinte de son icône), comme Medal.
 /// Les autres jeux sont cherchés dans la liste publique des jeux reconnus par Discord (voir `icons`).
@@ -363,6 +364,12 @@ mod tests {
         println!("Regarde ton profil Discord pendant 40 s…");
         std::thread::sleep(Duration::from_secs(40));
         assert!(ipc.set(None), "activité effacée");
+    }
+
+    #[test]
+    fn liens_vers_le_site() {
+        assert_eq!(DOWNLOAD_URL, "https://depre99ed.github.io/");
+        assert_eq!(PAGE_URL, DOWNLOAD_URL);
     }
 
     #[test]

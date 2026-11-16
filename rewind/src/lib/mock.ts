@@ -121,7 +121,7 @@ if (typeof window !== "undefined" && !inTauri) {
       switch (cmd) {
         case "get_settings": return settings;
         case "save_settings": settings = args.settings; return { hotkey_errors: [], cs2_files: [] };
-        case "list_clips": case "refresh_library": return empty ? [] : clips;
+        case "list_clips": case "refresh_library": return empty ? [] : params.get("clips") ? clips.slice(0, Number(params.get("clips"))) : clips;
         case "get_status":
           t += 0.4;
           return {

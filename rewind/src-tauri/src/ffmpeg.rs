@@ -137,6 +137,9 @@ pub fn video_args(encoder: &str, fps: u32, bitrate: u32) -> Vec<String> {
     a
 }
 
+/// Repli : images recopiées en mémoire normale avant l'encodeur matériel (quand il refuse les textures D3D11).
+pub const COPY_FILTER: &str = "hwdownload,format=bgra,format=nv12";
+
 /// Filtre à ajouter après la capture GPU selon l'encodeur.
 pub fn upload_filter(encoder: &str) -> Option<&'static str> {
     if encoder.contains("nvenc") || encoder.contains("amf") {

@@ -85,6 +85,8 @@ struct Capture {
     monitors: String,
     tracks: Vec<String>,
     encoder: String,
+    /// Au moins un segment image reçu (une panne avant = l'encodeur n'a jamais marché)
+    got_video: bool,
     /// Mode RAM : réception des segments image et son (arrêtée après FFmpeg, voir Drop)
     ram: Option<(crate::ram::Sink, Option<crate::ram::Sink>)>,
     /// Mode RAM : nombre de passages où le segment annoncé n'était pas encore reçu
@@ -200,6 +202,11 @@ pub struct Recorder {
     sessions: VecDeque<SessionInfo>,
     /// Clip sur mesure ou session complète en cours : rien n'est effacé après cette heure
     hold_from: Option<f64>,
+    /// Repli d'encodage : 0 = carte graphique sans copie, 1 = carte graphique avec copie des images,
+    /// 2 = processeur. Monte quand l'encodeur plante deux fois avant la 1re image (AMD RX 7600,
+    /// 2026-11-18 : AMF « SubmitInput() failed with error 18 » sur les textures de la capture).
+    fallback: u8,
+    early_crashes: u32,
 }
 
 /// Une session = un lancement de FFmpeg. Deux sessions de même `key` peuvent être recollées.
@@ -248,6 +255,8 @@ impl Recorder {
             disk_low: false,
             sessions: VecDeque::new(),
             hold_from: None,
+            fallback: 0,
+            early_crashes: 0,
         }
     }
 
@@ -340,6 +349,8 @@ impl Recorder {
         if changed {
             self.stop_capture();
             self.failures = 0;
+            self.fallback = 0;
+            self.early_crashes = 0;
             self.next_retry = Instant::now();
         }
     }
@@ -394,6 +405,7 @@ impl Recorder {
         }
         // FFmpeg a-t-il quitté ?
         let mut crashed = false;
+        let mut early = false;
         if let Some(c) = self.capture.as_mut() {
             let video_exit = c.child.try_wait().ok().flatten().map(|s| ("image", s, "ffmpeg.log"));
             let audio_exit = c.audio_child.as_mut().and_then(|a| a.try_wait().ok().flatten()).map(|s| ("son", s, "ffmpeg-audio.log"));
@@ -406,15 +418,27 @@ impl Recorder {
                 );
                 log::warn!("{}", self.error);
                 crashed = true;
+                early = !c.got_video && c.encoder != "libx264";
             }
         }
         if crashed {
             self.stop_capture();
             self.failures += 1;
+            self.early_crashes = if early { self.early_crashes + 1 } else { 0 };
             // 1re panne : on relance tout de suite (chaque seconde perdue est un trou dans les clips) ;
             // si ça recommence, on espace les essais pour ne pas boucler
             self.next_retry = Instant::now()
                 + if self.failures <= 2 { Duration::from_millis(200) } else { Duration::from_secs((2 * self.failures as u64).min(30)) };
+            if self.early_crashes >= 2 && self.fallback < 2 {
+                self.fallback += 1;
+                self.early_crashes = 0;
+                self.failures = 0;
+                self.next_retry = Instant::now();
+                log::warn!(
+                    "l'encodeur plante avant la première image : repli sur {}",
+                    if self.fallback == 1 { "la carte graphique avec copie des images" } else { "le processeur (720p30)" }
+                );
+            }
         }
         if self.capture.is_none() && Instant::now() >= self.next_retry {
             match self.start_capture() {
@@ -447,6 +471,8 @@ impl Recorder {
             }
             if self.segments.len() > before {
                 c.last_video = Instant::now();
+                c.got_video = true;
+                self.early_crashes = 0;
                 self.error.clear();
                 if c.started.elapsed() > Duration::from_secs(20) {
                     self.failures = 0;
@@ -543,7 +569,7 @@ impl Recorder {
         let tools = ffmpeg::tools()?;
         let s = self.settings.clone();
         let (mut fps, mut res, mut bitrate) = s.effective_video();
-        let encoder = ffmpeg::pick_encoder(&s.encoder);
+        let encoder = if self.fallback >= 2 { "libx264".to_string() } else { ffmpeg::pick_encoder(&s.encoder) };
         if encoder == "libx264" && s.encoder != "libx264" {
             // Pas d'encodeur matériel : on protège le processeur (petit PC)
             fps = fps.min(30);
@@ -602,7 +628,13 @@ impl Recorder {
         push(&["-hide_banner", "-loglevel", "warning", "-nostats", "-y", "-copyts"]);
         push(&["-use_wallclock_as_timestamps", "1", "-f", "lavfi", "-i", &source]);
         let mut vf = format!("fps={fps}");
-        if let Some(f) = ffmpeg::upload_filter(&encoder) {
+        // Test du repli : REWIND_TEST_HW_FAIL=1 fait échouer la capture « sans copie » dès le départ, =2 aussi avec copie
+        let fail_below = std::env::var("REWIND_TEST_HW_FAIL").ok().and_then(|v| v.parse::<u8>().ok()).unwrap_or(0);
+        if self.fallback < fail_below && encoder != "libx264" {
+            vf.push_str(",panne_simulee_rewind");
+        }
+        let upload = if self.fallback == 1 && encoder != "libx264" { Some(ffmpeg::COPY_FILTER) } else { ffmpeg::upload_filter(&encoder) };
+        if let Some(f) = upload {
             vf.push(',');
             vf.push_str(f);
         }
@@ -711,7 +743,11 @@ impl Recorder {
             }
             audio_child = Some(a);
         }
-        log::info!("capture démarrée : {encoder} {width}x{height}@{fps} {n} pistes audio, tampon {}", if ram_video.is_some() { "en RAM" } else { "sur le disque" });
+        log::info!(
+            "capture démarrée : {encoder}{} {width}x{height}@{fps} {n} pistes audio, tampon {}",
+            if upload == Some(ffmpeg::COPY_FILTER) && encoder != "libx264" { " (images copiées)" } else { "" },
+            if ram_video.is_some() { "en RAM" } else { "sur le disque" }
+        );
         Ok(Capture {
             child,
             audio_child,
@@ -727,6 +763,7 @@ impl Recorder {
             monitors: util::monitors_signature(),
             tracks,
             encoder,
+            got_video: false,
             ram: ram_video.map(|v| (v, ram_audio)),
             ram_wait: 0,
             width,

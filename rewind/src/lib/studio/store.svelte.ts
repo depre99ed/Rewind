@@ -834,7 +834,7 @@ class StudioStore {
     // 1) anciens effets de kills retirés, mini-ralentis posés (la piste principale change de durée)
     this.edit((pr) => {
       const range = this.autoRange(pr, scope);
-      for (const tr of pr.tracks) if (tr.kind === "layer") tr.items = tr.items.filter((l) => !(l.auto === "kill" && range(l.at)));
+      for (const tr of pr.tracks) tr.items = (tr.items as (Layer | AudioItem)[]).filter((l) => !(l.auto === "kill" && range(l.at))) as any;
       pr.tracks = pr.tracks.filter((tr) => tr.items.length);
       pr.pieces = pr.pieces.map((p) => {
         if (!scope.has(p.uid)) return p;
@@ -860,6 +860,13 @@ class StudioStore {
           if (cfg.punch.on) put("punch", at, cfg.punch.dur, { strength: cfg.punch.strength });
           if (cfg.shake.on) put("shake", at, cfg.shake.dur, { strength: cfg.shake.strength });
           if (cfg.flash.on) put("flash", at, cfg.flash.dur, { strength: cfg.flash.strength, color: cfg.flash.color, fadeIn: Math.min(0.03, cfg.flash.dur / 4), fadeOut: Math.max(0.05, cfg.flash.dur - 0.03) });
+          if (cfg.sound.on && cfg.sound.path) {
+            // Son du kill : calé sur le kill (le décalage règle aussi le son), sur sa propre piste « Sons des kills »
+            const a: AudioItem = { ...newAudio("sfx", cfg.sound.path, cfg.sound.name, Math.max(0.05, cfg.sound.dur), at, lay.total), volume: cfg.sound.volume, auto: "kill" };
+            const tr = this.freeTrack("audio", a.at, a.dur, tracks.sound, t("Sons des kills"));
+            tracks.sound = tr.id;
+            (tr.items as AudioItem[]).push(a);
+          }
         }
       });
     }, false);
@@ -871,7 +878,7 @@ class StudioStore {
     const scope = scopeKind === "piece" && this.piece ? new Set([this.piece.uid]) : new Set(this.project.pieces.map((p) => p.uid));
     this.edit((pr) => {
       const range = this.autoRange(pr, scope);
-      for (const tr of pr.tracks) if (tr.kind === "layer") tr.items = tr.items.filter((l) => !(l.auto === "kill" && range(l.at)));
+      for (const tr of pr.tracks) tr.items = (tr.items as (Layer | AudioItem)[]).filter((l) => !(l.auto === "kill" && range(l.at))) as any;
       pr.tracks = pr.tracks.filter((tr) => tr.items.length);
       pr.pieces = pr.pieces.map((p) => (scope.has(p.uid) ? { ...p, killRamps: [] } : p));
     });
@@ -885,7 +892,7 @@ class StudioStore {
     return (at) => spans.some(([a, b]) => at >= a && at <= b);
   }
   hasKillFx(): boolean {
-    return this.project.tracks.some((tr) => tr.kind === "layer" && tr.items.some((l) => l.auto === "kill")) || this.project.pieces.some((p) => p.killRamps?.length);
+    return this.project.tracks.some((tr) => (tr.items as (Layer | AudioItem)[]).some((l) => l.auto === "kill")) || this.project.pieces.some((p) => p.killRamps?.length);
   }
 
   /** Image, GIF ou vidéo par-dessus (taille de départ raisonnable, à droite en haut). */
@@ -1041,3 +1048,6 @@ export async function openInStudio(clips: Clip[]) {
 }
 
 export { outLen, uid };
+
+// Développement seulement : accès au Studio depuis la console (essais automatiques)
+if (import.meta.env.DEV && typeof window !== "undefined") (window as any).__studio = studio;

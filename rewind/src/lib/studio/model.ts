@@ -94,8 +94,15 @@ export type TextLayer = LayerBase & {
   /** Rendu « edit » : métal 3D (chrome, or, teinté), relief, biseau, éclat, étincelles (null = texte plat) */
   look?: TextLook | null;
 };
-export type ImageLayer = LayerBase & { kind: "image" | "gif"; path: string; name: string; iw: number; ih: number };
-export type VideoLayer = LayerBase & { kind: "video"; path: string; name: string; iw: number; ih: number; srcStart: number; srcDur: number; speed: number; volume: number };
+/** Animations toutes faites d'une image, d'un GIF ou d'une vidéo par-dessus (2026-11-24) */
+export type MediaIn = "none" | "fade" | "pop" | "zoom" | "spin" | "slideL" | "slideR" | "slideUp" | "drop";
+export type MediaOut = "none" | "fade" | "pop" | "zoom" | "spin" | "slideL" | "slideR" | "slideDown";
+export type MediaLoop = "none" | "spin" | "spinCcw" | "pulse" | "float" | "swing" | "wobble" | "shake";
+/** in / out : entrée et sortie (durée `dur`) ; loop : mouvement continu (vitesse `speed`, 1 = normale) */
+export type MediaAnim = { in: MediaIn; out: MediaOut; loop: MediaLoop; dur: number; speed: number };
+export const NO_ANIM: MediaAnim = { in: "none", out: "none", loop: "none", dur: 0.45, speed: 1 };
+export type ImageLayer = LayerBase & { kind: "image" | "gif"; path: string; name: string; iw: number; ih: number; anim?: MediaAnim };
+export type VideoLayer = LayerBase & { kind: "video"; path: string; name: string; iw: number; ih: number; srcStart: number; srcDur: number; speed: number; volume: number; anim?: MediaAnim };
 export type BlurLayer = LayerBase & { kind: "blur"; w: number; h: number; mode: "blur" | "pixel"; strength: number };
 /**
  * Effet posé sur la frise comme un calque :
@@ -143,6 +150,8 @@ export type AudioItem = {
   fadeOut: number;
   /** Baisse automatiquement quand le jeu parle fort (musique) */
   duck: boolean;
+  /** Posé automatiquement (son de kill) : retiré ou remplacé avec les effets des kills */
+  auto?: "kill";
 };
 
 export type Track =
@@ -307,6 +316,13 @@ export function fadeWindows(l: Layer): { fin: number; fout: number } {
     // sortie lettre par lettre : chaque lettre gère sa disparition (pas de fondu du calque entier)
     if (l.animOut !== "none" && !LETTER_OUT.includes(l.animOut)) fout = Math.max(fout, d);
   }
+  const a = mediaAnim(l);
+  if (a) {
+    // Image qui apparaît / disparaît : un fondu accompagne le mouvement (tout le temps pour « Fondu »)
+    const d = Math.max(0.05, Math.min(a.dur, l.dur / 2));
+    if (a.in !== "none") fin = Math.max(fin, a.in === "fade" ? d : d * 0.5);
+    if (a.out !== "none") fout = Math.max(fout, a.out === "fade" ? d : d * 0.6);
+  }
   return { fin: Math.min(fin, l.dur), fout: Math.min(fout, l.dur) };
 }
 
@@ -318,10 +334,10 @@ export const opacityAnimated = (l: Layer) => {
 
 /** État d'un calque à l'instant local t : points clés, fondus, puis animation d'entrée / de sortie du texte. */
 export function layerState(l: Layer, t: number): LayerState {
-  const x = kfValue(l.kf, "x", t, l.x);
+  let x = kfValue(l.kf, "x", t, l.x);
   let y = kfValue(l.kf, "y", t, l.y);
   let scale = kfValue(l.kf, "scale", t, l.scale);
-  const rot = kfValue(l.kf, "rot", t, l.rot);
+  let rot = kfValue(l.kf, "rot", t, l.rot);
   let opacity = kfValue(l.kf, "opacity", t, l.opacity);
   const { fin, fout } = fadeWindows(l);
   if (fin > 0) opacity *= Math.min(1, Math.max(0, t / fin));
@@ -337,7 +353,62 @@ export function layerState(l: Layer, t: number): LayerState {
     if (l.animOut === "pop") scale *= 0.85 + 0.15 * smooth(pout);
     else if (l.animOut === "slide") y -= (1 - smooth(pout)) * 0.06;
   }
+  const a = mediaAnim(l);
+  if (a) {
+    const m = mediaMotion(a, l.dur, t);
+    x += m.dx;
+    y += m.dy;
+    scale *= m.s;
+    rot += m.r;
+  }
   return { x, y, scale, rot, opacity: Math.max(0, Math.min(1, opacity)), reveal };
+}
+
+/** Animation d'image active (null : aucune). */
+export function mediaAnim(l: Layer): MediaAnim | null {
+  if (l.kind !== "image" && l.kind !== "gif" && l.kind !== "video") return null;
+  const a = l.anim;
+  return a && (a.in !== "none" || a.out !== "none" || a.loop !== "none") ? a : null;
+}
+
+/**
+ * Mouvement d'une animation d'image à l'instant local t (dx, dy en fraction du cadre ; s facteur de taille ;
+ * r degrés). Même calcul pour l'aperçu et l'export (points échantillonnés).
+ */
+export function mediaMotion(a: MediaAnim, dur: number, t: number): { dx: number; dy: number; s: number; r: number } {
+  let dx = 0, dy = 0, s = 1, r = 0;
+  const d = Math.max(0.05, Math.min(a.dur, dur / 2));
+  const pin = Math.min(1, Math.max(0, t / d)), pout = Math.min(1, Math.max(0, (dur - t) / d));
+  const ei = easeOut(pin), eo = smooth(pout);
+  switch (a.in) {
+    case "pop": s *= Math.max(0.01, backOut(pin)); break;
+    case "zoom": s *= 1 + 1.6 * (1 - ei); break;
+    case "spin": s *= Math.max(0.01, ei); r -= (1 - ei) * 360; break;
+    case "slideL": dx -= (1 - ei) * 0.7; break;
+    case "slideR": dx += (1 - ei) * 0.7; break;
+    case "slideUp": dy += (1 - ei) * 0.6; break;
+    case "drop": dy -= (1 - bounce(pin)) * 0.6; break;
+  }
+  switch (a.out) {
+    case "pop": s *= Math.max(0.01, eo); break;
+    case "zoom": s *= 1 + 1.6 * (1 - eo); break;
+    case "spin": s *= Math.max(0.01, eo); r += (1 - eo) * 360; break;
+    case "slideL": dx -= (1 - eo) * 0.7; break;
+    case "slideR": dx += (1 - eo) * 0.7; break;
+    case "slideDown": dy += (1 - eo) * 0.6; break;
+  }
+  const k = Math.max(0.1, a.speed || 1);
+  const w = (hz: number) => 2 * Math.PI * hz * k * t;
+  switch (a.loop) {
+    case "spin": r += 180 * k * t; break; // ½ tour par seconde
+    case "spinCcw": r -= 180 * k * t; break;
+    case "pulse": s *= 1 + 0.08 * Math.max(0, Math.sin(w(1.2))) ** 2; break;
+    case "float": dy += 0.018 * Math.sin(w(0.5)); break;
+    case "swing": r += 14 * Math.sin(w(0.6)); break;
+    case "wobble": r += 6 * Math.sin(w(2)); s *= 1 + 0.04 * Math.sin(w(2) + 1); break;
+    case "shake": dx += 0.006 * Math.sin(w(13)); dy += 0.006 * Math.sin(w(17) + 1); break;
+  }
+  return { dx, dy, s, r };
 }
 
 // ---------------------------------------------------------------------------

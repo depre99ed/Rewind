@@ -129,7 +129,44 @@
   let kfx = $state<KillFx>(loadKillFx());
   $effect(() => saveKillFx($state.snapshot(kfx) as KillFx));
   const kills = $derived(studio.killCount(kfx.scope));
-  const anyKillFx = $derived(kfx.flash.on || kfx.shake.on || kfx.punch.on || kfx.slow.on);
+  const anyKillFx = $derived(kfx.flash.on || kfx.shake.on || kfx.punch.on || kfx.slow.on || (kfx.sound.on && !!kfx.sound.path));
+
+  // Sons de kill : ceux fournis par Rewind (fabriqués sur ce PC), ou le tien
+  let sounds = $state<{ id: string; name: string; path: string; dur: number }[]>([]);
+  $effect(() => {
+    api.killSounds().then((list) => {
+      sounds = list;
+      const mine = list.find((x) => x.id === kfx.sound.id);
+      if (mine) kfx.sound = { ...kfx.sound, path: mine.path, dur: mine.dur, name: mine.name };
+    }).catch(() => {});
+  });
+  let previewEl: HTMLAudioElement | null = null;
+  function listen(path: string) {
+    try {
+      previewEl?.pause();
+      previewEl = new Audio(fileUrl(path));
+      previewEl.volume = Math.min(1, kfx.sound.volume);
+      previewEl.play().catch(() => {});
+    } catch {}
+  }
+  function chooseSound(x: { id: string; name: string; path: string; dur: number }) {
+    kfx.sound = { ...kfx.sound, on: true, id: x.id, name: x.name, path: x.path, dur: x.dur };
+    listen(x.path);
+  }
+  async function pickKillSound() {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const path = await open({ multiple: false, directory: false, filters: [{ name: t("Son"), extensions: ["mp3", "wav", "ogg", "m4a", "aac", "flac", "opus"] }] }).catch(() => null);
+    if (typeof path !== "string") return;
+    try {
+      const info = await api.mediaInfo(path);
+      if (!info?.tracks.length) return studio.say("Ce fichier n'a pas de son");
+      const name = path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "Son";
+      kfx.sound = { ...kfx.sound, on: true, id: "custom", name, path, dur: Math.max(0.05, Math.min(10, info.duration)) };
+      listen(path);
+    } catch (e) {
+      studio.say(t("Son illisible : {e}", { e: String(e) }));
+    }
+  }
   const sec = (v: number) => `${v.toFixed(2).replace(".", ",")} s`;
   const pct = (v: number) => `${Math.round(v * 100)} %`;
   const times = (v: number) => `${v.toFixed(2).replace(/\.?0+$/, "").replace(".", ",")}×`;
@@ -245,6 +282,14 @@
         {#if kfx.flash.on}
           <Slider label={t("Intensité")} value={kfx.flash.strength} min={0.1} max={1} step={0.05} def={0.6} format={pct} oninput={(v) => (kfx.flash.strength = v)} />
           <Slider label={t("Durée")} value={kfx.flash.dur} min={0.1} max={1} step={0.05} def={0.25} format={sec} oninput={(v) => (kfx.flash.dur = v)} />
+        {/if}
+        <label class="ktog"><input type="checkbox" bind:checked={kfx.sound.on} /><span>{t("Son (hit / kill sound)")}</span></label>
+        {#if kfx.sound.on}
+          <div class="chips">
+            {#each sounds as x (x.id)}<button class="chip" class:on={kfx.sound.id === x.id} onclick={() => chooseSound(x)} title={t("Écouter et choisir")}>{t(x.name)}</button>{/each}
+            <button class="chip" class:on={kfx.sound.id === "custom"} onclick={pickKillSound} title={kfx.sound.id === "custom" ? kfx.sound.path : t("Choisir un fichier son")}><FolderOpen size={12} />{kfx.sound.id === "custom" ? kfx.sound.name : t("Mon son…")}</button>
+          </div>
+          <Slider label={t("Volume")} value={kfx.sound.volume} min={0.1} max={1.5} step={0.05} def={0.8} format={pct} oninput={(v) => (kfx.sound.volume = v)} />
         {/if}
         <label class="ktog"><input type="checkbox" bind:checked={kfx.slow.on} /><span>{t("Vitesse au kill")}</span></label>
         {#if kfx.slow.on}

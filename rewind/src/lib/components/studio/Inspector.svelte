@@ -3,7 +3,7 @@
   import {
     Diamond, Trash2, Snowflake, AlignLeft, AlignCenter, AlignRight, Monitor, Smartphone, Square, Keyboard, MousePointerClick,
     ArrowLeftToLine, ArrowRightToLine, ArrowLeft, ArrowRight, CopyPlus, Volume2, VolumeX, Gauge, Palette, ZoomIn, Scissors,
-    Crosshair, Blend, Type, Sparkles, Move, SunMoon, Droplets, Film, AudioLines, Clock3, LayoutTemplate,
+    Crosshair, Blend, Type, Sparkles, Move, SunMoon, Droplets, Film, AudioLines, Clock3, LayoutTemplate, Wand2, Loader2,
   } from "@lucide/svelte";
   import { studio, media, TRANSITIONS, SPEEDS, fmtTime } from "$lib/studio/store.svelte";
   import { KIND_LABEL } from "$lib/api";
@@ -11,7 +11,7 @@
   import MomentIcon from "../MomentIcon.svelte";
   import Slider from "./Slider.svelte";
   import SpeedCurve from "./SpeedCurve.svelte";
-  import { kfValue, outLen, localAt, fxInfo, isFilterFx, isPunch, isFullBlur, hasCurve, type Color, type Fit, type Format, type TextAnimIn, type TextAnimOut } from "$lib/studio/model";
+  import { kfValue, outLen, localAt, fxInfo, isFilterFx, isPunch, isFullBlur, hasCurve, NO_ANIM, type MediaAnim, type MediaIn, type MediaOut, type MediaLoop, type Color, type Fit, type Format, type TextAnimIn, type TextAnimOut } from "$lib/studio/model";
   import { FONTS, fontOf } from "$lib/studio/fonts";
   import FontPicker from "./FontPicker.svelte";
   import { LOOKS as TEXT_LOOKS, type TextLook } from "$lib/studio/textfx";
@@ -77,6 +77,41 @@
   }
   let fontPicker = $state(false);
   const begin = () => studio.snapshot();
+  // Animations d'image (apparition, en continu, disparition)
+  const MEDIA_IN: { id: MediaIn; label: string }[] = [
+    { id: "none", label: "Aucune" }, { id: "fade", label: "Fondu" }, { id: "pop", label: "Pop" }, { id: "zoom", label: "Zoom" }, { id: "spin", label: "Tourbillon" },
+    { id: "slideL", label: "De la gauche" }, { id: "slideR", label: "De la droite" }, { id: "slideUp", label: "Du bas" }, { id: "drop", label: "Chute" },
+  ];
+  const MEDIA_LOOP: { id: MediaLoop; label: string }[] = [
+    { id: "none", label: "Aucune" }, { id: "spin", label: "Tourne" }, { id: "spinCcw", label: "Tourne (autre sens)" }, { id: "pulse", label: "Pulsation" },
+    { id: "float", label: "Flotte" }, { id: "swing", label: "Balancier" }, { id: "wobble", label: "Gigote" }, { id: "shake", label: "Tremble" },
+  ];
+  const MEDIA_OUT: { id: MediaOut; label: string }[] = [
+    { id: "none", label: "Aucune" }, { id: "fade", label: "Fondu" }, { id: "pop", label: "Pop" }, { id: "zoom", label: "Zoom" }, { id: "spin", label: "Tourbillon" },
+    { id: "slideL", label: "Vers la gauche" }, { id: "slideR", label: "Vers la droite" }, { id: "slideDown", label: "Vers le bas" },
+  ];
+  function setAnim(patch: Partial<MediaAnim>, record = true) {
+    const l = layer;
+    if (!l || (l.kind !== "image" && l.kind !== "gif" && l.kind !== "video")) return;
+    studio.updateLayer(l.uid, { anim: { ...NO_ANIM, ...(l.anim ?? {}), ...patch } } as any, record);
+  }
+  // Détourage (retirer le fond) : voir studio/detourage.ts
+  let cutting = $state(false);
+  let cutStep = $state("");
+  async function removeBg(id: string, path: string) {
+    cutting = true;
+    try {
+      const { removeBackground } = await import("$lib/studio/detourage");
+      const out = await removeBackground(path, (s) => (cutStep = s));
+      studio.updateLayer(id, { path: out, name: t("{x} (détouré)", { x: (layer as any)?.name ?? "" }) } as any);
+      studio.say("Fond retiré");
+    } catch (e) {
+      studio.say(t("Détourage impossible : {e}", { e: String(e) }));
+    } finally {
+      cutting = false;
+      cutStep = "";
+    }
+  }
   /** Courbes toutes faites, calées sur la tête de lecture (le moment fort) quand elle est dans le morceau */
   function setCurve(kind: "none" | "slowfast" | "fastslow" | "dip") {
     if (!piece) return;
@@ -325,6 +360,34 @@
       </section>
     {/if}
 
+    {#if layer.kind === "image" || layer.kind === "gif" || layer.kind === "video"}
+      {@const an = layer.anim ?? NO_ANIM}
+      <section>
+        <header><Sparkles size={14} /><h4>{t("Animation")}</h4></header>
+        <span class="mini">{t("Apparition")}</span>
+        <div class="chips">{#each MEDIA_IN as a}<button class="chip" class:on={an.in === a.id} onclick={() => setAnim({ in: a.id })}>{t(a.label)}</button>{/each}</div>
+        <span class="mini">{t("En continu")}</span>
+        <div class="chips">{#each MEDIA_LOOP as a}<button class="chip" class:on={an.loop === a.id} onclick={() => setAnim({ loop: a.id })}>{t(a.label)}</button>{/each}</div>
+        <span class="mini">{t("Disparition")}</span>
+        <div class="chips">{#each MEDIA_OUT as a}<button class="chip" class:on={an.out === a.id} onclick={() => setAnim({ out: a.id })}>{t(a.label)}</button>{/each}</div>
+        {#if an.in !== "none" || an.out !== "none"}
+          <Slider label={t("Durée")} value={an.dur} min={0.15} max={2} step={0.05} def={0.45} format={(v) => `${v.toFixed(2)} s`} onstart={begin} oninput={(v) => setAnim({ dur: v }, false)} />
+        {/if}
+        {#if an.loop !== "none"}
+          <Slider label={t("Vitesse")} value={an.speed} min={0.2} max={4} step={0.05} def={1} format={x100} onstart={begin} oninput={(v) => setAnim({ speed: v }, false)} />
+        {/if}
+      </section>
+      {#if layer.kind === "image"}
+        <section>
+          <header><Scissors size={14} /><h4>{t("Fond")}</h4></header>
+          <button class="btn small" disabled={cutting} onclick={() => removeBg(layer.uid, layer.path)}>
+            {#if cutting}<Loader2 size={14} class="spin" />{cutStep || t("Détourage…")}{:else}<Wand2 size={14} />{t("Retirer le fond")}{/if}
+          </button>
+          <p class="note">{t("Garde le sujet (perso, arme, logo…) et rend le fond transparent. Tout se fait sur ton PC.")}</p>
+        </section>
+      {/if}
+    {/if}
+
     {#if layer.kind !== "fx"}
     <section>
       <header><Move size={14} /><h4>{t("Mouvement")}</h4>
@@ -440,6 +503,8 @@
   .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; font-size: 12.5px; color: var(--text-2); }
   .sub { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: 8px; padding-left: 4px; }
   .ic { display: inline-flex; align-items: center; gap: 7px; }
+  .insp :global(.spin) { animation: ispin 1s linear infinite; }
+  @keyframes ispin { to { transform: rotate(360deg); } }
   .note { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
   .mini { font-size: 11px; color: var(--text-3); margin-top: 2px; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; }

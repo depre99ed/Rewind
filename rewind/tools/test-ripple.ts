@@ -1,5 +1,5 @@
 // Test du suivi de l'image (ripple.ts) : `npm run test:ripple`
-import { newProject, normalizePiece, newText, newAudio, newFx, layout, localAt, outLen, speedAt, srcAt, mergePunches, punchAt, type Project } from "../src/lib/studio/model";
+import { newProject, normalizePiece, newText, newAudio, newFx, layout, localAt, outLen, speedAt, srcAt, mediaMotion, mergePunches, punchAt, type Project } from "../src/lib/studio/model";
 import { anchorItems, reanchor, remapZoom } from "../src/lib/studio/ripple";
 
 let fails = 0;
@@ -116,6 +116,15 @@ const at = (p: Project, uid: string) => p.tracks.flatMap((t) => t.items as { uid
   for (let k = 0; k < 100000; k++) exact += 1e-4 / speedAt(c, (k + 0.5) * 1e-4);
   eq("courbe : durée du morceau = intégrale exacte", outLen(c), exact, 0.03);
   eq("courbe : aller-retour temps source ↔ montage", srcAt(c, localAt(c, 7.3)!), 7.3, 0.001);
+}
+// 7d) Animations d'image : arrive en tourbillon (part de rien, finit droite), tourne en continu, sort à droite
+{
+  const a = { in: "spin", out: "slideR", loop: "spin", dur: 0.5, speed: 1 } as const;
+  eq("image : taille presque nulle au départ", mediaMotion(a, 4, 0).s, 0, 0.02);
+  eq("image : un tour de moins au départ", mediaMotion(a, 4, 0).r, -360);
+  eq("image : rotation continue (½ tour/s) à 2 s", mediaMotion(a, 4, 2).r, 360);
+  eq("image : sortie vers la droite à la fin", mediaMotion(a, 4, 4).dx, 0.7);
+  eq("image : au milieu, pas de décalage", mediaMotion(a, 4, 2).dx, 0);
 }
 // 8) Zoom punch : fusionné au zoom de l'export, même valeur que l'aperçu
 {

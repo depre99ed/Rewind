@@ -57,6 +57,8 @@ export type KillFx = {
   flash: { on: boolean; color: string; strength: number; dur: number };
   shake: { on: boolean; strength: number; dur: number };
   punch: { on: boolean; strength: number; dur: number };
+  /** Son à chaque kill : un son fourni (id) ou le tien (id « custom ») */
+  sound: { on: boolean; id: string; path: string; name: string; dur: number; volume: number };
   /** Vitesse au kill : < 1 ralenti, > 1 accéléré */
   slow: { on: boolean; speed: number; dur: number };
   /** Décalage (s) par rapport à l'apparition du kill : négatif = un peu avant */
@@ -71,6 +73,7 @@ export const KILL_FX_DEFAULT: KillFx = {
   shake: { on: false, strength: 0.45, dur: 0.35 },
   punch: { on: true, strength: 0.5, dur: 0.4 },
   slow: { on: false, speed: 0.35, dur: 0.5 },
+  sound: { on: false, id: "hitmarker", path: "", name: "Hitmarker", dur: 0.12, volume: 0.8 },
   // La ligne du kill feed apparaît un peu après le kill : l'effet part 0,2 s avant (réglé à l'usage, 2026-11-23)
   offset: -0.2,
   scope: "all",
@@ -83,7 +86,7 @@ export function loadKillFx(): KillFx {
     const v = JSON.parse(localStorage.getItem(KEY) || "null");
     // Réglages d'avant la version 2 : l'ancien décalage par défaut (0) devient le nouveau (-0,2 s)
     if (v && typeof v === "object" && !v.rev && !v.offset) v.offset = KILL_FX_DEFAULT.offset;
-    if (v && typeof v === "object") return { ...KILL_FX_DEFAULT, ...v, rev: 2, flash: { ...KILL_FX_DEFAULT.flash, ...v.flash }, shake: { ...KILL_FX_DEFAULT.shake, ...v.shake }, punch: { ...KILL_FX_DEFAULT.punch, ...v.punch }, slow: { ...KILL_FX_DEFAULT.slow, ...v.slow } };
+    if (v && typeof v === "object") return { ...KILL_FX_DEFAULT, ...v, rev: 2, flash: { ...KILL_FX_DEFAULT.flash, ...v.flash }, shake: { ...KILL_FX_DEFAULT.shake, ...v.shake }, punch: { ...KILL_FX_DEFAULT.punch, ...v.punch }, slow: { ...KILL_FX_DEFAULT.slow, ...v.slow }, sound: { ...KILL_FX_DEFAULT.sound, ...v.sound } };
   } catch {}
   return structuredClone(KILL_FX_DEFAULT);
 }

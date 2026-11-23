@@ -6,7 +6,7 @@ import { t } from "../i18n.svelte";
 import {
   type Layer, type Project, type AudioItem,
   clampSpeed, fadeWindows, isVariable, frameSize, isFilterFx, kfValue, layerState, layout, opacityAnimated, projectTotal, mergePunches, smooth, speedSegments, typeDur,
-  LETTER_IN, LETTER_OUT, letterSpan,
+  LETTER_IN, LETTER_OUT, letterSpan, mediaAnim,
 } from "./model";
 import { textPng, keysPngs, keysSize, layoutLabels, presetOf, fxPng } from "./render";
 import { app } from "../state.svelte";
@@ -42,10 +42,12 @@ function simplify(points: [number, number][], eps: number): Set<number> {
 
 /** Instants d'échantillonnage : 30 par seconde si le calque bouge, sinon début et fin. */
 function sampleTimes(l: Layer): number[] {
-  const moving = l.kf.length > 1 || (l.kind === "text" && (l.animIn === "pop" || l.animIn === "slide" || l.animOut === "pop" || l.animOut === "slide"));
+  const anim = mediaAnim(l);
+  const moving = l.kf.length > 1 || !!anim || (l.kind === "text" && (l.animIn === "pop" || l.animIn === "slide" || l.animOut === "pop" || l.animOut === "slide"));
   if (!moving) return [0, l.dur];
   const out: number[] = [];
-  const step = 1 / 30;
+  // Mouvements rapides (tremblement, oscillation) : un point par image à 60 i/s, sinon 30 par seconde
+  const step = anim && (anim.loop === "shake" || anim.loop === "wobble") ? 1 / 60 : 1 / 30;
   for (let x = 0; x < l.dur; x += step) out.push(x);
   out.push(l.dur);
   for (const k of l.kf) if (k.t > 0 && k.t < l.dur) out.push(k.t);

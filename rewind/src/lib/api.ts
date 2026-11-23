@@ -260,6 +260,13 @@ export const api = {
   mediaWaveform: (path: string) => invoke<Waveform>("media_waveform", { path }),
   mediaStems: (path: string) => invoke<string[]>("media_stems", { path }),
   /** Musique par lien : TikTok (son d'origine), YouTube, SoundCloud → fichier MP3 local */
+  /** Détourage (retirer le fond) : modèle présent ? téléchargement ; masque d'une image 1024 × 1024 ; PNG gardé */
+  bgReady: () => invoke<boolean>("bg_ready"),
+  bgPrepare: () => invoke<void>("bg_prepare"),
+  bgMask: (png: string) => invoke<string>("bg_mask", { png }),
+  saveImage: (png: string, name: string) => invoke<string>("save_image", { png, name }),
+  /** Sons de kill fournis (hitmarker, ding…), fabriqués par Rewind */
+  killSounds: () => invoke<{ id: string; name: string; path: string; dur: number }[]>("kill_sounds"),
   musicFromLink: (url: string) => invoke<{ path: string; name: string; note: string }>("music_from_link", { url }),
   /** Moments où tes kills apparaissent dans le kill feed de CS2 (secondes dans le fichier) */
   mediaKillfeed: (path: string) => invoke<number[]>("media_killfeed", { path }),
@@ -380,7 +387,7 @@ export type MedalInfo = { found: boolean; installed: boolean; folder: string; fo
 /** Jeux lancés en administrateur : leurs touches ne sont visibles qu'avec l'assistant. */
 export type AdminInput = { game_admin: boolean; helper: boolean; enabled: boolean; rewind_admin: boolean };
 
-export const fileUrl =(path: string) => (!path ? "" : path.startsWith("/mock/") ? path : convertFileSrc(path));
+export const fileUrl =(path: string) => (!path ? "" : path.startsWith("/mock/") || path.startsWith("data:") ? path : convertFileSrc(path));
 
 const KIND_FR: Record<string, string> = {
   kill: "Kill",

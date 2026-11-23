@@ -6,6 +6,7 @@ mod medal;
 mod ram;
 mod audio;
 mod cs2;
+mod detourage;
 mod discord;
 mod raccourcis;
 mod rapport;
@@ -19,6 +20,7 @@ mod musique;
 mod recorder;
 mod render;
 mod settings;
+mod sonskill;
 mod share;
 mod speech;
 mod studio;
@@ -1224,6 +1226,49 @@ async fn music_from_link(url: String) -> Res<musique::LinkAudio> {
     tauri::async_runtime::spawn_blocking(move || musique::import(&url)).await.map_err(err)?.map_err(err)
 }
 
+/// Détourage (retirer le fond), voir detourage.rs : le modèle est-il déjà téléchargé ?
+#[tauri::command]
+fn bg_ready() -> bool {
+    detourage::ready()
+}
+
+/// Télécharge l'outil de détourage la première fois (événement « detourage » : avancement 0..1).
+#[tauri::command]
+async fn bg_prepare(app: tauri::AppHandle) -> Res<()> {
+    use tauri::Emitter;
+    tauri::async_runtime::spawn_blocking(move || {
+        let last = std::sync::atomic::AtomicU32::new(0);
+        detourage::model(&|p| {
+            let pct = (p * 100.0) as u32;
+            if pct != last.swap(pct, std::sync::atomic::Ordering::Relaxed) {
+                let _ = app.emit("detourage", p);
+            }
+        })
+        .map(|_| ())
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
+}
+
+/// Masque du sujet (base64, 1024 × 1024 octets) d'une image PNG 1024 × 1024.
+#[tauri::command]
+async fn bg_mask(png: String) -> Res<String> {
+    tauri::async_runtime::spawn_blocking(move || detourage::mask_png(&png)).await.map_err(err)?.map_err(err)
+}
+
+/// Image détourée enregistrée pour de bon (dossier images de Rewind).
+#[tauri::command]
+fn save_image(png: String, name: String) -> Res<String> {
+    detourage::save(&png, &name).map_err(err)
+}
+
+/// Sons de kill fournis (hitmarker, ding…), voir sonskill.rs.
+#[tauri::command]
+async fn kill_sounds() -> Res<Vec<sonskill::KillSound>> {
+    tauri::async_runtime::spawn_blocking(sonskill::list).await.map_err(err)
+}
+
 /// Moments où tes kills apparaissent dans le kill feed de CS2 (secondes dans le fichier), voir killfeed.rs.
 #[tauri::command]
 async fn media_killfeed(path: String) -> Res<Vec<f64>> {
@@ -2149,6 +2194,39 @@ pub fn render_test(spec: PathBuf, out: PathBuf) -> i32 {
     }) {
         Ok(path) => {
             println!("OK : {} en {:.1} s", path.display(), started.elapsed().as_secs_f64());
+            0
+        }
+        Err(e) => {
+            println!("ÉCHEC : {e:#}");
+            1
+        }
+    }
+}
+
+/// Test du détourage : `rewind.exe --detourage <image 1024×1024.png> <masque.pgm>` (REWIND_DATA_DIR de test).
+pub fn detourage_test(input: PathBuf, out: PathBuf) -> i32 {
+    init_logging();
+    let started = std::time::Instant::now();
+    let b64 = match std::fs::read(&input) {
+        Ok(b) => base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b),
+        Err(e) => {
+            println!("image illisible : {e}");
+            return 2;
+        }
+    };
+    if let Err(e) = detourage::model(&|p| if (p * 100.0) as u32 % 20 == 0 { println!("téléchargement {:.0} %", p * 100.0) }) {
+        println!("ÉCHEC modèle : {e:#}");
+        return 1;
+    }
+    let t1 = std::time::Instant::now();
+    match detourage::mask_png(&b64) {
+        Ok(m) => {
+            let raw = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, m).unwrap_or_default();
+            let mut pgm = format!("P5 {0} {0} 255
+", detourage::SIDE).into_bytes();
+            pgm.extend(&raw);
+            let _ = std::fs::write(&out, pgm);
+            println!("OK : masque en {:.2} s (modèle prêt en {:.1} s)", t1.elapsed().as_secs_f64(), (t1 - started).as_secs_f64());
             0
         }
         Err(e) => {
@@ -3264,6 +3342,11 @@ pub fn run() {
             media_filmstrip,
             media_killfeed,
             music_from_link,
+            kill_sounds,
+            bg_ready,
+            bg_prepare,
+            bg_mask,
+            save_image,
             clip_shorten,
             media_waveform,
             media_stems,

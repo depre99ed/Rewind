@@ -45,6 +45,10 @@ fn main() {
         let out = args.get(3).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
         std::process::exit(rewind_lib::render_test(spec, out));
     }
+    if args.get(1).map(String::as_str) == Some("--detourage") {
+        let a = |i: usize| std::path::PathBuf::from(args.get(i).cloned().unwrap_or_default());
+        std::process::exit(rewind_lib::detourage_test(a(2), a(3)));
+    }
     if args.get(1).map(String::as_str) == Some("--sounds") {
         // Écrit les sons de clip en .wav (pour les écouter hors de l'appli)
         let dir = std::path::PathBuf::from(args.get(2).cloned().unwrap_or_default());

@@ -239,32 +239,45 @@ fn n(v: f64) -> String {
     if s.is_empty() || s == "-" || s == "-0" { "0".into() } else { s.into() }
 }
 
-/// Courbe linéaire par morceaux (points triés) en expression FFmpeg de la variable `var`.
-/// Forme « somme de segments » (pas d'imbrication profonde) ; avant le 1er point / après le dernier : constante.
+/// Courbe linéaire par morceaux (points triés) en expression FFmpeg de la variable `var` ;
+/// avant le 1er point / après le dernier : constante.
+///
+/// Forme en ARBRE (`if(lt(var, milieu), gauche, droite)`, profondeur log2 du nombre de points) : FFmpeg refuse
+/// une somme de plus de ~90 segments (« Error when evaluating the expression », vérifié le 2026-11-24), ce
+/// qu'atteignent vite une courbe de vitesse, beaucoup de zooms punch ou une image animée.
 pub fn piecewise(points: &[(f64, f64)], var: &str) -> String {
-    match points.len() {
+    // Points d'instants distincts (un saut : on garde le dernier point du même instant)
+    let mut pts: Vec<(f64, f64)> = Vec::with_capacity(points.len());
+    for &p in points {
+        match pts.last_mut() {
+            Some(last) if p.0 - last.0 < 1e-6 => *last = p,
+            _ => pts.push(p),
+        }
+    }
+    match pts.len() {
         0 => return "0".into(),
-        1 => return n(points[0].1),
+        1 => return n(pts[0].1),
         _ => {}
     }
-    if points.iter().all(|p| (p.1 - points[0].1).abs() < 1e-6) {
-        return n(points[0].1);
+    if pts.iter().all(|p| (p.1 - pts[0].1).abs() < 1e-6) {
+        return n(pts[0].1);
     }
-    let (t0, v0) = points[0];
-    let mut s = format!("{}*lt({var}\\,{})", n(v0), n(t0));
-    for w in points.windows(2) {
-        let ((a, va), (b, vb)) = (w[0], w[1]);
-        if b - a < 1e-6 {
-            continue;
+    let (t0, v0) = pts[0];
+    let (tn, vn) = pts[pts.len() - 1];
+    format!("if(lt({var}\\,{})\\,{}\\,if(gte({var}\\,{})\\,{}\\,{}))", n(t0), n(v0), n(tn), n(vn), seg_tree(&pts, var))
+}
+
+/// Arbre de recherche sur les segments de `pts` (au moins 2 points).
+fn seg_tree(pts: &[(f64, f64)], var: &str) -> String {
+    if pts.len() == 2 {
+        let ((a, va), (b, vb)) = (pts[0], pts[1]);
+        if (vb - va).abs() < 1e-9 {
+            return n(va);
         }
-        s.push_str(&format!(
-            "+gte({var}\\,{})*lt({var}\\,{})*({}+{}*({var}-{})/{})",
-            n(a), n(b), n(va), n(vb - va), n(a), n(b - a)
-        ));
+        return format!("({}+{}*({var}-{})/{})", n(va), n(vb - va), n(a), n(b - a));
     }
-    let (tn, vn) = points[points.len() - 1];
-    s.push_str(&format!("+gte({var}\\,{})*{}", n(tn), n(vn)));
-    s
+    let m = pts.len() / 2;
+    format!("if(lt({var}\\,{})\\,{}\\,{})", n(pts[m].0), seg_tree(&pts[..=m], var), seg_tree(&pts[m..], var))
 }
 
 /// Cadre d'un morceau vers la taille de composition (fit : bandes noires ; blur : fond flou ; crop : recadré).
@@ -784,8 +797,12 @@ mod tests {
         assert_eq!(piecewise(&[(1.0, 0.5)], "t"), "0.5");
         assert_eq!(piecewise(&[(0.0, 2.0), (3.0, 2.0)], "t"), "2", "constante : pas d'expression");
         let e = piecewise(&[(0.0, 0.0), (2.0, 1.0)], "t");
-        assert!(e.contains("gte(t\\,0)*lt(t\\,2)*(0+1*(t-0)/2)"), "{e}");
-        assert!(e.ends_with("+gte(t\\,2)*1"), "{e}");
+        assert_eq!(e, "if(lt(t\\,0)\\,0\\,if(gte(t\\,2)\\,1\\,(0+1*(t-0)/2)))");
+        // Beaucoup de points : profondeur en log2 (FFmpeg refuse les longues sommes)
+        let many: Vec<(f64, f64)> = (0..400).map(|i| (i as f64 * 0.01, (i % 7) as f64)).collect();
+        let e = piecewise(&many, "t");
+        let depth = e.chars().fold((0i32, 0i32), |(d, m), c| match c { '(' => (d + 1, m.max(d + 1)), ')' => (d - 1, m), _ => (d, m) }).1;
+        assert!(depth < 40, "profondeur {depth}");
     }
 
     #[test]
@@ -795,8 +812,8 @@ mod tests {
         assert!((editor::out_len(&p) - (1.0 + 2.0 + 0.975)).abs() < 1e-9);
         assert!((editor::src_to_out(&p, 11.5) - 2.0).abs() < 1e-9);
         let c = speed_curve(&p);
-        assert!(c.contains("gte(T\\,1)*lt(T\\,2)*(1+2*(T-1)/1)"), "{c}");
-        assert!(c.ends_with("+gte(T\\,4)*3.975"), "{c}");
+        assert!(c.contains("(1+2*(T-1)/1)"), "{c}");
+        assert!(c.contains("if(gte(T\\,4)\\,3.975"), "{c}");
         // Zoom : calculé seulement là où il dépasse 1
         assert_eq!(zoom_windows(&[(0.0, 1.0), (1.0, 1.0), (1.5, 1.3), (2.0, 1.0), (3.0, 1.0)]), "between(t\\,1\\,2)");
         assert_eq!(zoom_windows(&[(0.0, 1.0), (5.0, 1.0)]), "0");

@@ -224,6 +224,10 @@ if (typeof window !== "undefined" && !inTauri) {
         case "media_info": return { duration: 34, width: 1920, height: 1080, fps: 50, tracks: ["Mixage", "Son du PC", "Micro", "Discord"] };
         case "media_filmstrip": throw "pas de vignettes en aperçu";
         case "media_stems": return [];
+        case "bg_ready": return true;
+        case "bg_mask": { const n = 1024, m = new Uint8Array(n * n); for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) m[y * n + x] = (x - 512) ** 2 + (y - 560) ** 2 < 330 ** 2 ? 255 : 0; let s = ""; for (let i = 0; i < m.length; i += 8192) s += String.fromCharCode(...m.subarray(i, i + 8192)); return btoa(s); }
+        case "save_image": return "data:image/png;base64," + (args as any).png;
+        case "kill_sounds": return [["hitmarker", "Hitmarker"], ["ding", "Ding headshot"], ["boom", "Boom grave"], ["snap", "Claquement"], ["laser", "Laser"], ["whoosh", "Whoosh"], ["bell", "Cloche"]].map(([id, name]) => ({ id, name, path: `C:\Rewind\sons-kill\${id}-v1.wav`, dur: 0.4 }));
         case "medal_detect": if (new URLSearchParams(location.search).has("medalailleurs") && !(args as any)?.folder) return { found: false, installed: true, folder: "", folders: [], clips: 0, size_mb: 0, imported: 0, hotkey: "F8", clip_seconds: 30, fps: 60, resolution: 1080, bitrate: 10 };
           return { found: true, installed: true, folder: "C:\\Medal", folders: ["C:\\Medal", "C:\\Users\\Moi\\Videos\\Medal"], clips: 39, size_mb: 2278, imported: new URLSearchParams(location.search).has("medalok") ? 39 : 0, hotkey: "F8", clip_seconds: 30, fps: 60, resolution: 1080, bitrate: 10 };
         case "medal_import": return { copied: 39, skipped: 0, failed: 0 };

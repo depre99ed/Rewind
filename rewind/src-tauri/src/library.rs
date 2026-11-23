@@ -68,7 +68,92 @@ fn moved_here(c: &Clip, path: &Path, size: u64) -> bool {
     same_name && (c.size == 0 || size == 0 || c.size == size) && !Path::new(&c.path).is_file()
 }
 
+/// Le disque (ou le partage réseau) qui contient ce chemin est-il là ?
+fn drive_available(path: &Path) -> bool {
+    use std::path::Component;
+    let mut root = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::Prefix(_) | Component::RootDir => root.push(c.as_os_str()),
+            _ => break,
+        }
+    }
+    root.as_os_str().is_empty() || root.exists()
+}
+
+/// Nom de collection propre : espaces réduits, 40 caractères au plus (vide = refusé).
+pub fn collection_name(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(40).collect()
+}
+
 impl Library {
+    /// Toutes les collections existantes (orthographe d'origine), triées.
+    pub fn collections(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for t in self.clips.iter().flat_map(|c| c.tags.iter()) {
+            if !out.iter().any(|o| o.eq_ignore_ascii_case(t)) {
+                out.push(t.clone());
+            }
+        }
+        out.sort_by_key(|a| a.to_lowercase());
+        out
+    }
+
+    /// Ajoute (ou retire) plusieurs clips d'une collection en une fois. « Edit » et « edit » sont la même
+    /// collection : l'orthographe déjà utilisée est gardée. Renvoie les clips modifiés (à enregistrer avec `save`).
+    pub fn set_collection(&mut self, ids: &[String], name: &str, add: bool) -> Result<Vec<Clip>> {
+        let wanted = collection_name(name);
+        if wanted.is_empty() {
+            bail!("Nom de collection vide");
+        }
+        let name = self.collections().into_iter().find(|c| c.eq_ignore_ascii_case(&wanted)).unwrap_or(wanted);
+        let mut changed = Vec::new();
+        for id in ids {
+            let Some(c) = self.get_mut(id) else { continue };
+            let has = c.tags.iter().any(|t| t.eq_ignore_ascii_case(&name));
+            if add && !has {
+                c.tags.push(name.clone());
+            } else if !add && has {
+                c.tags.retain(|t| !t.eq_ignore_ascii_case(&name));
+            } else {
+                continue;
+            }
+            changed.push(c.clone());
+        }
+        Ok(changed)
+    }
+
+    /// Renomme une collection sur tous ses clips (fusionne si le nouveau nom existe déjà).
+    pub fn rename_collection(&mut self, old: &str, new: &str) -> Result<Vec<Clip>> {
+        let new = collection_name(new);
+        if new.is_empty() {
+            bail!("Nom de collection vide");
+        }
+        let new = self.collections().into_iter().find(|c| c.eq_ignore_ascii_case(&new) && !c.eq_ignore_ascii_case(old)).unwrap_or(new);
+        let mut changed = Vec::new();
+        for c in self.clips.iter_mut() {
+            if !c.tags.iter().any(|t| t.eq_ignore_ascii_case(old)) {
+                continue;
+            }
+            c.tags.retain(|t| !t.eq_ignore_ascii_case(old) && !t.eq_ignore_ascii_case(&new));
+            c.tags.push(new.clone());
+            changed.push(c.clone());
+        }
+        Ok(changed)
+    }
+
+    /// Supprime une collection (les clips restent, seule l'étiquette part).
+    pub fn delete_collection(&mut self, name: &str) -> Vec<Clip> {
+        let mut changed = Vec::new();
+        for c in self.clips.iter_mut() {
+            if c.tags.iter().any(|t| t.eq_ignore_ascii_case(name)) {
+                c.tags.retain(|t| !t.eq_ignore_ascii_case(name));
+                changed.push(c.clone());
+            }
+        }
+        changed
+    }
+
     pub fn load(clip_folder: &Path) -> Self {
         let text = std::fs::read_to_string(index_path()).ok();
         let clips: Vec<Clip> = match text.as_deref().map(serde_json::from_str::<Vec<Clip>>) {
@@ -85,7 +170,9 @@ impl Library {
         // D'abord retrouver les clips déplacés (dossier changé, fichiers copiés ailleurs) : ils gardent leur
         // identifiant, leurs repères de kills et leurs touches. Ensuite seulement on oublie les fichiers disparus.
         lib.scan(clip_folder);
-        lib.clips.retain(|c| Path::new(&c.path).is_file());
+        // Un disque absent (clé, disque externe pas encore monté) ne doit pas effacer ses clips de l'index :
+        // ils perdraient leurs collections, favoris et repères quand le disque revient.
+        lib.clips.retain(|c| Path::new(&c.path).is_file() || !drive_available(Path::new(&c.path)));
         lib.sort();
         let _ = lib.save();
         lib
@@ -281,6 +368,30 @@ impl WideVec for std::ffi::OsStr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collections_fiables() {
+        let clip = |id: &str, tags: &[&str]| Clip { id: id.into(), tags: tags.iter().map(|t| t.to_string()).collect(), ..Default::default() };
+        let mut lib = Library { clips: vec![clip("a", &["Edit"]), clip("b", &[]), clip("c", &[])] };
+        let ids: Vec<String> = ["a", "b", "c", "absent"].iter().map(|s| s.to_string()).collect();
+        // « edit » rejoint « Edit », le clip absent est ignoré sans bloquer les autres
+        let changed = lib.set_collection(&ids, "  edit ", true).unwrap();
+        assert_eq!(changed.len(), 2);
+        assert!(lib.clips.iter().all(|c| c.tags == vec!["Edit".to_string()]));
+        assert_eq!(lib.collections(), vec!["Edit".to_string()]);
+        assert!(lib.set_collection(&ids, "   ", true).is_err());
+        lib.set_collection(&["b".into()], "EDIT", false).unwrap();
+        assert!(lib.clips[1].tags.is_empty());
+        lib.rename_collection("edit", "Montage  CS2").unwrap();
+        assert_eq!(lib.collections(), vec!["Montage CS2".to_string()]);
+        assert_eq!(lib.delete_collection("montage cs2").len(), 2);
+        assert!(lib.collections().is_empty());
+        assert_eq!(collection_name(&"x".repeat(60)).chars().count(), 40);
+        assert!(drive_available(Path::new(r"C:\Windows\nope.mp4")));
+        if !Path::new(r"Q:\").exists() {
+            assert!(!drive_available(Path::new(r"Q:\clips\a.mp4")), "disque absent");
+        }
+    }
 
     #[test]
     fn clip_deplace_garde_ses_reperes() {

@@ -187,6 +187,25 @@ class AppState {
     if (this.openClip?.id === c.id) this.openClip = c;
   }
 
+  /** Remplace plusieurs clips modifiés d'un coup (collections). */
+  updateClips(list: Clip[]) {
+    if (!list.length) return;
+    const by = new Map(list.map((c) => [c.id, c]));
+    this.clips = this.clips.map((x) => by.get(x.id) ?? x);
+    if (this.openClip && by.has(this.openClip.id)) this.openClip = by.get(this.openClip.id)!;
+  }
+
+  /** Collections existantes (orthographe d'origine, sans doublon de casse), avec leur nombre de clips. */
+  get collections(): { name: string; count: number }[] {
+    const m = new Map<string, { name: string; count: number }>();
+    for (const c of this.ownClips) for (const t of c.tags) {
+      const k = t.toLowerCase();
+      const e = m.get(k);
+      if (e) e.count++; else m.set(k, { name: t, count: 1 });
+    }
+    return [...m.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  }
+
   removeClips(ids: string[]) {
     this.clips = this.clips.filter((c) => !ids.includes(c.id));
     if (this.openClip && ids.includes(this.openClip.id)) this.openClip = null;

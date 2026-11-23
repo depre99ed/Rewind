@@ -921,6 +921,38 @@ fn update_clip(state: State<AppState>, id: String, title: Option<String>, favori
     Ok(c)
 }
 
+/// Ajoute ou retire des clips d'une collection, en une seule fois. Renvoie les clips modifiés.
+#[tauri::command(async)]
+fn set_collection(state: State<AppState>, ids: Vec<String>, name: String, add: bool) -> Res<Vec<Clip>> {
+    let mut lib = state.library.lock();
+    let changed = lib.set_collection(&ids, &name, add).map_err(err)?;
+    if !changed.is_empty() {
+        lib.save().map_err(err)?;
+    }
+    log::info!("collection « {} » : {} clip(s) {}", library::collection_name(&name), changed.len(), if add { "ajouté(s)" } else { "retiré(s)" });
+    Ok(changed)
+}
+
+#[tauri::command(async)]
+fn rename_collection(state: State<AppState>, old: String, new: String) -> Res<Vec<Clip>> {
+    let mut lib = state.library.lock();
+    let changed = lib.rename_collection(&old, &new).map_err(err)?;
+    if !changed.is_empty() {
+        lib.save().map_err(err)?;
+    }
+    Ok(changed)
+}
+
+#[tauri::command(async)]
+fn delete_collection(state: State<AppState>, name: String) -> Res<Vec<Clip>> {
+    let mut lib = state.library.lock();
+    let changed = lib.delete_collection(&name);
+    if !changed.is_empty() {
+        lib.save().map_err(err)?;
+    }
+    Ok(changed)
+}
+
 #[tauri::command(async)]
 fn delete_clips(state: State<AppState>, ids: Vec<String>) -> Res<()> {
     let mut lib = state.library.lock();
@@ -3015,6 +3047,9 @@ pub fn run() {
             set_recording,
             set_mic_muted,
             update_clip,
+            set_collection,
+            rename_collection,
+            delete_collection,
             delete_clips,
             reveal_clip,
             open_external,

@@ -1183,4 +1183,20 @@ export const EN: Record<string, string> = {
   // --- Audit visuel (2026-11-15)
   "Choisir un raccourci": "Choose a hotkey",
   "Enregistrer": "Save",
+  // --- Collections (2026-11-23)
+  "Collections de {n} clips": "Collections for {n} clips",
+  "Collections du clip": "Clip collections",
+  "Chercher ou créer une collection": "Search or create a collection",
+  "Créer « {x} »": "Create “{x}”",
+  "Tape un nom pour créer ta première collection.": "Type a name to create your first collection.",
+  "Entrée pour choisir · Échap pour fermer": "Enter to choose · Esc to close",
+  "Retiré de « {x} »": "Removed from “{x}”",
+  "Déjà dans cette collection.": "Already in this collection.",
+  "Collection non modifiée": "Collection not changed",
+  "Monter la collection": "Edit in Studio",
+  "Tout sélectionner": "Select all",
+  "Renommer la collection": "Rename collection",
+  "Supprimer la collection": "Delete collection",
+  "Supprimer la collection « {x} » ? Les clips restent dans ta bibliothèque.": "Delete the “{x}” collection? The clips stay in your library.",
+  "Tous les clips": "All clips",
 };

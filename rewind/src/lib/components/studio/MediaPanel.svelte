@@ -2,7 +2,7 @@
   // Colonne de gauche du Studio : tout ce qu'on peut ajouter au montage.
   import {
     Clapperboard, Type, Image as ImageIcon, Music, Sparkles, Plus, Search, Layers, Mic, Square, Upload, Droplets, Snowflake, ZoomIn, Gauge,
-    Vibrate, Zap, ScanLine, Contrast, SunMoon, Moon, Aperture, RectangleHorizontal, Grid3x3,
+    Vibrate, Zap, ScanLine, Contrast, SunMoon, Moon, Aperture, RectangleHorizontal, Grid3x3, FolderOpen,
   } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { studio, fmtTime } from "$lib/studio/store.svelte";
@@ -22,10 +22,18 @@
   ];
   let q = $state("");
   let game = $state("");
+  let col = $state("");
 
   const clips = $derived(app.ownClips.filter((c) => c.kind !== "screenshot" && c.duration > 0.3));
   const games = $derived([...new Set(clips.map((c) => gameLabel(c.game)))]);
-  const shown = $derived(clips.filter((c) => (!game || gameLabel(c.game) === game) && (!q || c.title.toLowerCase().includes(q.toLowerCase()))));
+  const cols = $derived(app.collections);
+  const inCol = (c: { tags: string[] }) => !col || c.tags.some((t) => t.toLowerCase() === col.toLowerCase());
+  const shown = $derived(
+    clips
+      .filter((c) => (!game || gameLabel(c.game) === game) && inCol(c) && (!q || c.title.toLowerCase().includes(q.toLowerCase())))
+      // Dans une collection : l'ordre où les clips ont été faits, prêt pour le montage
+      .sort((a, b) => (col ? a.created - b.created : 0)),
+  );
 
   function dragClip(e: DragEvent, id: string) {
     e.dataTransfer?.setData("application/x-rewind-clip", id);
@@ -114,6 +122,12 @@
   <div class="body">
     {#if tab === "clips"}
       <label class="search"><Search size={14} /><input placeholder={t("Chercher un clip")} bind:value={q} /></label>
+      {#if cols.length}
+        <div class="chips">
+          <button class="chip" class:on={!col} onclick={() => (col = "")}>{t("Tous les clips")}</button>
+          {#each cols as c (c.name)}<button class="chip" class:on={col === c.name} onclick={() => (col = col === c.name ? "" : c.name)}><FolderOpen size={11} />{c.name}</button>{/each}
+        </div>
+      {/if}
       {#if games.length > 1}
         <div class="chips">
           <button class="chip" class:on={!game} onclick={() => (game = "")}>{t("Tous")}</button>
@@ -197,7 +211,7 @@
   .search { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); color: var(--text-3); }
   .search input { flex: 1; min-width: 0; background: transparent; border: 0; outline: none; color: var(--text); font-size: 12.5px; user-select: text; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; }
-  .chip { height: 24px; padding: 0 9px; border-radius: 7px; font-size: 11.5px; color: var(--text-2); background: var(--panel); border: 1px solid var(--line); }
+  .chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 7px; font-size: 11.5px; color: var(--text-2); background: var(--panel); border: 1px solid var(--line); }
   .chip.on { color: var(--text); border-color: #fff; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .card { display: flex; flex-direction: column; gap: 4px; cursor: grab; min-width: 0; }

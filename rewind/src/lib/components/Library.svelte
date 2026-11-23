@@ -2,12 +2,13 @@
   import { liquid } from "$lib/glass";
   import {
     Search, FolderOpen, Trash2, X, Keyboard, Crosshair, Play, Send, Film, FolderPlus, Star,
-    CalendarDays, Gamepad2, CalendarClock, ArrowDownWideNarrow, Loader2,
+    CalendarDays, Gamepad2, CalendarClock, ArrowDownWideNarrow, Loader2, Pencil, CheckSquare,
   } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { fit } from "$lib/fit";
   import { api, dayGroup, fileUrl, formatDuration, formatSize, relativeDate, badges, gameTone, sessions, type Clip, gameLabel } from "$lib/api";
   import ClipCard from "./ClipCard.svelte";
+  import CollectionPicker from "./CollectionPicker.svelte";
   import { t, plural } from "$lib/i18n.svelte";
   import { keyParts } from "$lib/keys";
 
@@ -22,7 +23,8 @@
   let heroIndex = $state(0);
   let heroVideo: HTMLVideoElement | undefined = $state();
   let collectionMenu = $state(false);
-  let newCollection = $state("");
+  let renaming = $state(false);
+  let renameTo = $state("");
 
   const base = $derived(
     app.ownClips.filter((c) => {
@@ -32,7 +34,7 @@
       if (filter === "edit" && c.kind !== "edit") return false;
       if (filter === "screenshot" && c.kind !== "screenshot") return false;
       if (filter === "all" && c.kind === "screenshot") return false;
-      if (collection && !c.tags.includes(collection)) return false;
+      if (collection && !c.tags.some((t) => t.toLowerCase() === collection.toLowerCase())) return false;
       const q = query.trim().toLowerCase();
       if (q && !`${c.title} ${c.game} ${c.tags.join(" ")} ${c.markers.map((m) => m.label).join(" ")}`.toLowerCase().includes(q)) return false;
       return true;
@@ -53,7 +55,9 @@
     }[sort];
     return [...list].sort(by);
   });
-  const collections = $derived([...new Set(app.ownClips.flatMap((c) => c.tags))].sort());
+  const collections = $derived(app.collections);
+  // Collection supprimée ou renommée ailleurs : on enlève le filtre
+  $effect(() => { if (collection && !collections.some((c) => c.name.toLowerCase() === collection.toLowerCase())) collection = ""; });
 
   // À la une : les temps forts récents (auto avec actions, favoris)
   const featured = $derived.by(() => {
@@ -93,6 +97,7 @@
     return () => clearInterval(t);
   });
 
+  $effect(() => { if (!selected.length) collectionMenu = false; });
   function toggle(id: string) { selected = selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]; }
   async function fav(c: Clip) {
     try { app.updateClip(await api.updateClip(c.id, { favorite: !c.favorite })); } catch (e) { app.toast("err", t("Impossible"), String(e)); }
@@ -112,17 +117,27 @@
     selected = [];
     app.openStudio(list);
   }
-  async function addTo(name: string) {
-    const n = name.trim();
-    if (!n) return;
-    for (const id of selected) {
-      const c = app.clips.find((x) => x.id === id);
-      if (c && !c.tags.includes(n)) app.updateClip(await api.updateClip(id, { tags: [...c.tags, n] }));
-    }
-    app.toast("ok", t("Ajouté à « {x} »", { x: n }), t(selected.length > 1 ? "{n} clips" : "{n} clip", { n: selected.length }));
-    collectionMenu = false;
-    newCollection = "";
-    selected = [];
+  /** Toute la collection dans le Studio, dans l'ordre où les clips ont été faits */
+  function collectionToStudio() {
+    const list = visible.filter((c) => c.kind !== "screenshot").sort((a, b) => a.created - b.created);
+    if (list.length) app.openStudio(list);
+  }
+  async function renameCollection() {
+    const to = renameTo.trim();
+    renaming = false;
+    if (!to || to === collection) return;
+    try {
+      const changed = await api.renameCollection(collection, to);
+      app.updateClips(changed);
+      collection = changed[0]?.tags.find((t) => t.toLowerCase() === to.toLowerCase()) ?? to;
+    } catch (e) { app.toast("err", t("Renommage impossible"), String(e)); }
+  }
+  async function deleteCollection() {
+    if (!confirm(t("Supprimer la collection « {x} » ? Les clips restent dans ta bibliothèque.", { x: collection }))) return;
+    try {
+      app.updateClips(await api.deleteCollection(collection));
+      collection = "";
+    } catch (e) { app.toast("err", t("Suppression impossible"), String(e)); }
   }
   const sizeList: ["s" | "m" | "l", number][] = [["s", 10], ["m", 13], ["l", 16]];
   const filters = [["all", "Tout"], ["fav", "Favoris"], ["auto", "Automatiques"], ["manual", "Manuels"], ["edit", "Montages"], ["screenshot", "Captures"]] as const; // traduits à l'affichage
@@ -219,10 +234,28 @@
         {#each filters as [id, label]}
           <button class="kchip" class:on={filter === id} onclick={() => (filter = id)}>{t(label)}</button>
         {/each}
-        {#each collections as c}
-          <button class="kchip" class:on={collection === c} onclick={() => (collection = collection === c ? "" : c)}><FolderOpen size={12} />{c}</button>
+        {#each collections as c (c.name)}
+          <button class="kchip" class:on={collection === c.name} onclick={() => { collection = collection === c.name ? "" : c.name; renaming = false; }}><FolderOpen size={12} />{c.name} <b>{c.count}</b></button>
         {/each}
       </div>
+
+      {#if collection}
+        <div class="colbar appear">
+          {#if renaming}
+            <form onsubmit={(e) => { e.preventDefault(); renameCollection(); }}>
+              <!-- svelte-ignore a11y_autofocus -->
+              <input class="field" bind:value={renameTo} maxlength="40" autofocus onkeydown={(e) => e.key === "Escape" && (renaming = false)} onblur={renameCollection} />
+            </form>
+          {:else}
+            <FolderOpen size={16} /><strong>{collection}</strong><span class="faint">{t(visible.length > 1 ? "{n} clips" : "{n} clip", { n: visible.length })}</span>
+          {/if}
+          <span class="grow"></span>
+          <button class="btn small primary" disabled={!visible.length} onclick={collectionToStudio}><Film size={15} />{t("Monter la collection")}</button>
+          <button class="btn small ghost" disabled={!visible.length} onclick={() => (selected = visible.map((c) => c.id))}><CheckSquare size={15} />{t("Tout sélectionner")}</button>
+          <button class="btn small icon ghost" title={t("Renommer la collection")} aria-label={t("Renommer la collection")} onclick={() => { renameTo = collection; renaming = true; }}><Pencil size={15} /></button>
+          <button class="btn small icon ghost danger" title={t("Supprimer la collection")} aria-label={t("Supprimer la collection")} onclick={deleteCollection}><Trash2 size={15} /></button>
+        </div>
+      {/if}
 
       {#if visible.length === 0}
         <div class="none faint">{t("Aucun clip ne correspond.")}</div>
@@ -247,12 +280,9 @@
       <span><strong>{selected.length}</strong> {t(selected.length > 1 ? "sélectionnés" : "sélectionné")}</span>
       <button class="btn small primary" onclick={toStudio}><Film size={15} />{t("Monter dans le Studio")}</button>
       <div class="pop-wrap">
-        <button class="btn small" onclick={() => (collectionMenu = !collectionMenu)}><FolderPlus size={15} />{t("Collection")}</button>
+        <button class="btn small" class:on={collectionMenu} data-collection-toggle onclick={() => (collectionMenu = !collectionMenu)}><FolderPlus size={15} />{t("Collection")}</button>
         {#if collectionMenu}
-          <div class="pop appear">
-            {#each collections as c}<button class="pop-item" onclick={() => addTo(c)}><FolderOpen size={14} />{c}</button>{/each}
-            <form onsubmit={(e) => { e.preventDefault(); addTo(newCollection); }}><input class="field" placeholder={t("Nouvelle collection…")} bind:value={newCollection} /></form>
-          </div>
+          <CollectionPicker ids={selected} onclose={() => (collectionMenu = false)} />
         {/if}
       </div>
       <button class="btn small danger" onclick={remove}><Trash2 size={15} />{t("Corbeille")}</button>
@@ -344,8 +374,8 @@
   .bar > span { margin-right: 8px; font-size: 13px; color: var(--text-2); }
   .bar strong { color: var(--text); }
   .pop-wrap { position: relative; }
-  .pop { position: absolute; bottom: 42px; left: 0; width: 240px; padding: 6px; border-radius: 12px; background: var(--panel-2); border: 1px solid var(--line-2); box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 2px; }
-  .pop-item { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border-radius: 8px; font-size: 13px; text-align: left; }
-  .pop-item:hover { background: var(--panel-3); }
-  .pop .field { width: 100%; height: 34px; margin-top: 4px; }
+  .colbar { display: flex; align-items: center; gap: 8px; margin: -4px 0 16px; padding: 8px 8px 8px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); color: var(--text-2); }
+  .colbar strong { color: var(--text); font-weight: 600; }
+  .colbar .grow { flex: 1; }
+  .colbar form .field { height: 30px; width: 220px; }
 </style>

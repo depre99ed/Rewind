@@ -8,6 +8,7 @@
   import { api, fileUrl, formatDuration, formatSize, relativeDate, gameTone, badges, KIND_LABEL, type Clip, type InputEvent, gameLabel } from "$lib/api";
   import KeysOverlay from "./KeysOverlay.svelte";
   import MomentIcon from "./MomentIcon.svelte";
+  import CollectionPicker from "./CollectionPicker.svelte";
   import Avatar from "./Avatar.svelte";
   import { momentTone } from "$lib/moments";
   import { t, locale } from "$lib/i18n.svelte";
@@ -48,7 +49,7 @@
     }
   }
   let hoverT = $state<number | null>(null);
-  let newTag = $state("");
+  let tagMenu = $state(false);
 
   const isShot = $derived(clip.kind === "screenshot");
   const total = $derived(duration || clip.duration || 0);
@@ -135,7 +136,10 @@
     catch (e) { app.toast("err", t("Renommage impossible"), String(e)); title = clip.title; }
   }
   async function fav() { app.updateClip(await api.updateClip(clip.id, { favorite: !clip.favorite })); }
-  async function setTags(tags: string[]) { app.updateClip(await api.updateClip(clip.id, { tags })); }
+  async function removeTag(tag: string) {
+    try { app.updateClips(await api.setCollection([clip.id], tag, false)); }
+    catch (e) { app.toast("err", t("Collection non modifiée"), String(e)); }
+  }
   async function send() {
     sending = true;
     try {
@@ -314,11 +318,11 @@
     {#if !received}
     <div class="label">{t("Collections")}</div>
     <div class="tags">
-      {#each clip.tags as tag}<span class="ctag"><Hash size={12} />{tag}<button aria-label={t("Retirer")} onclick={() => setTags(clip.tags.filter((x) => x !== tag))}><X size={12} /></button></span>{/each}
-      <form onsubmit={(e) => { e.preventDefault(); if (newTag.trim()) { setTags([...clip.tags, newTag.trim()]); newTag = ""; } }}>
-        <input class="tag-input" placeholder={t("+ Ajouter")} bind:value={newTag} list="cols" />
-        <datalist id="cols">{#each [...new Set(app.ownClips.flatMap((c) => c.tags))] as c}<option value={c}></option>{/each}</datalist>
-      </form>
+      {#each clip.tags as tag}<span class="ctag"><Hash size={12} />{tag}<button aria-label={t("Retirer")} onclick={() => removeTag(tag)}><X size={12} /></button></span>{/each}
+      <span class="tag-wrap">
+        <button class="tag-add" data-collection-toggle onclick={() => (tagMenu = !tagMenu)}><Plus size={12} />{t("Ajouter")}</button>
+        {#if tagMenu}<CollectionPicker ids={[clip.id]} onclose={() => (tagMenu = false)} />{/if}
+      </span>
     </div>
     {/if}
 
@@ -418,8 +422,9 @@
   .tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .ctag { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 6px 0 9px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--line); font-size: 12.5px; }
   .ctag button { display: grid; color: var(--text-3); }
-  .tag-input { height: 26px; width: 110px; padding: 0 10px; border-radius: 99px; background: transparent; border: 1px dashed var(--line-2); outline: none; font-size: 12.5px; user-select: text; }
-  .tag-input:focus { border-style: solid; border-color: var(--hi); }
+  .tag-wrap { position: relative; }
+  .tag-add { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: 99px; border: 1px dashed var(--line-2); color: var(--text-2); font-size: 12.5px; transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+  .tag-add:hover { color: var(--text); border-style: solid; }
   .foot { margin-top: auto; display: flex; gap: 4px; padding-top: 10px; border-top: 1px solid var(--line); }
   .progress { display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; color: var(--text-2); padding: 12px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--line); }
   .pbar { height: 5px; border-radius: 5px; background: var(--panel-3); overflow: hidden; }

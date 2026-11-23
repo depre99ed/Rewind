@@ -233,6 +233,10 @@ export const api = {
   setMicMuted: (muted: boolean) => invoke<void>("set_mic_muted", { muted }),
   updateClip: (id: string, patch: { title?: string; favorite?: boolean; tags?: string[] }) =>
     invoke<Clip>("update_clip", { id, ...patch }),
+  /** Ajoute (add) ou retire des clips d'une collection en une fois ; renvoie les clips modifiés. */
+  setCollection: (ids: string[], name: string, add: boolean) => invoke<Clip[]>("set_collection", { ids, name, add }),
+  renameCollection: (old: string, name: string) => invoke<Clip[]>("rename_collection", { old, new: name }),
+  deleteCollection: (name: string) => invoke<Clip[]>("delete_collection", { name }),
   deleteClips: (ids: string[]) => invoke<void>("delete_clips", { ids }),
   reveal: (id: string) => invoke<void>("reveal_clip", { id }),
   openExternal: (id: string) => invoke<void>("open_external", { id }),

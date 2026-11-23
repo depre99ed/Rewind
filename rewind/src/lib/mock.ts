@@ -151,7 +151,34 @@ if (typeof window !== "undefined" && !inTauri) {
           const c = clips.find((x) => x.id === args.id)!;
           if (args.favorite !== undefined && args.favorite !== null) c.favorite = args.favorite;
           if (args.title) c.title = args.title;
+          if (args.tags) c.tags = args.tags;
           return { ...c };
+        }
+        case "set_collection": {
+          const name = String(args.name).split(/\s+/).filter(Boolean).join(" ").slice(0, 40);
+          if (!name) throw "Nom de collection vide";
+          const existing = clips.flatMap((c) => c.tags).find((t) => t.toLowerCase() === name.toLowerCase()) ?? name;
+          const out = [];
+          for (const id of args.ids) {
+            const c = clips.find((x) => x.id === id);
+            if (!c) continue;
+            const has = c.tags.some((t) => t.toLowerCase() === existing.toLowerCase());
+            if (args.add && !has) c.tags = [...c.tags, existing];
+            else if (!args.add && has) c.tags = c.tags.filter((t) => t.toLowerCase() !== existing.toLowerCase());
+            else continue;
+            out.push({ ...c });
+          }
+          return out;
+        }
+        case "rename_collection": case "delete_collection": {
+          const old = String(args.old ?? args.name).toLowerCase();
+          const out = [];
+          for (const c of clips) if (c.tags.some((t) => t.toLowerCase() === old)) {
+            c.tags = c.tags.filter((t) => t.toLowerCase() !== old && (!args.new || t.toLowerCase() !== args.new.toLowerCase()));
+            if (args.new) c.tags.push(args.new);
+            out.push({ ...c });
+          }
+          return out;
         }
         case "engine_log": return "";
         case "hotkeys_pause": return null;

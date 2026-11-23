@@ -1,5 +1,5 @@
 // Test du suivi de l'image (ripple.ts) : `npm run test:ripple`
-import { newProject, normalizePiece, newText, newAudio, newFx, layout, localAt, outLen, mergePunches, punchAt, type Project } from "../src/lib/studio/model";
+import { newProject, normalizePiece, newText, newAudio, newFx, layout, localAt, outLen, speedAt, srcAt, mergePunches, punchAt, type Project } from "../src/lib/studio/model";
 import { anchorItems, reanchor, remapZoom } from "../src/lib/studio/ripple";
 
 let fails = 0;
@@ -92,6 +92,30 @@ const at = (p: Project, uid: string) => p.tracks.flatMap((t) => t.items as { uid
   eq("deux mini-ralentis : durée ajoutée ×2", outLen(p.pieces[0]) - 10, one * 2);
   reanchor(p, a);
   eq("deux mini-ralentis : texte sur B suit", at(p, "T"), outLen(p.pieces[0]) + 2);
+}
+// 7b) Accéléré sur un kill : le morceau raccourcit d'autant que le ralenti symétrique l'allonge ; un ralenti
+//     et un accéléré qui se chevauchent : le plus marqué l'emporte
+{
+  const p = project();
+  const base = p.pieces[0];
+  const fast = { ...base, killRamps: [{ at: 4, dur: 1, speed: 2, ease: 0.2 }] };
+  eq("accéléré : morceau plus court (1 s jouée en 0,5 s, plus les rampes)", outLen(fast), 9.4, 0.15);
+  eq("accéléré : vitesse 2 au milieu", speedAt(fast, 4), 2);
+  const both = { ...base, killRamps: [{ at: 4, dur: 1, speed: 1.25, ease: 0.2 }, { at: 4.2, dur: 1, speed: 0.3, ease: 0.2 }] };
+  eq("ralenti + accéléré : le plus marqué", speedAt(both, 4.2), 0.3);
+}
+// 7c) Courbe de vitesse : ralenti qui repart en accéléré, en douceur ; la durée suit l'intégrale de la courbe
+{
+  const p = project();
+  const c = { ...p.pieces[0], curve: [{ t: 0, v: 0.5 }, { t: 5, v: 0.5 }, { t: 10, v: 2 }] };
+  eq("courbe : ralenti au début", speedAt(c, 2), 0.5);
+  eq("courbe : vitesse normale au milieu de la montée (×2 ÷2 symétrique)", speedAt(c, 7.5), 1);
+  eq("courbe : accéléré à la fin", speedAt(c, 9.99), 2, 0.02);
+  // Durée = intégrale de 1 / vitesse (calcul fin) ; les marches de 1/15 s de l'export doivent coller
+  let exact = 0;
+  for (let k = 0; k < 100000; k++) exact += 1e-4 / speedAt(c, (k + 0.5) * 1e-4);
+  eq("courbe : durée du morceau = intégrale exacte", outLen(c), exact, 0.03);
+  eq("courbe : aller-retour temps source ↔ montage", srcAt(c, localAt(c, 7.3)!), 7.3, 0.001);
 }
 // 8) Zoom punch : fusionné au zoom de l'export, même valeur que l'aperçu
 {

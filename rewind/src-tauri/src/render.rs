@@ -9,7 +9,11 @@
 //!   (« Frame size changed without filter graph reinitialization ») : la taille et la rotation animées
 //!   passent donc par `perspective` (sense=destination, eval=frame) dans un cadre carré fixe ;
 //! - `perspective` n'a pas de variable de temps : temps = début du calque + n° d'image / i/s ;
-//! - le zoom animé de la vidéo principale passe par `zoompan` (taille de sortie fixe, variable `it`).
+//! - zoom animé et tremblement passent par `perspective` avec `enable` : seules les images concernées sont
+//!   recalculées (avant : `zoompan` et crop + scale sur TOUTE la vidéo, même hors effet). Temps d'une image
+//!   dans `perspective` = (in - 1) / i/s (vérifié le 2026-11-23 : `in` vaut 1 pour la première image) ;
+//! - ralentis et accélérés : un seul décodage par morceau (setpts avec une courbe), au lieu d'un morceau
+//!   (une lecture du fichier) par marche de vitesse, ce qui rendait l'export très lent.
 
 use crate::editor::{self, Piece, LADDER, STUDIO_AUDIO_KBPS};
 use crate::{ffmpeg, util};
@@ -130,6 +134,8 @@ pub struct RenderSpec {
     pub audio: Vec<AudioSpec>,
     pub keys: Option<KeysSpec>,
     pub effects: Vec<EffectSpec>,
+    /// Fondu au noir (image et son) sur les dernières secondes ; 0 = aucun
+    pub end_fade: f64,
 }
 
 /// Ordre fixe des effets (le même que l'aperçu) : couleurs d'abord, tremblement en dernier.
@@ -137,16 +143,16 @@ const FX_ORDER: [&str; 4] = ["bw", "invert", "glitch", "shake"];
 
 /// Tremblement : part de l'image gardée (1 - 2f) et décalage (temps du montage `t`).
 /// Mêmes nombres dans l'aperçu : f = 0,03 × intensité, sinus à 7 Hz (x) et 11 Hz (y).
-pub fn shake_crop(w: u32, h: u32, strength: f64) -> (u32, u32, String, String) {
+pub fn shake_crop(w: u32, h: u32, strength: f64, var: &str) -> (u32, u32, String, String) {
     let f = 0.03 * strength.clamp(0.0, 1.0);
     let cw = ((w as f64 * (1.0 - 2.0 * f)) / 2.0).floor() as u32 * 2;
     let ch = ((h as f64 * (1.0 - 2.0 * f)) / 2.0).floor() as u32 * 2;
     let (mx, my) = ((w - cw) as f64 / 2.0, (h - ch) as f64 / 2.0);
-    (cw, ch, format!("{}*(1+sin(2*PI*7*t))", n(mx)), format!("{}*(1+sin(2*PI*11*t+1))", n(my)))
+    (cw, ch, format!("{}*(1+sin(2*PI*7*{var}))", n(mx)), format!("{}*(1+sin(2*PI*11*{var}+1))", n(my)))
 }
 
 /// Filtres des effets, ajoutés à la suite de l'image `cur` ; renvoie la nouvelle étiquette.
-fn effect_filters(g: &mut String, effects: &[EffectSpec], w: u32, h: u32, mut cur: String) -> String {
+fn effect_filters(g: &mut String, effects: &[EffectSpec], w: u32, h: u32, fps: u32, mut cur: String) -> String {
     let mut list: Vec<&EffectSpec> = effects.iter().filter(|e| e.dur > 0.01 && FX_ORDER.contains(&e.kind.as_str())).collect();
     list.sort_by(|a, b| {
         let ia = FX_ORDER.iter().position(|k| *k == a.kind).unwrap_or(9);
@@ -165,16 +171,64 @@ fn effect_filters(g: &mut String, effects: &[EffectSpec], w: u32, h: u32, mut cu
                 g.push_str(&format!("[{cur}]rgbashift=rh={}:bh={}:edge=smear:enable='{en}'[{out}];", -a, a));
             }
             _ => {
-                // Tremblement : une copie recadrée qui bouge, agrandie à la taille du cadre, montrée seulement pendant l'effet
-                let (cw, ch, x, y) = shake_crop(w, h, s);
-                g.push_str(&format!(
-                    "[{cur}]split[{out}a][{out}b];[{out}b]crop=w={cw}:h={ch}:x='{x}':y='{y}',scale={w}:{h}:flags=bicubic,setsar=1[{out}c];[{out}a][{out}c]overlay=enable='{en}'[{out}];"
-                ));
+                // Tremblement : la partie gardée qui bouge, agrandie au cadre, calculée seulement pendant l'effet
+                let (cw, ch, x, y) = shake_crop(w, h, s, &frame_time(fps));
+                g.push_str(&format!("[{cur}]{}[{out}];", warp(&x, &y, &cw.to_string(), &ch.to_string(), "linear", &en)));
             }
         }
         cur = out;
     }
     cur
+}
+
+/// Temps (s) de l'image en cours dans `perspective` (pas de variable t ; flux à i/s constant depuis 0).
+fn frame_time(fps: u32) -> String {
+    format!("((in-1)/{fps})")
+}
+
+/// Recadrage animé (x, y, largeur, hauteur de la partie gardée) agrandi au cadre, seulement si `en` :
+/// `perspective` fait crop + scale en un filtre, multi-cœur, et ne travaille pas hors de `en`.
+fn warp(x: &str, y: &str, cw: &str, ch: &str, interp: &str, en: &str) -> String {
+    let (x1, y2) = (format!("{x}+{cw}"), format!("{y}+{ch}"));
+    format!(
+        "perspective=x0='{x}':y0='{y}':x1='{x1}':y1='{y}':x2='{x}':y2='{y2}':x3='{x1}':y3='{y2}':sense=source:interpolation={interp}:eval=frame:enable='{en}'"
+    )
+}
+
+/// Instants où une courbe de zoom (t, z) dépasse 1 : fenêtres `enable` (fusionnées).
+fn zoom_windows(points: &[(f64, f64)]) -> String {
+    let mut wins: Vec<(f64, f64)> = Vec::new();
+    for w in points.windows(2) {
+        let ((a, za), (b, zb)) = (w[0], w[1]);
+        if za.max(zb) <= 1.001 {
+            continue;
+        }
+        match wins.last_mut() {
+            Some(last) if a <= last.1 + 1e-3 => last.1 = last.1.max(b),
+            _ => wins.push((a, b)),
+        }
+    }
+    if let Some(&(t, z)) = points.last()
+        && z > 1.001
+    {
+        wins.push((t, 1e6));
+    }
+    if wins.is_empty() {
+        return "0".into();
+    }
+    wins.iter().map(|(a, b)| format!("between(t\\,{}\\,{})", n(*a), n(*b))).collect::<Vec<_>>().join("+")
+}
+
+/// Vitesse variable d'un morceau : temps de sortie en fonction du temps source `T` (depuis le début du morceau).
+fn speed_curve(p: &Piece) -> String {
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    let mut acc = 0.0;
+    for &(a, b, v) in &p.segs {
+        pts.push((a - p.start, acc));
+        acc += (b - a).max(0.0) / v.clamp(0.25, 4.0);
+        pts.push((b - p.start, acc));
+    }
+    piecewise(&pts, "T")
 }
 
 const AFMT: &str = "aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
@@ -305,7 +359,13 @@ pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64
     for (i, p) in pieces.iter().enumerate() {
         let speed = p.speed.clamp(0.25, 4.0);
         let olen = editor::out_len(p);
-        let frame = frame_filter(&spec.fit, w, h, i);
+        let info = ffmpeg::streams(Path::new(&p.path));
+        // Clip déjà au format du cadre (16:9 dans un montage 16:9) : ni fond flou ni bandes à calculer
+        let same_shape = info
+            .iter()
+            .find(|s| s.kind == "video" && s.width > 0 && s.height > 0)
+            .is_some_and(|s| ((s.width as f64 * h as f64) / (s.height as f64 * w as f64) - 1.0).abs() < 0.01);
+        let frame = frame_filter(if same_shape { "crop" } else { &spec.fit }, w, h, i);
         let color = color_filter(&p.color).map(|c| format!(",{c}")).unwrap_or_default();
         if p.freeze > 0.0 {
             let k = input(&mut args, vec!["-ss".into(), n(p.start.max(0.0)), "-t".into(), "0.5".into()], &p.path);
@@ -317,14 +377,38 @@ pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64
         } else {
             let len = (p.end - p.start).max(0.05);
             let k = input(&mut args, vec!["-ss".into(), n(p.start.max(0.0)), "-t".into(), n(len)], &p.path);
+            // Vitesse : constante, ou courbe (ralentis / accélérés) en un seul passage
+            let timing = if p.segs.is_empty() { format!("setpts=(PTS-STARTPTS)/{speed:.5}") } else { format!("setpts=PTS-STARTPTS,setpts='({})/TB'", speed_curve(p)) };
             g.push_str(&format!(
-                "[{k}:v]setpts=(PTS-STARTPTS)/{speed:.5},{frame}{color},fps={fps},format=yuv420p,setsar=1,tpad=stop_mode=clone:stop_duration=1,trim=duration={},setpts=PTS-STARTPTS,settb=AVTB[v{i}];",
+                "[{k}:v]{timing},{frame}{color},fps={fps},format=yuv420p,setsar=1,tpad=stop_mode=clone:stop_duration=1,trim=duration={},setpts=PTS-STARTPTS,settb=AVTB[v{i}];",
                 n(olen)
             ));
             // Son : piste de mixage, ou pistes séparées avec leur volume
-            let n_audio = ffmpeg::streams(Path::new(&p.path)).iter().filter(|s| s.kind == "audio").count();
+            let n_audio = info.iter().filter(|s| s.kind == "audio").count();
             let vol = p.volume.clamp(0.0, 2.0);
-            let tail = format!("asetpts=PTS-STARTPTS,{},volume={vol:.3},apad,atrim=0:{},asetpts=PTS-STARTPTS[a{i}];", editor::atempo(speed), n(olen));
+            // Son brut [raw] → vitesse (constante, ou morceau par morceau), volume, longueur exacte
+            let tempo = |g: &mut String, raw: &str| {
+                let end = format!("volume={vol:.3},apad,atrim=0:{},asetpts=PTS-STARTPTS[a{i}];", n(olen));
+                if p.segs.is_empty() {
+                    g.push_str(&format!("[{raw}]asetpts=PTS-STARTPTS,{},{end}", editor::atempo(speed)));
+                    return;
+                }
+                let parts = p.segs.len();
+                g.push_str(&format!("[{raw}]asetpts=PTS-STARTPTS,asplit={parts}"));
+                for j in 0..parts {
+                    g.push_str(&format!("[sp{i}x{j}]"));
+                }
+                g.push(';');
+                let mut labels = String::new();
+                for (j, &(a, b, v)) in p.segs.iter().enumerate() {
+                    g.push_str(&format!(
+                        "[sp{i}x{j}]atrim=start={}:end={},asetpts=PTS-STARTPTS,{}[sq{i}x{j}];",
+                        n((a - p.start).max(0.0)), n((b - p.start).max(0.0)), editor::atempo(v.clamp(0.25, 4.0))
+                    ));
+                    labels.push_str(&format!("[sq{i}x{j}]"));
+                }
+                g.push_str(&format!("{labels}concat=n={parts}:v=0:a=1,{end}"));
+            };
             let separate = n_audio > 1 && !p.track_volumes.is_empty() && n_audio > p.track_volumes.len();
             let used: Vec<(usize, f64)> = if separate {
                 p.track_volumes.iter().enumerate().map(|(t, v)| (t + 1, v.clamp(0.0, 2.0))).filter(|(_, v)| *v > 0.001).collect()
@@ -340,12 +424,14 @@ pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64
                     labels.push_str(&format!("[t{i}x{s}]"));
                 }
                 if used.len() == 1 {
-                    g.push_str(&format!("{labels}{tail}"));
+                    g.push_str(&format!("{labels}anull[raw{i}];"));
                 } else {
-                    g.push_str(&format!("{labels}amix=inputs={}:normalize=0:duration=longest,{tail}", used.len()));
+                    g.push_str(&format!("{labels}amix=inputs={}:normalize=0:duration=longest[raw{i}];", used.len()));
                 }
+                tempo(&mut g, &format!("raw{i}"));
             } else {
-                g.push_str(&format!("[{k}:a:0]{AFMT},{tail}"));
+                g.push_str(&format!("[{k}:a:0]{AFMT}[raw{i}];"));
+                tempo(&mut g, &format!("raw{i}"));
             }
         }
         if i == 0 {
@@ -382,10 +468,14 @@ pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64
 
     // ---- Zoom animé de la vidéo principale ----
     if spec.zoom.iter().any(|k| k.z > 1.001) {
-        let z = piecewise(&spec.zoom.iter().map(|k| (k.t, k.z.clamp(1.0, 5.0))).collect::<Vec<_>>(), "it");
-        let x = piecewise(&spec.zoom.iter().map(|k| (k.t, k.x.clamp(0.0, 1.0))).collect::<Vec<_>>(), "it");
-        let y = piecewise(&spec.zoom.iter().map(|k| (k.t, k.y.clamp(0.0, 1.0))).collect::<Vec<_>>(), "it");
-        g.push_str(&format!("[{cur_v}]zoompan=z='{z}':x='(iw-iw/zoom)*({x})':y='(ih-ih/zoom)*({y})':d=1:s={w}x{h}:fps={fps},setsar=1[vzoom];"));
+        let tt = frame_time(fps);
+        let zp: Vec<(f64, f64)> = spec.zoom.iter().map(|k| (k.t, k.z.clamp(1.0, 5.0))).collect();
+        let z = piecewise(&zp, &tt);
+        let x = piecewise(&spec.zoom.iter().map(|k| (k.t, k.x.clamp(0.0, 1.0))).collect::<Vec<_>>(), &tt);
+        let y = piecewise(&spec.zoom.iter().map(|k| (k.t, k.y.clamp(0.0, 1.0))).collect::<Vec<_>>(), &tt);
+        let (cw, ch) = (format!("({w}/({z}))"), format!("({h}/({z}))"));
+        let (x0, y0) = (format!("(({w}-{cw})*({x}))"), format!("(({h}-{ch})*({y}))"));
+        g.push_str(&format!("[{cur_v}]{}[vzoom];", warp(&x0, &y0, &cw, &ch, "cubic", &zoom_windows(&zp))));
         cur_v = "vzoom".into();
     }
 
@@ -413,12 +503,20 @@ pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64
             let (bw, bh) = ((l.w.max(4.0) as u32) / 2 * 2, (l.h.max(4.0) as u32) / 2 * 2);
             let cx = format!("max(0\\,min(iw-{bw}\\,({x})-{bw}/2))");
             let cy = format!("max(0\\,min(ih-{bh}\\,({y})-{bh}/2))");
+            let full = bw + 2 >= w && bh + 2 >= h && l.mode != "pixel" && l.opacity >= 0.999 && fade.is_empty();
+            if full {
+                // Toute l'image floutée : directement, seulement pendant l'effet
+                let rr = (l.strength.clamp(1.0, 60.0) as u32).min(h / 2).max(1);
+                g.push_str(&format!("[{cur_v}]boxblur={rr}:3:enable='{en}'[L{li}];"));
+                cur_v = format!("L{li}");
+                continue;
+            }
             let blur = if l.mode == "pixel" {
                 let cell = (l.strength.clamp(2.0, 60.0)) as u32;
                 format!("scale=max(1\\,iw/{cell}):max(1\\,ih/{cell}):flags=area,scale={bw}:{bh}:flags=neighbor")
             } else {
                 let rr = (l.strength.clamp(1.0, 60.0) as u32).min(bw.min(bh) / 2).max(1);
-                format!("boxblur={rr}:3")
+                format!("boxblur={rr}:3:enable='{en}'")
             };
             // Opacité et fondus de la zone (comme l'aperçu) : la copie floutée devient transparente
             let opacity = l.opacity.clamp(0.0, 1.0);
@@ -500,7 +598,7 @@ pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64
     }
 
     // ---- Effets sur toute l'image (avant les touches, qui restent nettes et immobiles) ----
-    cur_v = effect_filters(&mut g, &spec.effects, w, h, cur_v);
+    cur_v = effect_filters(&mut g, &spec.effects, w, h, fps, cur_v);
 
     // ---- Touches clavier / souris ----
     if let Some(keys) = &spec.keys
@@ -531,7 +629,9 @@ pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64
     } else {
         String::new()
     };
-    g.push_str(&format!("[{cur_v}]trim=duration={}{final_scale},format=yuv420p,setsar=1[vout];", n(total)));
+    let end_fade = spec.end_fade.clamp(0.0, total);
+    let vfade = if end_fade > 0.01 { format!(",fade=t=out:st={}:d={}", n(total - end_fade), n(end_fade)) } else { String::new() };
+    g.push_str(&format!("[{cur_v}]trim=duration={}{vfade}{final_scale},format=yuv420p,setsar=1[vout];", n(total)));
 
     // ---- Son : principal + incrustations + éléments (musique, bruitages, voix off) ----
     let mut plain: Vec<String> = vec![cur_a.clone()];
@@ -583,7 +683,8 @@ pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64
         rest.push("musd".into());
         mix(&rest, "amx", &mut g);
     }
-    g.push_str(&format!("[amx]{limiter},atrim=0:{}[aout]", n(total)));
+    let afade = if end_fade > 0.01 { format!(",afade=t=out:st={}:d={}", n(total - end_fade), n(end_fade)) } else { String::new() };
+    g.push_str(&format!("[amx]{limiter},atrim=0:{}{afade}[aout]", n(total)));
 
     // Le graphe passe par un fichier (ligne de commande Windows limitée à 32 767 caractères)
     std::fs::write(graph_file, &g)?;
@@ -688,6 +789,20 @@ mod tests {
     }
 
     #[test]
+    fn vitesse_variable_et_zoom() {
+        // Ralenti au milieu : la courbe suit les marches, avec un trou (marche trop courte, ignorée)
+        let p = Piece { start: 10.0, end: 14.0, segs: vec![(10.0, 11.0, 1.0), (11.0, 12.0, 0.5), (12.05, 14.0, 2.0)], ..Default::default() };
+        assert!((editor::out_len(&p) - (1.0 + 2.0 + 0.975)).abs() < 1e-9);
+        assert!((editor::src_to_out(&p, 11.5) - 2.0).abs() < 1e-9);
+        let c = speed_curve(&p);
+        assert!(c.contains("gte(T\\,1)*lt(T\\,2)*(1+2*(T-1)/1)"), "{c}");
+        assert!(c.ends_with("+gte(T\\,4)*3.975"), "{c}");
+        // Zoom : calculé seulement là où il dépasse 1
+        assert_eq!(zoom_windows(&[(0.0, 1.0), (1.0, 1.0), (1.5, 1.3), (2.0, 1.0), (3.0, 1.0)]), "between(t\\,1\\,2)");
+        assert_eq!(zoom_windows(&[(0.0, 1.0), (5.0, 1.0)]), "0");
+    }
+
+    #[test]
     fn couleur_comme_le_css() {
         assert!(color_filter(&[1.0, 1.0, 1.0]).is_none());
         let f = color_filter(&[1.2, 1.0, 0.0]).unwrap();
@@ -701,18 +816,19 @@ mod tests {
         let fx = |kind: &str, at: f64| EffectSpec { kind: kind.into(), at, dur: 1.0, strength: 1.0 };
         let mut g = String::new();
         // Ordre fixe (couleur avant tremblement), quel que soit l'ordre reçu ; type inconnu ignoré
-        let out = effect_filters(&mut g, &[fx("shake", 0.0), fx("bw", 2.0), fx("inconnu", 0.0), fx("glitch", 1.0)], 1920, 1080, "L0".into());
+        let out = effect_filters(&mut g, &[fx("shake", 0.0), fx("bw", 2.0), fx("inconnu", 0.0), fx("glitch", 1.0)], 1920, 1080, 60, "L0".into());
         assert_eq!(out, "FX2");
         assert!(g.starts_with("[L0]hue=s=0:enable='between(t\\,2\\,3)'[FX0];"), "{g}");
         assert!(g.contains("[FX0]rgbashift=rh=-38:bh=38:edge=smear"), "{g}");
-        assert!(g.contains("[FX1]split[FX2a][FX2b]"), "{g}");
+        assert!(g.contains("[FX1]perspective=x0='58*(1+sin(2*PI*7*((in-1)/60)))'"), "{g}");
+        assert!(g.contains(":enable='between(t\\,0\\,1)'[FX2];"), "{g}");
         // Tremblement : cadre gardé pair, décalage max = la marge
-        let (cw, ch, x, _) = shake_crop(1920, 1080, 1.0);
+        let (cw, ch, x, _) = shake_crop(1920, 1080, 1.0, "t");
         assert_eq!((cw, ch), (1804, 1014));
         assert_eq!(x, "58*(1+sin(2*PI*7*t))");
         // Aucun effet : rien n'est ajouté
         let mut g2 = String::new();
-        assert_eq!(effect_filters(&mut g2, &[], 1920, 1080, "L0".into()), "L0");
+        assert_eq!(effect_filters(&mut g2, &[], 1920, 1080, 60, "L0".into()), "L0");
         assert!(g2.is_empty());
     }
 }

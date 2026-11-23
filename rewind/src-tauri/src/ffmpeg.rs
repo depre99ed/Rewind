@@ -170,13 +170,16 @@ pub struct StreamInfo {
     pub kind: String,
     pub start: f64,
     pub duration: f64,
+    /// Image (vidéo seulement ; 0 sinon)
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Pistes d'un fichier, avec leur début et leur durée. Sert aux contrôles automatiques.
 pub fn streams(path: &Path) -> Vec<StreamInfo> {
     let Ok(tools) = tools() else { return Vec::new() };
     let Ok(out) = util::command(&tools.ffprobe)
-        .args(["-v", "error", "-show_entries", "stream=codec_type,start_time,duration", "-of", "json"])
+        .args(["-v", "error", "-show_entries", "stream=codec_type,start_time,duration,width,height", "-of", "json"])
         .arg(path)
         .stdin(Stdio::null())
         .output()
@@ -193,6 +196,8 @@ pub fn streams(path: &Path) -> Vec<StreamInfo> {
                     kind: s["codec_type"].as_str().unwrap_or_default().to_string(),
                     start: num(&s["start_time"]),
                     duration: num(&s["duration"]),
+                    width: s["width"].as_u64().unwrap_or(0) as u32,
+                    height: s["height"].as_u64().unwrap_or(0) as u32,
                 })
                 .collect()
         })

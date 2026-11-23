@@ -8,7 +8,7 @@
   import { Play, Pause, SkipBack, SkipForward, Maximize, Film, Sparkles, RotateCw, FileX } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { studio, media, fmtTime } from "$lib/studio/store.svelte";
-  import { FORMAT_RATIO, frameSize, glitchShift, isFilterFx, kfValue, layerState, punchAt, shakeAt, speedAt, type BlurLayer, type Layer, type Piece } from "$lib/studio/model";
+  import { FORMAT_RATIO, endFadeAt, frameSize, glitchShift, isFilterFx, kfValue, layerState, punchAt, shakeAt, segSpeedAt as speedAt, type BlurLayer, type Layer, type Piece } from "$lib/studio/model";
   import { mixer, newAudioEl, Ducker } from "$lib/studio/mixer";
   import { fileUrl } from "$lib/api";
   import { t } from "$lib/i18n.svelte";
@@ -29,6 +29,7 @@
   let blurCanvas: HTMLCanvasElement | undefined = $state();
   let zoomBox: HTMLDivElement | undefined = $state();
   let sceneEl: HTMLDivElement | undefined = $state();
+  let endEl: HTMLDivElement | undefined = $state();
   let glitchR: SVGFEOffsetElement | undefined = $state();
   let glitchB: SVGFEOffsetElement | undefined = $state();
 
@@ -183,6 +184,13 @@
     lastNow = now;
     const t = studio.t;
     const play = studio.playing;
+    // Fondu au noir de fin : un voile noir par-dessus tout, et le son qui baisse en même temps (comme l'export)
+    const k = endFadeAt(P, t, total);
+    if (endEl) {
+      const o = (1 - k).toFixed(3);
+      if (endEl.style.opacity !== o) endEl.style.opacity = o;
+    }
+    mixer.master(k);
     syncAudio(t, play, dt);
     syncPip(t, play);
     applyFx(t);
@@ -299,6 +307,8 @@
   // comme l'export (crop + boxblur, ou réduction puis agrandissement sans lissage).
   // ---------------------------------------------------------------------------
   let tiny: HTMLCanvasElement | null = null;
+  let padCv: HTMLCanvasElement | null = null;
+  let blurCv: HTMLCanvasElement | null = null;
   function drawBlurs(src: { el: HTMLVideoElement; piece: Piece; zoom: { z: number; x: number; y: number } } | null, t: number) {
     if (!frameEl) return;
     const cvs = frameEl.querySelectorAll<HTMLCanvasElement>("canvas[data-blur]");
@@ -340,13 +350,34 @@
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(tiny, 0, 0, tw, th, 0, 0, bw, bh);
       } else {
-        // Marge autour de la zone : le flou ne s'éclaircit pas sur les bords
+        // L'image de la zone, bords prolongés tout autour (comme FFmpeg), puis floutée : avant, le flou du
+        // canvas fondait les bords vers le transparent et « Image floutée » ne floutait qu'un ovale au centre,
+        // le tour de l'image restant net (2026-11-23). Calculé en plus petit (même rendu, bien moins lourd).
         const r = (l.strength * fh) / 1080;
-        const m = Math.ceil(r * 3);
-        const [sx, sy] = toSrc(left - m, top - m), [ex, ey] = toSrc(left + bw + m, top + bh + m);
-        ctx.filter = `${color} blur(${r.toFixed(2)}px)`.trim();
-        ctx.drawImage(el, sx, sy, ex - sx, ey - sy, -m, -m, bw + 2 * m, bh + 2 * m);
-        ctx.filter = "none";
+        const q = Math.max(1, r / 5);
+        const zw = Math.max(1, Math.round(bw / q)), zh = Math.max(1, Math.round(bh / q)), m = Math.ceil((r * 3) / q);
+        const W2 = zw + 2 * m, H2 = zh + 2 * m;
+        padCv ??= document.createElement("canvas");
+        blurCv ??= document.createElement("canvas");
+        if (padCv.width !== W2 || padCv.height !== H2) { padCv.width = blurCv.width = W2; padCv.height = blurCv.height = H2; }
+        const pc = padCv.getContext("2d")!, bc = blurCv.getContext("2d")!;
+        pc.clearRect(0, 0, W2, H2);
+        const [sx, sy] = toSrc(left, top), [ex, ey] = toSrc(left + bw, top + bh);
+        pc.filter = color || "none";
+        pc.drawImage(el, sx, sy, ex - sx, ey - sy, m, m, zw, zh);
+        pc.filter = "none";
+        if (m > 0) {
+          pc.drawImage(padCv, m, m, 1, zh, 0, m, m, zh); // gauche
+          pc.drawImage(padCv, m + zw - 1, m, 1, zh, m + zw, m, m, zh); // droite
+          pc.drawImage(padCv, 0, m, W2, 1, 0, 0, W2, m); // haut (coins compris)
+          pc.drawImage(padCv, 0, m + zh - 1, W2, 1, 0, m + zh, W2, m); // bas
+        }
+        bc.clearRect(0, 0, W2, H2);
+        bc.filter = `blur(${(r / q).toFixed(2)}px)`;
+        bc.drawImage(padCv, 0, 0);
+        bc.filter = "none";
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(blurCv, m, m, zw, zh, 0, 0, bw, bh);
       }
     }
   }
@@ -633,6 +664,7 @@
           {#if studio.sel?.type === "keys"}<span class="h br" onpointerdown={(e) => start(e, "keysScale")} role="presentation"></span>{/if}
         </div>
       {/if}
+      <div class="endfade" bind:this={endEl}></div>
       {#if guides.v}<i class="guide v"></i>{/if}
       {#if guides.h}<i class="guide h"></i>{/if}
       <!-- Cadre de sélection du calque choisi -->
@@ -702,6 +734,7 @@
   .zoombox.cover video { object-fit: cover; }
   .blurbg { position: absolute; inset: -6%; width: 112%; height: 112%; filter: blur(14px) brightness(0.8); }
   .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 5; }
+  .endfade { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; z-index: 70; }
   .lz { position: absolute; inset: 0; pointer-events: none; }
   .keysbox { position: absolute; z-index: 60; transform: translate(-50%, -50%); cursor: move; border-radius: 10px; }
   .keysbox.on { outline: 1.5px solid #fff; outline-offset: 3px; }

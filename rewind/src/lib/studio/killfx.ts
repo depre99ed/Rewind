@@ -57,10 +57,13 @@ export type KillFx = {
   flash: { on: boolean; color: string; strength: number; dur: number };
   shake: { on: boolean; strength: number; dur: number };
   punch: { on: boolean; strength: number; dur: number };
+  /** Vitesse au kill : < 1 ralenti, > 1 accéléré */
   slow: { on: boolean; speed: number; dur: number };
   /** Décalage (s) par rapport à l'apparition du kill : négatif = un peu avant */
   offset: number;
   scope: "all" | "piece";
+  /** Version des réglages (2 : décalage de -0,2 s par défaut) */
+  rev?: number;
 };
 
 export const KILL_FX_DEFAULT: KillFx = {
@@ -68,15 +71,19 @@ export const KILL_FX_DEFAULT: KillFx = {
   shake: { on: false, strength: 0.45, dur: 0.35 },
   punch: { on: true, strength: 0.5, dur: 0.4 },
   slow: { on: false, speed: 0.35, dur: 0.5 },
-  offset: 0,
+  // La ligne du kill feed apparaît un peu après le kill : l'effet part 0,2 s avant (réglé à l'usage, 2026-11-23)
+  offset: -0.2,
   scope: "all",
+  rev: 2,
 };
 
 const KEY = "rewind.studio.killfx";
 export function loadKillFx(): KillFx {
   try {
     const v = JSON.parse(localStorage.getItem(KEY) || "null");
-    if (v && typeof v === "object") return { ...KILL_FX_DEFAULT, ...v, flash: { ...KILL_FX_DEFAULT.flash, ...v.flash }, shake: { ...KILL_FX_DEFAULT.shake, ...v.shake }, punch: { ...KILL_FX_DEFAULT.punch, ...v.punch }, slow: { ...KILL_FX_DEFAULT.slow, ...v.slow } };
+    // Réglages d'avant la version 2 : l'ancien décalage par défaut (0) devient le nouveau (-0,2 s)
+    if (v && typeof v === "object" && !v.rev && !v.offset) v.offset = KILL_FX_DEFAULT.offset;
+    if (v && typeof v === "object") return { ...KILL_FX_DEFAULT, ...v, rev: 2, flash: { ...KILL_FX_DEFAULT.flash, ...v.flash }, shake: { ...KILL_FX_DEFAULT.shake, ...v.shake }, punch: { ...KILL_FX_DEFAULT.punch, ...v.punch }, slow: { ...KILL_FX_DEFAULT.slow, ...v.slow } };
   } catch {}
   return structuredClone(KILL_FX_DEFAULT);
 }

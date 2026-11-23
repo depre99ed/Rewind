@@ -10,7 +10,8 @@
   import { momentTone } from "$lib/moments";
   import MomentIcon from "../MomentIcon.svelte";
   import Slider from "./Slider.svelte";
-  import { kfValue, outLen, localAt, fxInfo, isFilterFx, isPunch, isFullBlur, type Color, type Fit, type Format, type TextAnimIn, type TextAnimOut } from "$lib/studio/model";
+  import SpeedCurve from "./SpeedCurve.svelte";
+  import { kfValue, outLen, localAt, fxInfo, isFilterFx, isPunch, isFullBlur, hasCurve, type Color, type Fit, type Format, type TextAnimIn, type TextAnimOut } from "$lib/studio/model";
   import { FONTS, fontOf } from "$lib/studio/fonts";
   import FontPicker from "./FontPicker.svelte";
   import { LOOKS as TEXT_LOOKS, type TextLook } from "$lib/studio/textfx";
@@ -76,6 +77,20 @@
   }
   let fontPicker = $state(false);
   const begin = () => studio.snapshot();
+  /** Courbes toutes faites, calées sur la tête de lecture (le moment fort) quand elle est dans le morceau */
+  function setCurve(kind: "none" | "slowfast" | "fastslow" | "dip") {
+    if (!piece) return;
+    if (kind === "none") return studio.updatePiece(piece.uid, { curve: [] });
+    const a = piece.start, b = piece.end, len = b - a;
+    const now = studio.srcTime(pIndex, studio.t);
+    const h = Math.min(b - len * 0.15, Math.max(a + len * 0.15, now > a && now < b ? now : a + len * 0.4));
+    const d = Math.max(0.15, len * 0.08);
+    const curve =
+      kind === "slowfast" ? [{ t: a, v: 0.3 }, { t: h, v: 0.3 }, { t: b, v: 2.5 }]
+      : kind === "fastslow" ? [{ t: a, v: 2.5 }, { t: h, v: 0.3 }, { t: b, v: 0.3 }]
+      : [{ t: a, v: 2 }, { t: Math.max(a + 0.02, h - d), v: 0.3 }, { t: Math.min(b - 0.02, h + d), v: 0.3 }, { t: b, v: 2 }];
+    studio.updatePiece(piece.uid, { curve });
+  }
   const finish = () => {};
   const pct = (v: number) => `${Math.round(v * 100)} %`;
   const sec = (v: number) => `${v.toFixed(1)} s`;
@@ -118,7 +133,18 @@
       </section>
       <section>
         <header><Gauge size={14} /><h4>{t("Vitesse")}</h4></header>
-        <div class="chips">{#each SPEEDS as v}<button class="chip" class:on={piece.speed === v} onclick={() => studio.setSpeed(v)}>{v}×</button>{/each}</div>
+        <div class="chips">{#each SPEEDS as v}<button class="chip" class:on={!hasCurve(piece) && piece.speed === v} onclick={() => studio.setSpeed(v)}>{v}×</button>{/each}</div>
+        <span class="mini">{t("Courbe de vitesse")}</span>
+        <div class="chips">
+          <button class="chip" class:on={!hasCurve(piece)} onclick={() => setCurve("none")}>{t("Aucune")}</button>
+          <button class="chip" onclick={() => setCurve("slowfast")}>{t("Ralenti → accéléré")}</button>
+          <button class="chip" onclick={() => setCurve("fastslow")}>{t("Accéléré → ralenti")}</button>
+          <button class="chip" onclick={() => setCurve("dip")}>{t("Creux au milieu")}</button>
+        </div>
+        {#if hasCurve(piece)}
+          <SpeedCurve {piece} src={studio.srcTime(pIndex, studio.t)} onstart={begin} onchange={(c, record) => studio.updatePiece(piece.uid, { curve: c }, record)} />
+          <p class="note">{t("Tire les points. Clic sur la courbe : un point de plus ; double-clic sur un point : retiré. La vitesse passe en douceur d'un point à l'autre ; textes et effets suivent l'image.")}</p>
+        {/if}
         <label class="row"><span>{t("Ralenti progressif")}</span>
           <span class="switch"><input type="checkbox" checked={!!piece.ramp} onchange={(e) => studio.updatePiece(piece.uid, { ramp: e.currentTarget.checked ? { at: studio.srcTime(pIndex, studio.t), dur: 0.8, speed: 0.3, ease: 0.4 } : null })} /><span></span></span>
         </label>
@@ -373,6 +399,15 @@
           {/each}
         </div>
       {/if}
+    </section>
+    <section>
+      <label class="row"><span class="ic"><SunMoon size={15} />{t("Fondu au noir à la fin")}</span>
+        <span class="switch"><input type="checkbox" checked={(P.endFade ?? 0) > 0} onchange={(e) => studio.edit((p) => (p.endFade = e.currentTarget.checked ? 1 : 0))} /><span></span></span>
+      </label>
+      {#if (P.endFade ?? 0) > 0}
+        <Slider label={t("Durée")} value={P.endFade ?? 1} min={0.3} max={4} step={0.1} def={1} format={sec} onstart={begin} oninput={(v) => studio.edit((p) => (p.endFade = v), false)} />
+      {/if}
+      <p class="note">{t("L'image et le son s'éteignent doucement sur les dernières secondes.")}</p>
     </section>
     <section>
       <label class="row"><span class="ic"><Keyboard size={15} />{t("Touches clavier / souris")}</span>

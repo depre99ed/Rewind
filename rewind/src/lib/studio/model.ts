@@ -20,6 +20,8 @@ export const NEUTRAL: Color = { b: 1, c: 1, s: 1 };
 
 /** Ralenti progressif : la vitesse descend en douceur jusqu'à `speed`, tient `dur` s (temps source), puis remonte. */
 export type Ramp = { at: number; dur: number; speed: number; ease: number };
+/** Point de la courbe de vitesse : instant du clip source (s) et vitesse (0,25 à 4) */
+export type SpeedPt = { t: number; v: number };
 
 /** Morceau de la piste principale (un bout de clip, ou une image figée). */
 export type Piece = {
@@ -39,6 +41,11 @@ export type Piece = {
   ramp: Ramp | null;
   /** Mini-ralentis posés automatiquement sur les kills (en plus du ralenti réglé à la main) */
   killRamps: Ramp[];
+  /**
+   * Courbe de vitesse (2 points ou plus, temps du clip source) : remplace `speed` ; la vitesse passe en douceur
+   * d'un point à l'autre (ralenti qui repart en accéléré…). Les ralentis ci-dessus s'appliquent par-dessus.
+   */
+  curve: SpeedPt[];
   volume: number;
   trackVolumes: number[];
   transition: Transition;
@@ -155,7 +162,16 @@ export type Project = {
   tracks: Track[];
   /** Touches clavier / souris incrustées */
   keys: { on: boolean; x: number; y: number; scale: number };
+  /** Fondu au noir (image et son) sur les dernières secondes du montage ; 0 ou absent = aucun */
+  endFade?: number;
 };
+
+/** Fondu de fin : 1 = normal, 0 = noir (à l'instant t d'un montage de durée total). */
+export function endFadeAt(p: Project, t: number, total: number): number {
+  const d = Math.min(p.endFade ?? 0, total);
+  if (d <= 0.01) return 1;
+  return Math.max(0, Math.min(1, (total - t) / d));
+}
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -191,6 +207,7 @@ export function normalizePiece(p: Partial<Piece> & { path: string }): Piece {
     speed: p.speed ?? 1,
     ramp: p.ramp ?? null,
     killRamps: p.killRamps ?? [],
+    curve: p.curve ?? [],
     volume: p.volume ?? 1,
     trackVolumes: p.trackVolumes ?? [],
     transition: p.transition ?? "none",
@@ -413,12 +430,33 @@ export const clampSpeed = (s: number) => Math.min(4, Math.max(0.25, s || 1));
 /** Ralentis du morceau : celui réglé à la main, puis ceux posés sur les kills. */
 export const rampsOf = (p: Piece): Ramp[] => (p.ramp ? [p.ramp, ...(p.killRamps ?? [])] : p.killRamps ?? []);
 
-/** Vitesse à l'instant source s (ralentis compris ; s'ils se chevauchent, le plus lent l'emporte). */
+/** Le morceau a une courbe de vitesse (au moins deux points). */
+export const hasCurve = (p: Piece) => (p.curve?.length ?? 0) >= 2;
+
+/** Vitesse de la courbe à l'instant source s : passage en douceur (et proportionnel, ×2 comme ÷2) entre deux points. */
+export function curveAt(curve: SpeedPt[], s: number): number {
+  if (!curve.length) return 1;
+  if (s <= curve[0].t) return clampSpeed(curve[0].v);
+  for (let i = 1; i < curve.length; i++) {
+    const a = curve[i - 1], b = curve[i];
+    if (s <= b.t) {
+      const k = b.t - a.t > 1e-6 ? smooth((s - a.t) / (b.t - a.t)) : 1;
+      const va = clampSpeed(a.v), vb = clampSpeed(b.v);
+      return va * Math.pow(vb / va, k);
+    }
+  }
+  return clampSpeed(curve[curve.length - 1].v);
+}
+
+/** Vitesse variable : ralentis (main ou kills) ou courbe. */
+export const isVariable = (p: Piece) => rampsOf(p).length > 0 || hasCurve(p);
+
+/** Vitesse à l'instant source s (ralentis et accélérés compris ; s'ils se chevauchent, le plus marqué l'emporte). */
 export function speedAt(p: Piece, s: number): number {
-  const v = clampSpeed(p.speed);
+  const v = hasCurve(p) ? curveAt(p.curve, s) : clampSpeed(p.speed);
   let out = v;
   for (const r of rampsOf(p)) {
-    const slow = Math.min(v, Math.max(0.1, r.speed));
+    const slow = Math.min(4, Math.max(0.1, r.speed));
     const a = r.at - r.dur / 2, b = r.at + r.dur / 2, e = Math.max(0.01, r.ease);
     if (s < a - e || s > b + e) continue;
     let here = slow;
@@ -426,16 +464,49 @@ export function speedAt(p: Piece, s: number): number {
       const p01 = s < a ? (s - (a - e)) / e : 1 - (s - b) / e;
       here = v + (slow - v) * smooth(Math.min(1, Math.max(0, p01)));
     }
-    out = Math.min(out, here);
+    if (Math.abs(Math.log(here / v)) > Math.abs(Math.log(out / v))) out = here;
   }
   return out;
 }
 
-/** Découpe pour l'export : intervalles source à vitesse constante (les rampes en marches fines). */
-export function speedSegments(p: Piece): { start: number; end: number; speed: number }[] {
+type Seg = { start: number; end: number; speed: number };
+/** Découpes déjà calculées (un morceau modifié est un nouvel objet : le cache ne vieillit pas) */
+const segCache = new WeakMap<Piece, Seg[]>();
+
+/**
+ * Intervalles source à vitesse constante (les rampes en marches fines). Même découpe pour l'aperçu, la longueur
+ * du morceau et l'export (qui en fait une seule courbe de vitesse : un décodage par morceau).
+ */
+export function speedSegments(p: Piece): Seg[] {
+  const hit = segCache.get(p);
+  if (hit) return hit;
+  const out = computeSegments(p);
+  segCache.set(p, out);
+  return out;
+}
+
+/** Vitesse de la marche qui contient l'instant source s (celle que l'export applique). */
+export function segSpeedAt(p: Piece, s: number): number {
+  const segs = speedSegments(p);
+  for (const g of segs) if (s < g.end) return g.speed;
+  return segs[segs.length - 1]?.speed ?? clampSpeed(p.speed);
+}
+
+function computeSegments(p: Piece): Seg[] {
   const ramps = rampsOf(p);
-  if (!ramps.length) return [{ start: p.start, end: p.end, speed: clampSpeed(p.speed) }];
+  if (!isVariable(p)) return [{ start: p.start, end: p.end, speed: clampSpeed(p.speed) }];
   const cuts = new Set<number>([p.start, p.end]);
+  // Courbe : une marche tous les 1/15 s du clip là où la vitesse change (l'export en fait une seule courbe)
+  if (hasCurve(p)) {
+    for (let i = 1; i < p.curve.length; i++) {
+      const a = p.curve[i - 1], b = p.curve[i];
+      cuts.add(a.t);
+      cuts.add(b.t);
+      if (Math.abs(a.v - b.v) < 1e-3) continue;
+      const n = Math.max(2, Math.ceil((b.t - a.t) * 15));
+      for (let k = 1; k < n; k++) cuts.add(a.t + ((b.t - a.t) * k) / n);
+    }
+  }
   // 5 marches par transition : assez fin pour être fluide, sans multiplier les lectures du fichier à l'export
   const STEPS = 5;
   for (const r of ramps) {
@@ -450,7 +521,7 @@ export function speedSegments(p: Piece): { start: number; end: number; speed: nu
   for (let i = 1; i < list.length; i++) {
     const s0 = list[i - 1], s1 = list[i];
     if (s1 - s0 < 0.02) continue;
-    out.push({ start: s0, end: s1, speed: speedAt(p, (s0 + s1) / 2) });
+    out.push({ start: s0, end: s1, speed: clampSpeed(speedAt(p, (s0 + s1) / 2)) });
   }
   return out.length ? out : [{ start: p.start, end: p.end, speed: clampSpeed(p.speed) }];
 }
@@ -458,14 +529,14 @@ export function speedSegments(p: Piece): { start: number; end: number; speed: nu
 /** Durée de sortie d'un morceau (vitesse, rampe ou arrêt sur image compris). */
 export function outLen(p: Piece): number {
   if (p.kind === "freeze") return Math.max(0.1, p.hold);
-  if (!rampsOf(p).length) return Math.max(0.05, p.end - p.start) / clampSpeed(p.speed);
+  if (!isVariable(p)) return Math.max(0.05, p.end - p.start) / clampSpeed(p.speed);
   return Math.max(0.05, speedSegments(p).reduce((acc, s) => acc + (s.end - s.start) / s.speed, 0));
 }
 
 /** Temps source pour un temps local de sortie (aperçu). */
 export function srcAt(p: Piece, local: number): number {
   if (p.kind === "freeze") return p.start;
-  if (!rampsOf(p).length) return Math.min(p.end, p.start + Math.max(0, local) * clampSpeed(p.speed));
+  if (!isVariable(p)) return Math.min(p.end, p.start + Math.max(0, local) * clampSpeed(p.speed));
   let acc = 0;
   for (const s of speedSegments(p)) {
     const len = (s.end - s.start) / s.speed;
@@ -479,7 +550,7 @@ export function srcAt(p: Piece, local: number): number {
 export function localAt(p: Piece, src: number): number | null {
   if (src < p.start - 1e-6 || src > p.end + 1e-6) return null;
   if (p.kind === "freeze") return 0;
-  if (!rampsOf(p).length) return (src - p.start) / clampSpeed(p.speed);
+  if (!isVariable(p)) return (src - p.start) / clampSpeed(p.speed);
   let acc = 0;
   for (const s of speedSegments(p)) {
     if (src <= s.end) return acc + (Math.max(src, s.start) - s.start) / s.speed;

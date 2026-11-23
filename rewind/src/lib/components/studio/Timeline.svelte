@@ -6,7 +6,7 @@
   } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { studio, media, fmtTime } from "$lib/studio/store.svelte";
-  import { outLen, localAt, fxInfo, isFullBlur, type Layer, type AudioItem, type Piece, type Track } from "$lib/studio/model";
+  import { outLen, localAt, fxInfo, isFullBlur, isVariable, hasCurve, type Layer, type AudioItem, type Piece, type Track } from "$lib/studio/model";
   import { momentTone } from "$lib/moments";
   import { fontOf } from "$lib/studio/fonts";
   import MomentIcon from "../MomentIcon.svelte";
@@ -27,7 +27,19 @@
 
   const P = $derived(studio.project);
   const L = $derived(studio.lay);
-  const total = $derived(Math.max(studio.total, 4));
+  /**
+   * Échelle gardée pendant et après un rognage (comme Medal) : avant, l'échelle suivait la durée du montage,
+   * donc raccourcir un morceau zoomait toute la frise sous la souris (« ça nous tire sur le côté »).
+   * Revient à la normale au bouton « Tout voir », en changeant de projet ou de nombre de morceaux.
+   */
+  let keepTotal = $state(0);
+  const total = $derived(Math.max(studio.total, keepTotal, 4));
+  // (clé simple : l'effet ne repart que si le projet ou le nombre de morceaux change, pas à chaque modification)
+  const pieceKey = $derived(`${P.id}:${P.pieces.length}`);
+  $effect(() => {
+    void pieceKey;
+    untrack(() => (keepTotal = 0));
+  });
   const fitPps = $derived(Math.max(2, (width - HEAD - PAD * 2 - 40) / total));
   const pps = $derived(fitPps * studio.zoom);
   const contentW = $derived(HEAD + PAD * 2 + total * pps + 200);
@@ -179,6 +191,7 @@
   }
   function trimDown(e: PointerEvent, it: Layer | AudioItem, side: "start" | "end", tr: Track) {
     e.stopPropagation();
+    keepTotal = total;
     if (tr.locked) return;
     studio.select({ type: tr.kind === "audio" ? "audio" : "layer", id: it.uid });
     studio.snapshot();
@@ -195,6 +208,7 @@
   }
   function pieceTrimDown(e: PointerEvent, p: Piece, side: "start" | "end") {
     e.stopPropagation();
+    keepTotal = total;
     studio.select({ type: "piece", id: p.uid });
     studio.snapshot();
     drag = { kind: "trimPiece", id: p.uid, side, x0: e.clientX, v0: p.kind === "freeze" ? p.hold : side === "start" ? p.start : p.end, speed: p.speed, freeze: p.kind === "freeze", len0: outLen(p) };
@@ -260,7 +274,7 @@
         tip = { x: X(off + d.len0 - len), text: fmtTime(len, true) };
       } else {
         let end = Math.min(p.srcDur, Math.max(p.start + 0.2, d.v0 + src));
-        if (!p.ramp && !p.killRamps?.length) {
+        if (!isVariable(p)) {
           const edge = snap(off + (end - p.start) / d.speed, p.uid);
           end = Math.min(p.srcDur, Math.max(p.start + 0.2, p.start + (edge - off) * d.speed));
         }
@@ -413,7 +427,7 @@
     <button class="btn icon small ghost" onclick={() => (studio.zoom = Math.max(1, studio.zoom / 1.4))} title={t("Dézoomer (-)")}><ZoomOut size={15} /></button>
     <input class="zoom" type="range" min="1" max="60" step="0.1" bind:value={studio.zoom} aria-label={t("Zoom de la frise")} />
     <button class="btn icon small ghost" onclick={() => (studio.zoom = Math.min(60, studio.zoom * 1.4))} title={t("Zoomer (+)")}><ZoomIn size={15} /></button>
-    <button class="btn icon small ghost" onclick={() => (studio.zoom = 1)} title={t("Tout voir")}><Maximize2 size={15} /></button>
+    <button class="btn icon small ghost" onclick={() => { studio.zoom = 1; keepTotal = 0; }} title={t("Tout voir")}><Maximize2 size={15} /></button>
   </div>
 
   <div class="scroll" bind:this={scroller} bind:clientWidth={width} onscroll={() => (scrollX = scroller?.scrollLeft ?? 0)} onwheel={wheel}>
@@ -492,7 +506,7 @@
                 <!-- Image figée : la vignette de l'image tenue + un flocon ; le nom seulement s'il y a la place -->
                 <span class="ptitle frz" class:narrow={w < 110} title={t("Image figée")}><Snowflake size={11} />{#if w >= 110}{t("Image figée")}{/if}</span>
               {:else}
-                <span class="ptitle" class:after={i > 0}>{p.title}{#if p.speed !== 1 || p.ramp || p.killRamps?.length} · {p.ramp || p.killRamps?.length ? t("ralenti") : `${p.speed}×`}{/if}</span>
+                <span class="ptitle" class:after={i > 0}>{p.title}{#if p.speed !== 1 || isVariable(p)} · {hasCurve(p) ? t("courbe") : p.ramp || p.killRamps?.length ? t("ralenti") : `${p.speed}×`}{/if}</span>
                 {#each studio.momentsOf(p) as m}
                   {@const lt = localAt(p, m.time)}
                   {#if lt !== null}<span class="mk {momentTone(m.kind)}" class:precise={m.precise} style="left:{lt * pps}px" title={m.precise ? t("{x} · moment exact où le kill apparaît", { x: t(m.label) }) : t(m.label)}><MomentIcon kind={m.kind} size={13} /></span>{/if}

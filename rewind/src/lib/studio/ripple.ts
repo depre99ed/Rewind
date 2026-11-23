@@ -46,7 +46,7 @@ export function anchorItems(p: Project): Map<string, Anchor> {
 
 /** La piste principale a-t-elle changé de minutage ? (sinon rien à recaler) */
 export function timingKey(pieces: Piece[]): string {
-  return pieces.map((x) => `${x.uid}:${x.start}:${x.end}:${x.speed}:${x.hold}:${x.kind}:${x.transition}:${x.transitionDur}:${JSON.stringify(x.ramp)}:${JSON.stringify(x.killRamps ?? [])}`).join("|");
+  return pieces.map((x) => `${x.uid}:${x.start}:${x.end}:${x.speed}:${x.hold}:${x.kind}:${x.transition}:${x.transitionDur}:${JSON.stringify(x.ramp)}:${JSON.stringify(x.killRamps ?? [])}:${JSON.stringify(x.curve ?? [])}`).join("|");
 }
 
 /**

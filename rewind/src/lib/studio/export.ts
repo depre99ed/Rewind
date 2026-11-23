@@ -5,7 +5,7 @@ import { api } from "../api";
 import { t } from "../i18n.svelte";
 import {
   type Layer, type Project, type AudioItem,
-  clampSpeed, fadeWindows, frameSize, isFilterFx, kfValue, layerState, layout, opacityAnimated, projectTotal, mergePunches, smooth, speedSegments, typeDur,
+  clampSpeed, fadeWindows, isVariable, frameSize, isFilterFx, kfValue, layerState, layout, opacityAnimated, projectTotal, mergePunches, smooth, speedSegments, typeDur,
   LETTER_IN, LETTER_OUT, letterSpan,
 } from "./model";
 import { textPng, keysPngs, keysSize, layoutLabels, presetOf, fxPng } from "./render";
@@ -102,7 +102,7 @@ export async function compile(p: Project, o: ExportOptions, onStep: (s: string) 
   const total = projectTotal(p, lay);
   await loadFonts();
 
-  // ---- Piste principale (rampes de ralenti découpées en marches fines) ----
+  // ---- Piste principale (ralentis / accélérés : marches fines, appliquées en une courbe par le moteur) ----
   const pieces: any[] = [];
   p.pieces.forEach((pc) => {
     const color = [pc.color.b, pc.color.c, pc.color.s];
@@ -111,13 +111,10 @@ export async function compile(p: Project, o: ExportOptions, onStep: (s: string) 
       pieces.push({ path: pc.path, start: pc.start, end: pc.start + 0.05, speed: 1, volume: 0, track_volumes: [], transition: pc.transition, transition_dur: pc.transitionDur, clip_id: "", freeze: Math.max(0.1, pc.hold), color });
       return;
     }
-    const segs = speedSegments(pc);
-    segs.forEach((s, j) => {
-      const last = j === segs.length - 1;
-      pieces.push({
-        path: pc.path, start: s.start, end: s.end, speed: clampSpeed(s.speed), volume: pc.volume, track_volumes: tracks,
-        transition: last ? pc.transition : "none", transition_dur: pc.transitionDur, clip_id: pc.clipId, freeze: 0, color,
-      });
+    const segs = isVariable(pc) ? speedSegments(pc).map((s) => [s.start, s.end, clampSpeed(s.speed)]) : [];
+    pieces.push({
+      path: pc.path, start: pc.start, end: pc.end, speed: clampSpeed(pc.speed), volume: pc.volume, track_volumes: tracks,
+      transition: pc.transition, transition_dur: pc.transitionDur, clip_id: pc.clipId, freeze: 0, color, segs,
     });
   });
 
@@ -238,7 +235,7 @@ export async function compile(p: Project, o: ExportOptions, onStep: (s: string) 
 
   return {
     title: o.title, w: W, h: H, fit: p.fit, short: o.short, fps: o.fps, max_mb: o.maxMb, total,
-    pieces, zoom, layers, audio, keys, effects,
+    pieces, zoom, layers, audio, keys, effects, end_fade: Math.min(p.endFade ?? 0, total),
   };
 }
 

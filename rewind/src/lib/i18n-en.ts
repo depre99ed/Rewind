@@ -1277,4 +1277,18 @@ export const EN: Record<string, string> = {
   "Raccourcissement impossible": "Can't trim the clip",
   "Bastarda brodée": "Stitched Bastarda",
   "Blaka creuse": "Hollow Blaka",
+  // --- Vitesse au kill, fondu de fin (2026-11-23)
+  "Vitesse au kill": "Speed on kill",
+  "Ralenti": "Slow-mo",
+  "Accéléré": "Speed-up",
+  "Fondu au noir à la fin": "Fade to black at the end",
+  "L'image et le son s'éteignent doucement sur les dernières secondes.": "Picture and sound fade out over the last seconds.",
+  // --- Courbe de vitesse (2026-11-23)
+  "Courbe de vitesse": "Speed curve",
+  "Ralenti → accéléré": "Slow → fast",
+  "Accéléré → ralenti": "Fast → slow",
+  "Creux au milieu": "Dip in the middle",
+  "Point de vitesse": "Speed point",
+  "courbe": "curve",
+  "Tire les points. Clic sur la courbe : un point de plus ; double-clic sur un point : retiré. La vitesse passe en douceur d'un point à l'autre ; textes et effets suivent l'image.": "Drag the points. Click the curve to add a point; double-click a point to remove it. Speed changes smoothly from one point to the next; texts and effects follow the picture.",
 };

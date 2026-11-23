@@ -237,7 +237,7 @@ class StudioStore {
     if (!this.gesture || now - this.gesture.at > 2000) {
       this.gesture = {
         anchors: this.follow ? anchorItems(this.project) : new Map(),
-        pieces: new Map(this.project.pieces.map((x) => [x.uid, { ...x, ramp: x.ramp ? { ...x.ramp } : null, killRamps: (x.killRamps ?? []).map((r) => ({ ...r })), zoom: [...x.zoom] }])),
+        pieces: new Map(this.project.pieces.map((x) => [x.uid, { ...x, ramp: x.ramp ? { ...x.ramp } : null, killRamps: (x.killRamps ?? []).map((r) => ({ ...r })), curve: (x.curve ?? []).map((k) => ({ ...k })), zoom: [...x.zoom] }])),
         key: timingKey(this.project.pieces),
         at: now,
       };
@@ -254,7 +254,7 @@ class StudioStore {
     const pr = this.project;
     pr.pieces = pr.pieces.map((x) => {
       const b = g.pieces.get(x.uid);
-      const timing = b && (b.speed !== x.speed || b.start !== x.start || JSON.stringify(b.ramp) !== JSON.stringify(x.ramp) || JSON.stringify(b.killRamps) !== JSON.stringify(x.killRamps));
+      const timing = b && (b.speed !== x.speed || b.start !== x.start || JSON.stringify(b.ramp) !== JSON.stringify(x.ramp) || JSON.stringify(b.killRamps) !== JSON.stringify(x.killRamps) || JSON.stringify(b.curve ?? []) !== JSON.stringify(x.curve ?? []));
       return timing ? { ...x, zoom: remapZoom(b, { ...x, zoom: b.zoom }) } : x;
     });
     if (this.follow) reanchor(pr, g.anchors);
@@ -474,7 +474,8 @@ class StudioStore {
   }
   setSpeed(v: number, id = this.piece?.uid) {
     if (!id) return;
-    this.updatePiece(id, { speed: clampSpeed(v) });
+    // Une vitesse fixe remplace la courbe de vitesse
+    this.updatePiece(id, { speed: clampSpeed(v), curve: [] });
     this.say(t("Vitesse {v}×", { v }));
   }
   setTransition(k: number, type: Transition, dur?: number) {
@@ -494,7 +495,7 @@ class StudioStore {
     const p = this.project.pieces[i];
     if (!p || p.kind === "freeze") return;
     const cut = this.srcTime(i, this.t);
-    const frozen = normalizePiece({ ...p, uid: uid(), kind: "freeze", start: cut, end: Math.min(p.srcDur, cut + 0.05), hold, ramp: null, killRamps: [], zoom: [], transition: "none" });
+    const frozen = normalizePiece({ ...p, uid: uid(), kind: "freeze", start: cut, end: Math.min(p.srcDur, cut + 0.05), hold, ramp: null, killRamps: [], curve: [], zoom: [], transition: "none" });
     this.edit((pr) => {
       const list = [...pr.pieces];
       if (cut - p.start < 0.1) list.splice(i, 0, frozen);

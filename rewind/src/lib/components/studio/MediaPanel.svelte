@@ -132,6 +132,7 @@
   const anyKillFx = $derived(kfx.flash.on || kfx.shake.on || kfx.punch.on || kfx.slow.on);
   const sec = (v: number) => `${v.toFixed(2).replace(".", ",")} s`;
   const pct = (v: number) => `${Math.round(v * 100)} %`;
+  const times = (v: number) => `${v.toFixed(2).replace(/\.?0+$/, "").replace(".", ",")}×`;
   const signed = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(2).replace(".", ",")} s`;
 
   const FX_ICON: Record<FxKind, typeof Vibrate> = {
@@ -245,13 +246,21 @@
           <Slider label={t("Intensité")} value={kfx.flash.strength} min={0.1} max={1} step={0.05} def={0.6} format={pct} oninput={(v) => (kfx.flash.strength = v)} />
           <Slider label={t("Durée")} value={kfx.flash.dur} min={0.1} max={1} step={0.05} def={0.25} format={sec} oninput={(v) => (kfx.flash.dur = v)} />
         {/if}
-        <label class="ktog"><input type="checkbox" bind:checked={kfx.slow.on} /><span>{t("Mini-ralenti")}</span></label>
+        <label class="ktog"><input type="checkbox" bind:checked={kfx.slow.on} /><span>{t("Vitesse au kill")}</span></label>
         {#if kfx.slow.on}
-          <Slider label={t("Vitesse")} value={kfx.slow.speed} min={0.15} max={0.8} step={0.05} def={0.35} format={pct} oninput={(v) => (kfx.slow.speed = v)} />
+          <div class="chips">
+            <button class="chip" class:on={kfx.slow.speed < 1} onclick={() => (kfx.slow.speed = 0.35)}>{t("Ralenti")}</button>
+            <button class="chip" class:on={kfx.slow.speed > 1} onclick={() => (kfx.slow.speed = 2)}>{t("Accéléré")}</button>
+          </div>
+          {#if kfx.slow.speed < 1}
+            <Slider label={t("Vitesse")} value={kfx.slow.speed} min={0.15} max={0.8} step={0.05} def={0.35} format={times} oninput={(v) => (kfx.slow.speed = v)} />
+          {:else}
+            <Slider label={t("Vitesse")} value={kfx.slow.speed} min={1.25} max={4} step={0.05} def={2} format={times} oninput={(v) => (kfx.slow.speed = v)} />
+          {/if}
           <Slider label={t("Durée")} value={kfx.slow.dur} min={0.2} max={2} step={0.05} def={0.5} format={sec} oninput={(v) => (kfx.slow.dur = v)} />
           <p class="note">{t("Tes textes et effets suivent l'image ; la musique ne bouge pas.")}</p>
         {/if}
-        <Slider label={t("Décalage")} value={kfx.offset} min={-0.5} max={0.5} step={0.02} def={0} format={signed} oninput={(v) => (kfx.offset = v)} />
+        <Slider label={t("Décalage")} value={kfx.offset} min={-0.5} max={0.5} step={0.02} def={-0.2} format={signed} oninput={(v) => (kfx.offset = v)} />
         <div class="chips">
           <button class="chip" class:on={kfx.scope === "all"} onclick={() => (kfx.scope = "all")}>{t("Tout le montage")}</button>
           <button class="chip" class:on={kfx.scope === "piece"} disabled={!studio.piece} onclick={() => (kfx.scope = "piece")}>{t("Morceau choisi")}</button>

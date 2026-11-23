@@ -286,6 +286,9 @@ pub struct Piece {
     pub freeze: f64,
     /// Réglages couleur [luminosité, contraste, saturation] (1 = neutre, mêmes formules que les filtres CSS)
     pub color: Vec<f64>,
+    /// Vitesse variable (ralentis et accélérés des kills) : [(début, fin, vitesse)] en temps source, à la
+    /// suite, de `start` à `end`. Vide : `speed` partout. Un seul passage de décodage par morceau à l'export.
+    pub segs: Vec<(f64, f64, f64)>,
 }
 
 impl Default for Piece {
@@ -302,6 +305,7 @@ impl Default for Piece {
             track_volumes: Vec::new(),
             transition: "none".into(),
             transition_dur: 0.5,
+            segs: Vec::new(),
         }
     }
 }
@@ -356,7 +360,6 @@ pub(crate) fn key_intervals(pieces: &[Piece]) -> std::collections::BTreeMap<u16,
         if k > 0 {
             offset -= trans[k];
         }
-        let speed = p.speed.clamp(0.25, 4.0);
         if !p.clip_id.is_empty() {
             let mut events = crate::inputs::for_clip(&p.clip_id);
             events.sort_by(|a, b| a.t.total_cmp(&b.t));
@@ -364,7 +367,7 @@ pub(crate) fn key_intervals(pieces: &[Piece]) -> std::collections::BTreeMap<u16,
             let mut push = |key: u16, a: f64, b: f64| {
                 let (a, b) = (a.max(p.start), b.min(p.end));
                 if b > a {
-                    let (oa, ob) = (offset + (a - p.start) / speed, offset + (b - p.start) / speed);
+                    let (oa, ob) = (offset + src_to_out(p, a), offset + src_to_out(p, b));
                     out.entry(key).or_default().push((oa, ob.max(oa + 0.05)));
                 }
             };
@@ -523,7 +526,26 @@ pub fn out_len(p: &Piece) -> f64 {
     if p.freeze > 0.0 {
         return p.freeze.max(0.1);
     }
+    if !p.segs.is_empty() {
+        return p.segs.iter().map(|&(a, b, v)| (b - a).max(0.0) / v.clamp(0.25, 4.0)).sum::<f64>().max(0.05);
+    }
     (p.end - p.start).max(0.05) / p.speed.clamp(0.25, 4.0)
+}
+
+/// Temps de sortie (depuis le début du morceau) d'un instant `s` du clip source.
+pub fn src_to_out(p: &Piece, s: f64) -> f64 {
+    if p.segs.is_empty() {
+        return (s - p.start) / p.speed.clamp(0.25, 4.0);
+    }
+    let mut acc = 0.0;
+    for &(a, b, v) in &p.segs {
+        let v = v.clamp(0.25, 4.0);
+        if s <= b {
+            return acc + (s.max(a) - a) / v;
+        }
+        acc += (b - a).max(0.0) / v;
+    }
+    acc
 }
 
 /// Durée de chaque transition : `d[k]` = chevauchement entre le morceau k-1 et le morceau k

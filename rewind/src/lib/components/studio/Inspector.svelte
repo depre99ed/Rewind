@@ -10,8 +10,10 @@
   import { momentTone } from "$lib/moments";
   import MomentIcon from "../MomentIcon.svelte";
   import Slider from "./Slider.svelte";
-  import { kfValue, outLen, localAt, fxInfo, isFilterFx, isFullBlur, type Color, type Fit, type Format, type TextAnimIn, type TextAnimOut } from "$lib/studio/model";
-  import { FONTS, FONT_GROUPS } from "$lib/studio/fonts";
+  import { kfValue, outLen, localAt, fxInfo, isFilterFx, isPunch, isFullBlur, type Color, type Fit, type Format, type TextAnimIn, type TextAnimOut } from "$lib/studio/model";
+  import { FONTS, fontOf } from "$lib/studio/fonts";
+  import FontPicker from "./FontPicker.svelte";
+  import { LOOKS as TEXT_LOOKS, type TextLook } from "$lib/studio/textfx";
   import { t } from "$lib/i18n.svelte";
 
   const P = $derived(studio.project);
@@ -47,6 +49,13 @@
   const ANIM_IN: { id: TextAnimIn; label: string }[] = [
     { id: "none", label: "Aucune" }, { id: "fade", label: "Fondu" }, { id: "pop", label: "Pop" }, { id: "slide", label: "Glisser" }, { id: "type", label: "Machine à écrire" },
   ];
+  /** Animations lettre par lettre (chaque lettre arrive à son tour) */
+  const ANIM_IN_LETTERS: { id: TextAnimIn; label: string }[] = [
+    { id: "letters", label: "Lettre par lettre" }, { id: "drop", label: "Chute" }, { id: "rise", label: "Montée" }, { id: "spin", label: "Tourbillon" }, { id: "blur", label: "Mise au point" }, { id: "glitch", label: "Glitch" },
+  ];
+  const ANIM_OUT_LETTERS: { id: TextAnimOut; label: string }[] = [
+    { id: "letters", label: "Lettre par lettre" }, { id: "drop", label: "Chute" }, { id: "blur", label: "Flou" },
+  ];
   const ANIM_OUT: { id: TextAnimOut; label: string }[] = [
     { id: "none", label: "Aucune" }, { id: "fade", label: "Fondu" }, { id: "pop", label: "Pop" }, { id: "slide", label: "Glisser" },
   ];
@@ -61,6 +70,11 @@
   }
 
   // Historique : une seule entrée par geste (au début du glissement d'un curseur)
+  /** Rendu « edit » d'un texte : modifie un réglage (part du chrome 3D si le texte était plat) */
+  function setLook(id: string, cur: TextLook | null | undefined, patch: Partial<TextLook>, rec = true) {
+    studio.updateLayer(id, { look: { ...(cur ?? TEXT_LOOKS[0].look), ...patch } }, rec);
+  }
+  let fontPicker = $state(false);
   const begin = () => studio.snapshot();
   const finish = () => {};
   const pct = (v: number) => `${Math.round(v * 100)} %`;
@@ -178,12 +192,39 @@
       <textarea class="field area" value={layer.text} onfocus={begin} oninput={(e) => studio.updateLayer(layer.uid, { text: e.currentTarget.value }, false)} rows="2"></textarea>
       <section>
         <header><Type size={14} /><h4>{t("Police")}</h4></header>
-        {#each FONT_GROUPS as g}
-          <span class="mini">{t(g.label)}</span>
-          <div class="fonts">
-            {#each FONTS.filter((f) => f.group === g.id) as f}<button class="font" class:on={layer.font === f.id} style="font-family:'{f.family}';font-weight:{f.weight}" onclick={() => studio.updateLayer(layer.uid, { font: f.id })}>{f.label}</button>{/each}
-          </div>
-        {/each}
+        <!-- Toutes les polices en grand, dans une fenêtre plein écran -->
+        <button class="fontpick" onclick={() => (fontPicker = true)} title={t("Voir toutes les polices en grand")}>
+          <span class="fp-sample" style="font-family:'{fontOf(layer.font).family}';font-weight:{fontOf(layer.font).weight}">{(layer.text || fontOf(layer.font).label).split(/\r?\n/)[0].slice(0, 18)}</span>
+          <span class="fp-meta"><b>{fontOf(layer.font).label}</b><small>{t("{n} polices · voir en grand", { n: FONTS.length })}</small></span>
+        </button>
+        {#if fontPicker}
+          <FontPicker text={layer.text} current={layer.font} look={layer.look} color={layer.color} onpick={(id, look) => studio.updateLayer(layer.uid, { font: id, look, ...(look && look.fill !== "solid" ? { color: "#ffffff" } : {}) })} onclose={() => (fontPicker = false)} />
+        {/if}
+      </section>
+      <section>
+        <header><Sparkles size={14} /><h4>{t("Rendu")}</h4></header>
+        <div class="chips">
+          <button class="chip" class:on={!layer.look} onclick={() => studio.updateLayer(layer.uid, { look: null })}>{t("Plat")}</button>
+          {#each TEXT_LOOKS as lk}<button class="chip" class:on={!!layer.look && JSON.stringify(layer.look) === JSON.stringify(lk.look)} onclick={() => studio.updateLayer(layer.uid, { look: structuredClone(lk.look), ...(lk.look.fill !== "solid" ? { color: "#ffffff" } : {}) })}>{t(lk.label)}</button>{/each}
+        </div>
+        {#if layer.look}
+          {#if layer.look.fill === "metal"}
+            <div class="row"><span>{t("Teinte du métal")}</span><label class="sw custom" style="background:{layer.look.tint}" title={t("Teinte du métal")}><input type="color" value={layer.look.tint} onchange={(e) => setLook(layer.uid, layer.look, { tint: e.currentTarget.value })} /></label></div>
+          {/if}
+          <Slider label={t("Relief 3D")} value={layer.look.depth} min={0} max={1} step={0.05} def={0.55} format={pct} parse={parsePct} onstart={begin} oninput={(v) => setLook(layer.uid, layer.look, { depth: v }, false)} />
+          {#if layer.look.fill !== "solid"}<Slider label={t("Biseau")} value={layer.look.bevel} min={0} max={1} step={0.05} def={0.6} format={pct} parse={parsePct} onstart={begin} oninput={(v) => setLook(layer.uid, layer.look, { bevel: v }, false)} />{/if}
+          <Slider label={t("Étincelles")} value={layer.look.sparkle} min={0} max={1} step={0.05} def={0} format={pct} parse={parsePct} onstart={begin} oninput={(v) => setLook(layer.uid, layer.look, { sparkle: v }, false)} />
+          <label class="row"><span>{t("Éclat")}</span><span class="switch"><input type="checkbox" checked={!!layer.look.glow} onchange={(e) => setLook(layer.uid, layer.look, { glow: e.currentTarget.checked ? { color: layer.look?.fill === "solid" ? "#c8f031" : "#ffffff", strength: 0.45, size: 0.45 } : null })} /><span></span></span></label>
+          {#if layer.look.glow}
+            {@const g = layer.look.glow}
+            <div class="sub">
+              <label class="sw custom" style="background:{g.color}" title={t("Couleur de l'éclat")}><input type="color" value={g.color} onchange={(e) => setLook(layer.uid, layer.look, { glow: { ...g, color: e.currentTarget.value } })} /></label>
+              <Slider label={t("Force")} value={g.strength} min={0.05} max={1} step={0.05} def={0.45} format={pct} parse={parsePct} onstart={begin} oninput={(v) => setLook(layer.uid, layer.look, { glow: { ...g, strength: v } }, false)} />
+              <Slider label={t("Taille")} value={g.size} min={0.05} max={1} step={0.05} def={0.45} format={pct} parse={parsePct} onstart={begin} oninput={(v) => setLook(layer.uid, layer.look, { glow: { ...g, size: v } }, false)} />
+            </div>
+          {/if}
+          <p class="note">{t("Le rendu marche avec toutes les polices. Le métal ignore la couleur du texte ; le néon l'utilise.")}</p>
+        {/if}
       </section>
       <section>
         <header><Palette size={14} /><h4>{t("Style")}</h4></header>
@@ -219,8 +260,10 @@
         <header><Sparkles size={14} /><h4>{t("Animation")}</h4></header>
         <span class="mini">{t("Entrée")}</span>
         <div class="chips">{#each ANIM_IN as a}<button class="chip" class:on={layer.animIn === a.id} onclick={() => studio.updateLayer(layer.uid, { animIn: a.id })}>{t(a.label)}</button>{/each}</div>
+        <span class="mini">{t("Lettre par lettre")}</span>
+        <div class="chips">{#each ANIM_IN_LETTERS as a}<button class="chip" class:on={layer.animIn === a.id} onclick={() => studio.updateLayer(layer.uid, { animIn: a.id })}>{t(a.label)}</button>{/each}</div>
         <span class="mini">{t("Sortie")}</span>
-        <div class="chips">{#each ANIM_OUT as a}<button class="chip" class:on={layer.animOut === a.id} onclick={() => studio.updateLayer(layer.uid, { animOut: a.id })}>{t(a.label)}</button>{/each}</div>
+        <div class="chips">{#each ANIM_OUT as a}<button class="chip" class:on={layer.animOut === a.id} onclick={() => studio.updateLayer(layer.uid, { animOut: a.id })}>{t(a.label)}</button>{/each}{#each ANIM_OUT_LETTERS as a}<button class="chip" class:on={layer.animOut === a.id} onclick={() => studio.updateLayer(layer.uid, { animOut: a.id })}>{t(a.label)}</button>{/each}</div>
         <Slider label={t("Durée")} value={layer.animDur} min={0.1} max={1.5} step={0.05} def={0.35} format={(v) => `${v.toFixed(2)} s`} onstart={begin} oninput={(v) => studio.updateLayer(layer.uid, { animDur: v }, false)} />
       </section>
     {:else if layer.kind === "video"}
@@ -244,7 +287,10 @@
       {@const info = fxInfo(layer.fx)}
       <section>
         <header><Sparkles size={14} /><h4>{t("Effet")}</h4></header>
-        <p class="note">{t(info.hint)}. {t(isFilterFx(layer) ? "Agit sur toute l'image (vidéo et calques), pas sur les touches." : "Image plein cadre : une piste au-dessus passe devant.")}</p>
+        <p class="note">{t(info.hint)}. {t(isPunch(layer) ? "Agit sur le zoom de la vidéo, avec le zoom du morceau." : isFilterFx(layer) ? "Agit sur toute l'image (vidéo et calques), pas sur les touches." : "Image plein cadre : une piste au-dessus passe devant.")}</p>
+        {#if layer.fx === "flash"}
+          <label class="fxcolor">{t("Couleur")}<input type="color" value={layer.color || "#ffffff"} onchange={(e) => studio.updateLayer(layer.uid, { color: e.currentTarget.value })} /></label>
+        {/if}
         {#if info.slider}
           <Slider label={t("Intensité")} value={layer.strength} min={0.05} max={1} step={0.01} def={info.strength} format={pct} parse={parsePct} onstart={begin} oninput={(v) => studio.updateLayer(layer.uid, { strength: v }, false)} />
         {/if}
@@ -267,7 +313,7 @@
       {#if layer.kf.length}<button class="btn small ghost" onclick={() => studio.updateLayer(layer.uid, { kf: [] })}><Trash2 size={14} />{t("Retirer les points clés")}</button>{/if}
     </section>
     {/if}
-    {#if !isFilterFx(layer)}
+    {#if !isFilterFx(layer) && !isPunch(layer)}
     <section>
       <header><SunMoon size={14} /><h4>{t("Fondus")}</h4></header>
       <Slider label={t("Entrée")} value={layer.fadeIn} min={0} max={3} step={0.05} def={0} format={sec} onstart={begin} oninput={(v) => studio.updateLayer(layer.uid, { fadeIn: v }, false)} />
@@ -419,4 +465,12 @@
   .mark i.green { color: #3ddc97; }
   .mark i.dim { color: var(--text-3); }
   .mark small { font-size: 11px; color: var(--text-3); }
+  .fxcolor { display: flex; align-items: center; justify-content: space-between; height: 30px; font-size: 12.5px; color: var(--text-2); }
+  .fxcolor input { width: 34px; height: 22px; padding: 0; border: 1px solid var(--line-2); border-radius: 6px; background: none; }
+  .fontpick { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border-radius: 10px; background: #0d0e12; border: 1px solid var(--line); text-align: left; transition: border-color var(--dur) var(--ease); }
+  .fontpick:hover { border-color: var(--line-2); }
+  .fp-sample { flex: 1; min-width: 0; font-size: 26px; line-height: 1.2; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fp-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex: none; }
+  .fp-meta b { font-size: 12.5px; font-weight: 600; color: var(--text); }
+  .fp-meta small { font-size: 11px; color: var(--text-3); }
 </style>

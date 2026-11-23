@@ -1,7 +1,7 @@
 <script lang="ts">
   import {
     ArrowLeft, Play, Pause, Volume2, VolumeX, Maximize, Star, Send, FolderOpen, ExternalLink, Trash2,
-    Film, Gauge, ChevronLeft, ChevronRight, Loader2, Hash, Plus, X, MessageSquare, Keyboard, Users,
+    Film, Gauge, ChevronLeft, ChevronRight, Loader2, Hash, Plus, X, MessageSquare, Keyboard, Users, Scissors, Check,
   } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { friends } from "$lib/friends.svelte";
@@ -49,6 +49,65 @@
     }
   }
   let hoverT = $state<number | null>(null);
+
+  // ---- Raccourcir (comme Medal) : garder seulement un passage, sans passer par le Studio ----
+  const KILLS = new Set(["kill", "headshot", "onetap", "knife", "zeus", "collateral"]);
+  let trim = $state<{ start: number; end: number } | null>(null);
+  let trimDrag: "start" | "end" | null = null;
+  let trimSaving = $state(false);
+  let reload = $state(0);
+  /** Ouvre le mode Raccourcir, calé autour des kills s'il y en a (2,5 s avant le premier, 2 s après le dernier). */
+  function startTrim() {
+    const kills = clip.markers.filter((m) => KILLS.has(m.kind)).map((m) => m.time).sort((a, b) => a - b);
+    const start = kills.length ? Math.max(0, kills[0] - 2.5) : 0;
+    const end = kills.length ? Math.min(total, kills[kills.length - 1] + 2) : total;
+    trim = end - start >= 0.5 ? { start, end } : { start: 0, end: total };
+    seek(trim.start);
+    video?.play().catch(() => {});
+  }
+  function setTrim(side: "start" | "end", v: number) {
+    if (!trim) return;
+    if (side === "start") trim = { ...trim, start: Math.max(0, Math.min(v, trim.end - 0.5)) };
+    else trim = { ...trim, end: Math.min(total, Math.max(v, trim.start + 0.5)) };
+  }
+  function trimDown(e: PointerEvent, side: "start" | "end") {
+    e.stopPropagation();
+    trimDrag = side;
+    video?.pause();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+  function trimMove(e: PointerEvent) {
+    if (!trimDrag || !trim) return;
+    setTrim(trimDrag, at(e));
+    seek(trimDrag === "start" ? trim.start : trim.end); // on voit l'image du bord tiré
+  }
+  // Lecture en boucle sur la partie gardée
+  $effect(() => {
+    // seulement en lecture : à l'arrêt, on peut aller voir hors de la partie gardée (puis « Début ici »)
+    if (!trim || trimDrag || !playing) return;
+    if (time >= trim.end - 0.02 || time < trim.start - 0.25) seek(trim.start);
+  });
+  async function saveTrim() {
+    if (!trim || trimSaving) return;
+    const { start, end } = trim;
+    if (start <= 0.05 && end >= total - 0.05) { trim = null; return; }
+    trimSaving = true;
+    // Le lecteur lâche le fichier (Windows refuse de remplacer une vidéo ouverte)
+    video?.pause();
+    video?.removeAttribute("src");
+    video?.load();
+    try {
+      const c = await api.shortenClip(clip.id, start, end);
+      app.updateClip(c);
+      trim = null;
+      app.toast("ok", t("Clip raccourci"), t("{n} gardées · l'original est dans la Corbeille de Windows.", { n: formatDuration(c.duration) }));
+    } catch (e) {
+      app.toast("err", t("Raccourcissement impossible"), String(e));
+    } finally {
+      trimSaving = false;
+      reload++;
+    }
+  }
   let tagMenu = $state(false);
 
   const isShot = $derived(clip.kind === "screenshot");
@@ -117,6 +176,12 @@
   function key(e: KeyboardEvent) {
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (trim) {
+      if (e.key === "i" || e.key === "I") return setTrim("start", time);
+      if (e.key === "o" || e.key === "O") return setTrim("end", time);
+      if (e.key === "Enter") { e.preventDefault(); return void saveTrim(); }
+      if (e.key === "Escape") { e.preventDefault(); trim = null; return; }
+    }
     if (e.key === " " || e.key === "k") { e.preventDefault(); toggle(); }
     else if (e.key === "ArrowLeft") seek(time - (e.shiftKey ? 1 : 5));
     else if (e.key === "ArrowRight") seek(time + (e.shiftKey ? 1 : 5));
@@ -164,7 +229,7 @@
   const kindLabel = $derived(t(clip.kind === "auto" ? "Automatique" : clip.kind === "edit" ? "Montage" : clip.kind === "screenshot" ? "Capture" : clip.kind === "session" ? "Session" : clip.kind === "received" ? "Reçu" : "Manuel"));
 </script>
 
-<svelte:window onkeydown={key} onpointerup={() => (dragging = false)} />
+<svelte:window onkeydown={key} onpointerup={() => { dragging = false; trimDrag = null; }} onpointermove={trimMove} />
 
 <div class="viewer" style="--c:{color}">
   <div class="glow"></div>
@@ -183,7 +248,7 @@
       {#if isShot}
         <img src={fileUrl(clip.path)} alt={clip.title} />
       {:else}
-        {#key clip.id}
+        {#key `${clip.id}|${clip.size}|${reload}`}
           <!-- svelte-ignore a11y_media_has_caption -->
           <video
             bind:this={video}
@@ -214,9 +279,21 @@
           {#each placed as { m, lane }}
             <button class="marker {momentTone(m.kind)}" class:past={time >= m.time - 0.05} style="left:{pct(m.time)}%; --lane:{lane}" title="{m.label || KIND_LABEL[m.kind] || m.kind} · {formatDuration(m.time)}" aria-label={m.label || KIND_LABEL[m.kind] || m.kind} onpointerdown={(e) => { e.stopPropagation(); seek(Math.max(0, m.time - 2)); }}><MomentIcon kind={m.kind} size={16} /></button>
           {/each}
+          {#if trim}
+            <!-- Partie gardée : poignées de début et de fin, le reste assombri -->
+            <div class="trimout" style="left:0;width:{pct(trim.start)}%"></div>
+            <div class="trimout" style="left:{pct(trim.end)}%;right:0"></div>
+            <div class="trimzone" style="left:{pct(trim.start)}%;width:{pct(trim.end) - pct(trim.start)}%">
+              <span class="th l" onpointerdown={(e) => trimDown(e, "start")} role="slider" tabindex="-1" aria-label={t("Début")} aria-valuenow={trim.start}></span>
+              <span class="th r" onpointerdown={(e) => trimDown(e, "end")} role="slider" tabindex="-1" aria-label={t("Fin")} aria-valuenow={trim.end}></span>
+            </div>
+          {/if}
           <div class="knob" style="left:{pct(time)}%"></div>
           {#if hoverT !== null}<span class="tip mono" style="left:{pct(hoverT)}%">{formatDuration(hoverT)}</span>{/if}
         </div>
+        {#if !received && !trim}
+          <button class="btn small ghost" onclick={startTrim} title={t("Garder seulement un passage (calé sur tes kills)")}><Scissors size={15} />{t("Raccourcir")}</button>
+        {/if}
         {#if inputs.length}
           <button class="btn small ghost" class:on={showKeys} onclick={() => (showKeys = !showKeys)} title={t("Afficher les touches clavier / souris")}><Keyboard size={15} />{t("Touches")}</button>
         {/if}
@@ -225,7 +302,20 @@
         <input class="vol" type="range" min="0" max="1" step="0.02" bind:value={volume} />
         <button class="btn icon ghost" onclick={fullscreen} aria-label={t("Plein écran")}><Maximize size={16} /></button>
       </div>
+      {#if trim}
+        <div class="trimbar appear">
+          <Scissors size={15} />
+          <span>{t("Gardé")} <b class="mono">{formatDuration(trim.end - trim.start)}</b><span class="faint"> / {formatDuration(total)}</span></span>
+          <span class="faint mono">{formatDuration(trim.start)} → {formatDuration(trim.end)}</span>
+          <span class="grow"></span>
+          <button class="btn small ghost" onclick={() => setTrim("start", time)} title={t("Début à la tête de lecture (I)")}>{t("Début ici")}</button>
+          <button class="btn small ghost" onclick={() => setTrim("end", time)} title={t("Fin à la tête de lecture (O)")}>{t("Fin ici")}</button>
+          <button class="btn small ghost" onclick={() => (trim = null)} disabled={trimSaving}>{t("Annuler")}</button>
+          <button class="btn small primary" onclick={saveTrim} disabled={trimSaving}>{#if trimSaving}<Loader2 size={14} class="spin" />{t("Enregistrement…")}{:else}<Check size={14} />{t("Enregistrer")}{/if}</button>
+        </div>
+      {:else}
       <div class="hints faint">{t("Espace lecture · ← → 5 s · , . image par image · F plein écran · Page préc./suiv. clip voisin")}</div>
+      {/if}
     {/if}
   </div>
 
@@ -429,4 +519,14 @@
   .progress { display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; color: var(--text-2); padding: 12px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--line); }
   .pbar { height: 5px; border-radius: 5px; background: var(--panel-3); overflow: hidden; }
   .pbar i { display: block; height: 100%; background: var(--hi); transform-origin: left; transition: transform 200ms linear; }
+  /* Raccourcir */
+  .trimout { position: absolute; top: 50%; height: 14px; translate: 0 -50%; background: rgba(0, 0, 0, 0.62); pointer-events: none; z-index: 2; border-radius: 3px; }
+  .trimzone { position: absolute; top: 50%; height: 18px; translate: 0 -50%; border: 2px solid var(--hi); border-radius: 5px; pointer-events: none; z-index: 3; box-sizing: border-box; }
+  .th { position: absolute; top: -6px; bottom: -6px; width: 12px; border-radius: 4px; background: var(--hi); pointer-events: auto; cursor: ew-resize; touch-action: none; }
+  .th.l { left: -8px; }
+  .th.r { right: -8px; }
+  .th::after { content: ""; position: absolute; left: 50%; top: 30%; bottom: 30%; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--hi-ink, #0b0c0f); opacity: 0.6; }
+  .trimbar { display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 8px 8px 8px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); font-size: 13px; color: var(--text-2); }
+  .trimbar b { color: var(--text); font-weight: 600; }
+  .trimbar .grow { flex: 1; }
 </style>

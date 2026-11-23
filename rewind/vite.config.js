@@ -17,6 +17,9 @@ export default defineConfig(() => ({
     port: 1420,
     strictPort: true,
     host: host || "127.0.0.1",
+    // Développement seulement (serveur local) : sur le lecteur P:, Vite voyait les polices de node_modules
+    // « hors de la liste autorisée » et les refusait (403) ; l'appli publiée embarque ses polices.
+    fs: { strict: false },
     hmr: host
       ? {
           protocol: "ws",

@@ -8,7 +8,7 @@
   import { Play, Pause, SkipBack, SkipForward, Maximize, Film, Sparkles, RotateCw, FileX } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { studio, media, fmtTime } from "$lib/studio/store.svelte";
-  import { FORMAT_RATIO, frameSize, glitchShift, isFilterFx, kfValue, layerState, shakeAt, speedAt, type BlurLayer, type Layer, type Piece } from "$lib/studio/model";
+  import { FORMAT_RATIO, frameSize, glitchShift, isFilterFx, kfValue, layerState, punchAt, shakeAt, speedAt, type BlurLayer, type Layer, type Piece } from "$lib/studio/model";
   import { mixer, newAudioEl, Ducker } from "$lib/studio/mixer";
   import { fileUrl } from "$lib/api";
   import { t } from "$lib/i18n.svelte";
@@ -58,6 +58,8 @@
       media.loadStrip(p.path);
       media.loadInputs(p.clipId);
       if (customTracks(p)) media.loadStems(p.path);
+      // Kill feed : clips de Counter-Strike 2 seulement (analyse de quelques secondes, gardée en cache)
+      if (p.kind === "clip" && (/counter-strike|cs2/i.test(p.game) || p.markers.some((m) => m.kind !== "manual"))) media.loadFeed(p.path);
     }
     for (const tr of P.tracks) {
       if (tr.kind === "layer") for (const l of tr.items) if (l.kind === "video") media.loadStrip(l.path);
@@ -259,8 +261,11 @@
     if (zoomBox) {
       const p = pieces[kk];
       const lt = t - L.offsets[kk];
-      if (p.zoom.length) {
-        zoom = { z: kfValue(p.zoom, "z", lt, 1), x: kfValue(p.zoom, "x", lt, 0.5), y: kfValue(p.zoom, "y", lt, 0.5) };
+      // zoom du morceau × zoom punch (même produit que l'export)
+      const punch = punchAt(P, t);
+      if (p.zoom.length || punch > 1.0005) {
+        zoom = p.zoom.length ? { z: kfValue(p.zoom, "z", lt, 1), x: kfValue(p.zoom, "x", lt, 0.5), y: kfValue(p.zoom, "y", lt, 0.5) } : zoom;
+        zoom = { ...zoom, z: zoom.z * punch };
         zoomBox.style.transformOrigin = `${zoom.x * 100}% ${zoom.y * 100}%`;
         zoomBox.style.transform = zoom.z > 1.001 ? `scale(${zoom.z})` : "";
       } else zoomBox.style.transform = "";

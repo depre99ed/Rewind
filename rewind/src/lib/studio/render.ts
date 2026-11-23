@@ -1,7 +1,8 @@
 // Dessin sur canvas partagé par l'aperçu et l'export : texte stylé et clavier / souris.
 // L'export envoie ces dessins en PNG au moteur, qui les incruste : le rendu est identique au pixel près.
-import type { TextLayer, FxLayer } from "./model";
+import { hasLetterAnim, letterActive, letterState, type TextLayer, type FxLayer } from "./model";
 import { fontOf, cssFont } from "./fonts";
+import { lookPad, paintLine } from "./textfx";
 
 // ---------------------------------------------------------------------------
 // Texte
@@ -18,12 +19,15 @@ export function measureText(ctx: CanvasRenderingContext2D, l: TextLayer, k: numb
   const widths = lines.map((s) => ctx.measureText(s || " ").width);
   const lineH = px * (f.id === "pixel" ? 1.45 : 1.18);
   const stroke = l.stroke ? l.stroke.width * k : 0;
-  const pad = (l.bg ? px * 0.32 : 0) + stroke + (l.shadow ? px * 0.12 : 0) + 2;
+  // Lettres qui tombent, tournent ou grossissent : de la place autour pour ne pas être coupées
+  const motion = hasLetterAnim(l) ? px * 0.95 : 0;
+  const pad = (l.bg ? px * 0.32 : 0) + stroke + (l.shadow ? px * 0.12 : 0) + lookPad(l.look, px) + motion + 2;
   return { w: Math.ceil(Math.max(...widths) + pad * 2), h: Math.ceil(lineH * lines.length + pad * 2), lines, lineH, pad, px };
 }
 
-/** Dessine le texte dans un canvas déjà dimensionné (box). `reveal` : part des caractères visibles (machine à écrire). */
-export function drawText(ctx: CanvasRenderingContext2D, l: TextLayer, k: number, box: TextBox, reveal = 1) {
+/** Dessine le texte dans un canvas déjà dimensionné (box). `reveal` : part des caractères visibles (machine à écrire) ;
+ * `t` : temps local du calque, pour les animations lettre par lettre. */
+export function drawText(ctx: CanvasRenderingContext2D, l: TextLayer, k: number, box: TextBox, reveal = 1, t = -1) {
   const f = fontOf(l.font);
   ctx.save();
   ctx.clearRect(0, 0, box.w, box.h);
@@ -46,6 +50,34 @@ export function drawText(ctx: CanvasRenderingContext2D, l: TextLayer, k: number,
       ctx.fill();
     });
   }
+  // Animation lettre par lettre en cours : chaque lettre dessinée à part (position, taille, rotation, flou)
+  const nAll = box.lines.reduce((a, s) => a + [...s].length, 0);
+  if (t >= 0 && letterActive(l, t)) {
+    let gi = 0;
+    box.lines.forEach((full, li) => {
+      const fullW = ctx.measureText(full || " ").width;
+      const x0 = alignX(l.align, box, fullW);
+      const y = box.pad + box.lineH * (li + 0.5);
+      const m = ctx.measureText(full || " ");
+      const chars = [...full];
+      chars.forEach((c, j) => {
+        const st = letterState(l, gi++, nAll, t);
+        if (!st || st.o <= 0.003 || c === " ") return;
+        const before = ctx.measureText(chars.slice(0, j).join("")).width;
+        const cw = ctx.measureText(c).width;
+        ctx.save();
+        ctx.globalAlpha *= Math.min(1, st.o);
+        ctx.translate(x0 + before + cw / 2 + st.dx * box.px, y + st.dy * box.px);
+        if (st.r) ctx.rotate(st.r);
+        if (st.s !== 1) ctx.scale(st.s, st.s);
+        if (st.blur > 0.002) ctx.filter = `blur(${(st.blur * box.px).toFixed(1)}px)`;
+        drawOne(ctx, l, box, c, -cw / 2, 0, -m.actualBoundingBoxAscent, m.actualBoundingBoxDescent);
+        ctx.restore();
+      });
+    });
+    ctx.restore();
+    return;
+  }
   box.lines.forEach((full, i) => {
     const s = budget >= full.length ? full : full.slice(0, Math.max(0, budget));
     budget -= full.length;
@@ -53,6 +85,24 @@ export function drawText(ctx: CanvasRenderingContext2D, l: TextLayer, k: number,
     const fullW = ctx.measureText(full || " ").width;
     const x = alignX(l.align, box, fullW);
     const y = box.pad + box.lineH * (i + 0.5);
+    if (l.look) {
+      // Rendu « edit » (métal 3D, éclat…) : le dégradé du métal couvre la hauteur de la ligne complète
+      const m = ctx.measureText(full || " ");
+      if (l.shadow) {
+        ctx.save();
+        ctx.filter = `blur(${Math.max(1, box.px * 0.07)}px)`;
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.fillText(s, x, y + box.px * 0.06);
+        ctx.restore();
+      }
+      paintLine(ctx, s, x, y, box.px, l.look, {
+        color: l.color,
+        stroke: l.stroke && l.stroke.width > 0 ? { color: l.stroke.color, width: l.stroke.width * 2 * (box.px / l.size) } : null,
+        top: y - m.actualBoundingBoxAscent,
+        bottom: y + m.actualBoundingBoxDescent,
+      });
+      return;
+    }
     if (l.shadow) {
       ctx.shadowColor = "rgba(0,0,0,0.55)";
       ctx.shadowBlur = box.px * 0.14;
@@ -69,6 +119,30 @@ export function drawText(ctx: CanvasRenderingContext2D, l: TextLayer, k: number,
     ctx.shadowColor = "transparent";
   });
   ctx.restore();
+}
+
+/** Un bout de texte (une lettre animée) au point (x, y), avec le rendu du calque (métal, éclat, contour). */
+function drawOne(ctx: CanvasRenderingContext2D, l: TextLayer, box: TextBox, s: string, x: number, y: number, top: number, bottom: number) {
+  const stroke = l.stroke && l.stroke.width > 0 ? { color: l.stroke.color, width: l.stroke.width * 2 * (box.px / l.size) } : null;
+  if (l.look) {
+    // pendant l'animation, pas d'étincelle par lettre (elles reviennent sur le texte posé)
+    paintLine(ctx, s, x, y, box.px, { ...l.look, sparkle: 0 }, { color: l.color, stroke, top: y + top, bottom: y + bottom });
+    return;
+  }
+  if (l.shadow) {
+    ctx.shadowColor = "rgba(0,0,0,0.55)";
+    ctx.shadowBlur = box.px * 0.14;
+    ctx.shadowOffsetY = box.px * 0.05;
+  }
+  if (stroke) {
+    ctx.strokeStyle = stroke.color;
+    ctx.lineWidth = stroke.width;
+    ctx.strokeText(s, x, y);
+    ctx.shadowColor = "transparent";
+  }
+  ctx.fillStyle = l.color;
+  ctx.fillText(s, x, y);
+  ctx.shadowColor = "transparent";
 }
 
 /** Bord gauche d'une ligne de largeur w dans la boîte. */
@@ -96,13 +170,13 @@ function hexA(hex: string, a: number): string {
 }
 
 /** Texte en PNG (base64 sans en-tête) à l'échelle k. */
-export function textPng(l: TextLayer, k: number, reveal = 1): { b64: string; w: number; h: number } {
+export function textPng(l: TextLayer, k: number, reveal = 1, t = -1): { b64: string; w: number; h: number } {
   const c = document.createElement("canvas");
   const ctx = c.getContext("2d")!;
   const box = measureText(ctx, l, k);
   c.width = box.w;
   c.height = box.h;
-  drawText(ctx, l, k, box, reveal);
+  drawText(ctx, l, k, box, reveal, t);
   return { b64: c.toDataURL("image/png").split(",")[1], w: box.w, h: box.h };
 }
 
@@ -114,8 +188,18 @@ export function textPng(l: TextLayer, k: number, reveal = 1): { b64: string; w: 
 export function drawFx(ctx: CanvasRenderingContext2D, l: FxLayer, w: number, h: number) {
   ctx.clearRect(0, 0, w, h);
   const s = Math.max(0, Math.min(1, l.strength));
-  if (l.fx === "flash" || l.fx === "black") {
-    ctx.fillStyle = l.fx === "flash" ? `rgba(255,255,255,${s})` : `rgba(0,0,0,${s})`;
+  if (l.fx === "flash") {
+    // Lumière douce : pleine au centre, un peu moins sur les bords (pas un aplat blanc qui éblouit)
+    const c = l.color || "#ffffff";
+    const r = Math.hypot(w, h) / 2;
+    const g = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, r);
+    g.addColorStop(0, hexA(c, s));
+    g.addColorStop(0.55, hexA(c, s * 0.85));
+    g.addColorStop(1, hexA(c, s * 0.55));
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  } else if (l.fx === "black") {
+    ctx.fillStyle = `rgba(0,0,0,${s})`;
     ctx.fillRect(0, 0, w, h);
   } else if (l.fx === "vignette") {
     const r = Math.hypot(w, h) / 2;

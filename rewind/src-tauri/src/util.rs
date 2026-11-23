@@ -106,6 +106,15 @@ fn from_wide(buf: &[u16]) -> String {
 /// Données de Rewind : `%LOCALAPPDATA%\com.rewind.app` (séparé du dossier d'installation
 /// `%LOCALAPPDATA%\Rewind`, pour qu'une mise à jour ou une désinstallation ne les mélange pas).
 pub fn data_dir() -> PathBuf {
+    // Tests unitaires (cargo test) : le dossier suit REWIND_DATA_DIR à chaque appel (un test qui le règle n'est
+    // plus à la merci de l'ordre des tests) et, sans lui, un dossier temporaire : jamais les vraies données.
+    #[cfg(test)]
+    {
+        let dir = std::env::var_os("REWIND_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("rewind-tests"));
+        let _ = std::fs::create_dir_all(&dir);
+        return dir;
+    }
+    #[allow(unreachable_code)]
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
         // Tests : dossier séparé (ne jamais toucher au Rewind installé qui tourne)

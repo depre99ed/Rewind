@@ -154,6 +154,12 @@ if (typeof window !== "undefined" && !inTauri) {
           if (args.tags) c.tags = args.tags;
           return { ...c };
         }
+        case "clip_shorten": {
+          const c = clips.find((x) => x.id === args.id)!;
+          c.markers = c.markers.filter((m) => m.time >= args.start && m.time <= args.end).map((m) => ({ ...m, time: m.time - args.start }));
+          c.duration = args.end - args.start;
+          return { ...c };
+        }
         case "set_collection": {
           const name = String(args.name).split(/\s+/).filter(Boolean).join(" ").slice(0, 40);
           if (!name) throw "Nom de collection vide";

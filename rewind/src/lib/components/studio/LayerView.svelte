@@ -1,7 +1,7 @@
 <script lang="ts">
   // Un calque dans l'aperçu, placé avec la même formule que l'export (layerState de model.ts).
   import { fileUrl } from "$lib/api";
-  import { isFilterFx, layerState, type Layer } from "$lib/studio/model";
+  import { isFilterFx, layerState, letterActive, type Layer } from "$lib/studio/model";
   import { measureText, drawText, drawFx } from "$lib/studio/render";
 
   let { layer, local, fw, fh, onpick }: { layer: Layer; local: number; fw: number; fh: number; onpick?: (e: PointerEvent) => void } = $props();
@@ -10,6 +10,8 @@
   // Valeurs simples : le texte n'est redessiné que si sa taille ou sa frappe changent (pas à chaque image)
   const drawScale = $derived(Math.round(st.scale * 1000) / 1000);
   const reveal = $derived(st.reveal);
+  // Lettre par lettre : redessiné 30 fois par seconde pendant l'animation seulement
+  const letterT = $derived(layer.kind === "text" && letterActive(layer, local) ? Math.round(local * 30) / 30 : -1);
   let canvas: HTMLCanvasElement | undefined = $state();
   let fxCanvas: HTMLCanvasElement | undefined = $state();
   let box = $state({ w: 0, h: 0 });
@@ -21,11 +23,11 @@
     const k = (fh / 1080) * drawScale * dpr;
     const ctx = canvas.getContext("2d");
     if (!ctx || k <= 0) return;
-    void layer.text, layer.font, layer.size, layer.color, layer.stroke, layer.shadow, layer.bg, layer.align, fontsReady;
+    void layer.text, layer.font, layer.size, layer.color, layer.stroke, layer.shadow, layer.bg, layer.align, layer.look, fontsReady;
     const b = measureText(ctx, layer, k);
     canvas.width = b.w;
     canvas.height = b.h;
-    drawText(ctx, layer, k, b, reveal);
+    drawText(ctx, layer, k, b, reveal, letterT);
     box = { w: b.w / dpr, h: b.h / dpr };
   });
   // Les polices arrivent un peu après le premier affichage : on redessine quand elles sont prêtes

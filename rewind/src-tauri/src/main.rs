@@ -71,6 +71,18 @@ fn main() {
         let out = args.get(2).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
         std::process::exit(rewind_lib::hold_test(out));
     }
+    if args.get(1).map(String::as_str) == Some("--raccourcir") {
+        let path = args.get(2).cloned().unwrap_or_default();
+        std::process::exit(rewind_lib::shorten_test(path));
+    }
+    if args.get(1).map(String::as_str) == Some("--musique") {
+        let url = args.get(2).cloned().unwrap_or_default();
+        std::process::exit(rewind_lib::music_test(url));
+    }
+    if args.get(1).map(String::as_str) == Some("--killfeed") {
+        let path = args.get(2).cloned().unwrap_or_default();
+        std::process::exit(rewind_lib::killfeed_test(path));
+    }
     if args.get(1).map(String::as_str) == Some("--media") {
         let path = args.get(2).cloned().unwrap_or_default();
         std::process::exit(rewind_lib::media_test(path));

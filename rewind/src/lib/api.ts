@@ -259,12 +259,18 @@ export const api = {
   mediaFilmstrip: (path: string) => invoke<Filmstrip>("media_filmstrip", { path }),
   mediaWaveform: (path: string) => invoke<Waveform>("media_waveform", { path }),
   mediaStems: (path: string) => invoke<string[]>("media_stems", { path }),
+  /** Musique par lien : TikTok (son d'origine), YouTube, SoundCloud → fichier MP3 local */
+  musicFromLink: (url: string) => invoke<{ path: string; name: string; note: string }>("music_from_link", { url }),
+  /** Moments où tes kills apparaissent dans le kill feed de CS2 (secondes dans le fichier) */
+  mediaKillfeed: (path: string) => invoke<number[]>("media_killfeed", { path }),
   medalDetect: (folder?: string) => invoke<MedalInfo>("medal_detect", { folder: folder ?? null }),
   medalImport: (from?: string) => invoke<{ copied: number; skipped: number; failed: number }>("medal_import", { from: from ?? null }),
   soundPreview: (kind: string) => invoke<void>("sound_preview", { kind }),
   soundImport: (path: string) => invoke<string>("sound_import", { path }),
   adminInputStatus: () => invoke<AdminInput>("admin_input_status"),
   adminInputSet: (on: boolean) => invoke<void>("admin_input_set", { on }),
+  /** Raccourcit le clip sur place (même fichier ; l'original va dans la Corbeille) */
+  shortenClip: (id: string, start: number, end: number) => invoke<Clip>("clip_shorten", { id, start, end }),
   trim: (id: string, start: number, end: number, exact: boolean) => invoke<Clip>("edit_trim", { id, start, end, exact }),
   merge: (ids: string[]) => invoke<Clip>("edit_merge", { ids }),
   vertical: (id: string, mode: string, start: number, end: number) => invoke<Clip>("edit_vertical", { id, mode, start, end }),

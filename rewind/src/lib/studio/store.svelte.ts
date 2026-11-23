@@ -3,10 +3,12 @@ import { api, type Clip, type Filmstrip, type InputEvent, type MediaInfo, type W
 import { app } from "../state.svelte";
 import { t } from "../i18n.svelte";
 import {
-  type AudioItem, type Format, type FxKind, type Kf, type Layer, type Piece, type Project, type Track, type Transition, type TextStyle, type VideoLayer,
+  type AudioItem, type Format, type FxKind, type FxLayer, type Kf, type Layer, type Piece, type Project, type Track, type Transition, type TextStyle, type VideoLayer,
   clampSpeed, defaultKeys, frameSize, fromLegacy, layout, newAudio, newBlur, newFx, newMediaLayer, newProject, newText,
-  normalizePiece, outLen, projectTotal, srcAt, uid,
+  localAt, normalizePiece, outLen, projectTotal, srcAt, uid,
 } from "./model";
+import { anchorItems, reanchor, remapZoom, timingKey, type Anchor } from "./ripple";
+import { killTimes, momentsOf, type KillFx, type Moment } from "./killfx";
 
 export const TRANSITIONS: { id: Transition; label: string; hint: string }[] = [
   { id: "none", label: "Aucune", hint: "Coupe sèche" },
@@ -80,6 +82,19 @@ class MediaCache {
     this.asked.add(key);
     api.mediaStems(path).then((s) => (this.stems = { ...this.stems, [path]: s ?? [] })).catch(() => (this.stems = { ...this.stems, [path]: [] }));
   }
+  /** Kill feed de CS2 : moments où tes kills apparaissent (secondes dans le fichier), analysé une fois par clip. */
+  feed = $state.raw<Record<string, number[]>>({});
+  feedBusy = $state.raw<Record<string, boolean>>({});
+  loadFeed(path: string) {
+    const key = "feed:" + path;
+    if (!path || this.asked.has(key)) return;
+    this.asked.add(key);
+    this.feedBusy = { ...this.feedBusy, [path]: true };
+    api.mediaKillfeed(path)
+      .then((k) => (this.feed = { ...this.feed, [path]: k ?? [] }))
+      .catch(() => (this.feed = { ...this.feed, [path]: [] }))
+      .finally(() => (this.feedBusy = { ...this.feedBusy, [path]: false }));
+  }
   /** Pistes séparées d'un clip (sans la piste de mixage) ; vide si une seule piste. */
   separateTracks(path: string): string[] {
     const tr = this.info[path]?.tracks ?? [];
@@ -99,6 +114,11 @@ export type ProjectMeta = { id: string; name: string; updated: number; duration:
 
 const LEGACY_KEY = "rewind.studio.v2";
 const LAST_KEY = "rewind.studio.last";
+const FOLLOW_KEY = "rewind.studio.follow";
+type Gesture = { anchors: Map<string, Anchor>; pieces: Map<string, Piece>; key: string; at: number };
+function loadFollow(): boolean {
+  try { return localStorage.getItem(FOLLOW_KEY) !== "0"; } catch { return true; }
+}
 
 class StudioStore {
   project = $state<Project>(newProject());
@@ -116,6 +136,8 @@ class StudioStore {
   saved = $state(true);
   loaded = $state(false);
   projects = $state<ProjectMeta[]>([]);
+  /** Textes, effets, médias, bruitages et voix off restent sur le même moment de la vidéo quand elle change de durée */
+  follow = $state(loadFollow());
   /** Enregistrement de voix off en cours (heure de départ dans le montage) */
   recording = $state<{ at: number; since: number } | null>(null);
 
@@ -125,6 +147,8 @@ class StudioStore {
 
   private history: string[] = [];
   private future: string[] = [];
+  /** Accroches prises au début d'un geste (glisser, curseur) : réutilisées tant qu'il dure */
+  private gesture: Gesture | null = null;
   private hintTimer: ReturnType<typeof setTimeout> | undefined;
   private saveTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -169,6 +193,7 @@ class StudioStore {
 
   // ----- historique -----
   snapshot() {
+    this.gesture = null;
     this.history.push(JSON.stringify(this.project));
     if (this.history.length > 150) this.history.shift();
     this.future = [];
@@ -207,9 +232,37 @@ class StudioStore {
   /** Modification : historique + sauvegarde automatique. */
   edit(f: (p: Project) => void, record = true) {
     if (record) this.snapshot();
+    // Accroche des éléments à l'image AVANT le changement (au début du geste s'il y en a un en cours)
+    const now = Date.now();
+    if (!this.gesture || now - this.gesture.at > 2000) {
+      this.gesture = {
+        anchors: this.follow ? anchorItems(this.project) : new Map(),
+        pieces: new Map(this.project.pieces.map((x) => [x.uid, { ...x, ramp: x.ramp ? { ...x.ramp } : null, killRamps: (x.killRamps ?? []).map((r) => ({ ...r })), zoom: [...x.zoom] }])),
+        key: timingKey(this.project.pieces),
+        at: now,
+      };
+    }
+    this.gesture.at = now;
     f(this.project);
+    if (timingKey(this.project.pieces) !== this.gesture.key) this.followImage(this.gesture);
     this.project = { ...this.project, updated: Date.now() / 1000 };
+    if (record) this.gesture = null;
     this.changed();
+  }
+  /** La vidéo a changé de durée : zooms des morceaux et éléments liés restent sur la même image. */
+  private followImage(g: Gesture) {
+    const pr = this.project;
+    pr.pieces = pr.pieces.map((x) => {
+      const b = g.pieces.get(x.uid);
+      const timing = b && (b.speed !== x.speed || b.start !== x.start || JSON.stringify(b.ramp) !== JSON.stringify(x.ramp) || JSON.stringify(b.killRamps) !== JSON.stringify(x.killRamps));
+      return timing ? { ...x, zoom: remapZoom(b, { ...x, zoom: b.zoom }) } : x;
+    });
+    if (this.follow) reanchor(pr, g.anchors);
+  }
+  setFollow(on: boolean) {
+    this.follow = on;
+    try { localStorage.setItem(FOLLOW_KEY, on ? "1" : "0"); } catch {}
+    this.say(on ? "Textes et effets liés à l'image" : "Textes et effets fixes : ils ne suivent plus la vidéo");
   }
 
   // ----- projets -----
@@ -441,14 +494,14 @@ class StudioStore {
     const p = this.project.pieces[i];
     if (!p || p.kind === "freeze") return;
     const cut = this.srcTime(i, this.t);
-    const frozen = normalizePiece({ ...p, uid: uid(), kind: "freeze", start: cut, end: Math.min(p.srcDur, cut + 0.05), hold, ramp: null, zoom: [], transition: "none" });
+    const frozen = normalizePiece({ ...p, uid: uid(), kind: "freeze", start: cut, end: Math.min(p.srcDur, cut + 0.05), hold, ramp: null, killRamps: [], zoom: [], transition: "none" });
     this.edit((pr) => {
       const list = [...pr.pieces];
       if (cut - p.start < 0.1) list.splice(i, 0, frozen);
       else if (p.end - cut < 0.1) list.splice(i + 1, 0, frozen);
       else {
-        const a: Piece = { ...p, end: cut, transition: "none", ramp: rampIn(p, p.start, cut) };
-        const b: Piece = { ...p, uid: uid(), start: cut, ramp: rampIn(p, cut, p.end) };
+        const a: Piece = { ...p, end: cut, transition: "none", ramp: rampIn(p, p.start, cut), killRamps: killRampsIn(p, p.start, cut) };
+        const b: Piece = { ...p, uid: uid(), start: cut, ramp: rampIn(p, cut, p.end), killRamps: killRampsIn(p, cut, p.end) };
         list.splice(i, 1, a, frozen, b);
       }
       pr.pieces = list;
@@ -473,8 +526,8 @@ class StudioStore {
     const cut = this.srcTime(i, this.t);
     if (cut - p.start < 0.1 || p.end - cut < 0.1) return this.say("Trop près du bord pour couper");
     const local = this.t - this.lay.offsets[i];
-    const a: Piece = { ...p, end: cut, transition: "none", ramp: rampIn(p, p.start, cut), zoom: p.zoom.filter((k) => k.t <= local) };
-    const b: Piece = { ...p, uid: uid(), start: cut, ramp: rampIn(p, cut, p.end), zoom: p.zoom.filter((k) => k.t >= local).map((k) => ({ ...k, t: k.t - local })) };
+    const a: Piece = { ...p, end: cut, transition: "none", ramp: rampIn(p, p.start, cut), killRamps: killRampsIn(p, p.start, cut), zoom: p.zoom.filter((k) => k.t <= local) };
+    const b: Piece = { ...p, uid: uid(), start: cut, ramp: rampIn(p, cut, p.end), killRamps: killRampsIn(p, cut, p.end), zoom: p.zoom.filter((k) => k.t >= local).map((k) => ({ ...k, t: k.t - local })) };
     this.edit((pr) => pr.pieces.splice(i, 1, a, b));
     this.select({ type: "piece", id: b.uid });
     this.say("Morceau coupé en deux");
@@ -669,6 +722,11 @@ class StudioStore {
 
   // ----- calques -----
   updateLayer(id: string, patch: Partial<Layer>, record = true) {
+    // Pseudo écrit dans un texte en chrome : gardé pour le prochain texte « Pseudo »
+    const cur = this.findLayer(id);
+    if (cur?.kind === "text" && cur.look && typeof (patch as { text?: string }).text === "string") {
+      try { localStorage.setItem("rewind.studio.pseudo", (patch as { text: string }).text.trim().slice(0, 40)); } catch {}
+    }
     this.edit((p) => {
       for (const tr of p.tracks) if (tr.kind === "layer") tr.items = tr.items.map((l) => (l.uid === id ? ({ ...l, ...patch } as Layer) : l));
     }, record);
@@ -715,7 +773,9 @@ class StudioStore {
   }
   addText(style: TextStyle) {
     const l = newText(this.t, style);
-    l.text = t(style === "title" ? "TITRE" : style === "subtitle" ? "Sous-titre" : style === "gothic" ? "Edit" : "Légende");
+    // Pseudo : celui du joueur vu dans ses clips CS2 (sinon « Pseudo »)
+    const name = style === "chrome" ? playerName() : "";
+    l.text = name || t(style === "title" ? "TITRE" : style === "subtitle" ? "Sous-titre" : style === "gothic" ? "Edit" : style === "chrome" ? "Pseudo" : "Légende");
     this.addLayer(l);
     this.say("Texte ajouté : écris-le à droite, place-le sur l'aperçu");
   }
@@ -743,6 +803,90 @@ class StudioStore {
     this.select({ type: "piece", id: p.uid });
     this.say("Zoom rapide ajouté : le centre se règle dans « Zoom » à droite");
   }
+  // ----- kills (kill feed) -----
+  /** Repères du morceau, kills recalés sur leur apparition dans le kill feed (temps source). */
+  momentsOf(p: Piece): Moment[] {
+    return momentsOf(p, media.feed[p.path]);
+  }
+  /** Nombre de kills trouvés (tout le montage, ou le morceau choisi). */
+  killCount(scope: "all" | "piece"): number {
+    const list = scope === "piece" && this.piece ? [this.piece] : this.project.pieces;
+    return list.reduce((n, p) => n + (p.kind === "clip" ? killTimes(p, media.feed[p.path]).length : 0), 0);
+  }
+  /** Analyse en cours du kill feed d'un des clips du montage */
+  get feedPending(): boolean {
+    return this.project.pieces.some((p) => media.feedBusy[p.path]);
+  }
+  /**
+   * Effets à chaque kill : retire ceux posés avant (même portée), pose les mini-ralentis (les textes et effets
+   * déjà placés suivent l'image), puis flash, tremblement et zoom punch au moment exact de chaque kill.
+   * Une seule action pour Ctrl+Z.
+   */
+  applyKillFx(cfg: KillFx): number {
+    const scope = cfg.scope === "piece" && this.piece ? new Set([this.piece.uid]) : new Set(this.project.pieces.map((p) => p.uid));
+    const kills = new Map(this.project.pieces.filter((p) => scope.has(p.uid) && p.kind === "clip").map((p) => [p.uid, killTimes(p, media.feed[p.path])]));
+    const total = [...kills.values()].reduce((n, l) => n + l.length, 0);
+    if (!total) {
+      this.say("Aucun kill trouvé dans ces clips");
+      return 0;
+    }
+    // 1) anciens effets de kills retirés, mini-ralentis posés (la piste principale change de durée)
+    this.edit((pr) => {
+      const range = this.autoRange(pr, scope);
+      for (const tr of pr.tracks) if (tr.kind === "layer") tr.items = tr.items.filter((l) => !(l.auto === "kill" && range(l.at)));
+      pr.tracks = pr.tracks.filter((tr) => tr.items.length);
+      pr.pieces = pr.pieces.map((p) => {
+        if (!scope.has(p.uid)) return p;
+        const list = cfg.slow.on ? (kills.get(p.uid) ?? []).map((k) => ({ at: k + 0.05 + cfg.offset, dur: cfg.slow.dur, speed: cfg.slow.speed, ease: Math.min(0.3, cfg.slow.dur * 0.6) })) : [];
+        return { ...p, killRamps: list };
+      });
+    });
+    // 2) effets posés sur la nouvelle frise (même action pour Ctrl+Z)
+    this.edit((pr) => {
+      const lay = layout(pr.pieces);
+      const tracks: Record<string, string> = {};
+      const put = (fx: FxKind, at: number, dur: number, patch: Partial<FxLayer>) => {
+        const l: FxLayer = { ...newFx(fx, at, dur), dur, ...patch, auto: "kill" };
+        const tr = this.freeTrack("layer", l.at, l.dur, tracks[fx], t("Kills"));
+        tracks[fx] = tr.id;
+        (tr.items as Layer[]).push(l);
+      };
+      pr.pieces.forEach((p, i) => {
+        for (const k of kills.get(p.uid) ?? []) {
+          const lt = localAt(p, k);
+          if (lt === null) continue;
+          const at = Math.max(0, lay.offsets[i] + lt + cfg.offset);
+          if (cfg.punch.on) put("punch", at, cfg.punch.dur, { strength: cfg.punch.strength });
+          if (cfg.shake.on) put("shake", at, cfg.shake.dur, { strength: cfg.shake.strength });
+          if (cfg.flash.on) put("flash", at, cfg.flash.dur, { strength: cfg.flash.strength, color: cfg.flash.color, fadeIn: Math.min(0.03, cfg.flash.dur / 4), fadeOut: Math.max(0.05, cfg.flash.dur - 0.03) });
+        }
+      });
+    }, false);
+    this.say(t(total > 1 ? "Effets posés sur {n} kills" : "Effets posés sur {n} kill", { n: total }));
+    return total;
+  }
+  /** Retire les effets et mini-ralentis posés sur les kills (même portée). */
+  removeKillFx(scopeKind: "all" | "piece") {
+    const scope = scopeKind === "piece" && this.piece ? new Set([this.piece.uid]) : new Set(this.project.pieces.map((p) => p.uid));
+    this.edit((pr) => {
+      const range = this.autoRange(pr, scope);
+      for (const tr of pr.tracks) if (tr.kind === "layer") tr.items = tr.items.filter((l) => !(l.auto === "kill" && range(l.at)));
+      pr.tracks = pr.tracks.filter((tr) => tr.items.length);
+      pr.pieces = pr.pieces.map((p) => (scope.has(p.uid) ? { ...p, killRamps: [] } : p));
+    });
+    this.say("Effets des kills retirés");
+  }
+  /** Effets automatiques concernés : sur les morceaux choisis (tout le montage : partout). */
+  private autoRange(pr: Project, scope: Set<string>): (at: number) => boolean {
+    if (scope.size === pr.pieces.length) return () => true;
+    const lay = layout(pr.pieces);
+    const spans = pr.pieces.map((p, i) => (scope.has(p.uid) ? [lay.offsets[i] - 0.05, lay.offsets[i] + lay.lens[i] + 0.05] : null)).filter((x): x is number[] => !!x);
+    return (at) => spans.some(([a, b]) => at >= a && at <= b);
+  }
+  hasKillFx(): boolean {
+    return this.project.tracks.some((tr) => tr.kind === "layer" && tr.items.some((l) => l.auto === "kill")) || this.project.pieces.some((p) => p.killRamps?.length);
+  }
+
   /** Image, GIF ou vidéo par-dessus (taille de départ raisonnable, à droite en haut). */
   async addMedia(path: string, opts: { at?: number; track?: string; name?: string } = {}) {
     const ext = extOf(path);
@@ -838,9 +982,17 @@ class StudioStore {
   }
 }
 
+/** Dernier pseudo écrit dans un texte « Pseudo » (repris au suivant) ; vide sinon. */
+function playerName(): string {
+  try { return localStorage.getItem("rewind.studio.pseudo") ?? ""; } catch { return ""; }
+}
+
 /** Rampe gardée si elle tombe dans [a, b] après une coupe. */
 function rampIn(p: Piece, a: number, b: number) {
   return p.ramp && p.ramp.at > a && p.ramp.at < b ? p.ramp : null;
+}
+function killRampsIn(p: Piece, a: number, b: number) {
+  return (p.killRamps ?? []).filter((r) => r.at > a && r.at < b);
 }
 
 function kfAt(kf: Kf[], prop: string, t: number, fallback: number) {

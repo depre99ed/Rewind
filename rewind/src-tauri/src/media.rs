@@ -42,14 +42,14 @@ pub struct Waveform {
 const STRIP_H: u32 = 72;
 const WAVE_RATE: f64 = 50.0;
 
-fn cache_dir(kind: &str) -> PathBuf {
+pub(crate) fn cache_dir(kind: &str) -> PathBuf {
     let dir = util::data_dir().join("cache").join(kind);
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
 
 /// Clé de cache : chemin + taille + date de modification (un fichier remplacé est recalculé).
-fn cache_key(path: &Path) -> String {
+pub(crate) fn cache_key(path: &Path) -> String {
     let meta = std::fs::metadata(path).ok();
     let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
     let mtime = meta
@@ -66,7 +66,7 @@ fn cache_key(path: &Path) -> String {
 }
 
 /// Garde le cache sous `max` fichiers (les plus anciens partent).
-fn prune(dir: &Path, max: usize) {
+pub(crate) fn prune(dir: &Path, max: usize) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut files: Vec<(std::time::SystemTime, PathBuf)> =
         entries.flatten().filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();

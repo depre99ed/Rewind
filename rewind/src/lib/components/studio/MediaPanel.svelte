@@ -2,7 +2,7 @@
   // Colonne de gauche du Studio : tout ce qu'on peut ajouter au montage.
   import {
     Clapperboard, Type, Image as ImageIcon, Music, Sparkles, Plus, Search, Layers, Mic, Square, Upload, Droplets, Snowflake, ZoomIn, Gauge,
-    Vibrate, Zap, ScanLine, Contrast, SunMoon, Moon, Aperture, RectangleHorizontal, Grid3x3, FolderOpen,
+    Vibrate, Zap, ScanLine, Contrast, SunMoon, Moon, Aperture, RectangleHorizontal, Grid3x3, FolderOpen, Crosshair, Loader2, Trash2, Link2,
   } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { studio, fmtTime } from "$lib/studio/store.svelte";
@@ -10,6 +10,8 @@
   import { fileUrl, formatDuration, api, gameLabel } from "$lib/api";
   import { fit } from "$lib/fit";
   import { t } from "$lib/i18n.svelte";
+  import Slider from "./Slider.svelte";
+  import { loadKillFx, saveKillFx, type KillFx } from "$lib/studio/killfx";
 
   type Tab = "clips" | "text" | "media" | "audio" | "fx";
   let tab = $state<Tab>("clips");
@@ -72,6 +74,29 @@
     try { localStorage.setItem(RECENT, JSON.stringify(recent)); } catch {}
   }
 
+  // Musique par lien (TikTok : son d'origine ; YouTube ; SoundCloud)
+  let link = $state("");
+  let linkBusy = $state(false);
+  let linkMsg = $state("");
+  const linkOk = $derived(/^https?:\/\/([a-z0-9-]+\.)*(tiktok\.com|youtube\.com|youtu\.be|soundcloud\.com)\//i.test(link.trim()));
+  async function fromLink() {
+    if (!linkOk || linkBusy) return;
+    linkBusy = true;
+    linkMsg = "";
+    try {
+      const r = await api.musicFromLink(link.trim());
+      await studio.addAudio(r.path, "music");
+      recent = [{ path: r.path, name: r.name, kind: "music" as const }, ...recent.filter((x) => x.path !== r.path)].slice(0, 10);
+      try { localStorage.setItem(RECENT, JSON.stringify(recent)); } catch {}
+      linkMsg = r.note ? t(r.note) : t("« {x} » ajoutée au montage", { x: r.name });
+      link = "";
+    } catch (e) {
+      linkMsg = String(e);
+    } finally {
+      linkBusy = false;
+    }
+  }
+
   // Voix off : enregistre le micro choisi dans Rewind pendant que le montage défile
   let recTimer: ReturnType<typeof setInterval> | undefined;
   let recSecs = $state(0);
@@ -100,11 +125,21 @@
     }
   }
 
+  // Effets à chaque kill (réglages gardés d'une fois sur l'autre)
+  let kfx = $state<KillFx>(loadKillFx());
+  $effect(() => saveKillFx($state.snapshot(kfx) as KillFx));
+  const kills = $derived(studio.killCount(kfx.scope));
+  const anyKillFx = $derived(kfx.flash.on || kfx.shake.on || kfx.punch.on || kfx.slow.on);
+  const sec = (v: number) => `${v.toFixed(2).replace(".", ",")} s`;
+  const pct = (v: number) => `${Math.round(v * 100)} %`;
+  const signed = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(2).replace(".", ",")} s`;
+
   const FX_ICON: Record<FxKind, typeof Vibrate> = {
-    shake: Vibrate, flash: Zap, glitch: ScanLine, bw: Contrast, invert: SunMoon, black: Moon, vignette: Aperture, bars: RectangleHorizontal,
+    punch: ZoomIn, shake: Vibrate, flash: Zap, glitch: ScanLine, bw: Contrast, invert: SunMoon, black: Moon, vignette: Aperture, bars: RectangleHorizontal,
   };
 
-  const TEXTS: { id: "title" | "subtitle" | "caption" | "gothic"; label: string; hint: string }[] = [
+  const TEXTS: { id: "title" | "subtitle" | "caption" | "gothic" | "chrome"; label: string; hint: string }[] = [
+    { id: "chrome", label: "Pseudo", hint: "Chrome gothique 3D, avec éclat" },
     { id: "gothic", label: "Edit", hint: "Gothique, comme sur les edits TikTok" },
     { id: "title", label: "TITRE", hint: "Gros titre avec contour, entrée « pop »" },
     { id: "subtitle", label: "Sous-titre", hint: "Texte sur un fond sombre, en bas" },
@@ -168,6 +203,13 @@
     {:else if tab === "audio"}
       <button class="big" onclick={() => pick("music")}><Music size={18} /><span><b>{t("Musique")}</b><small>{t("Démarre au début, baisse quand le jeu est fort")}</small></span></button>
       <button class="big" onclick={() => pick("sfx")}><Plus size={18} /><span><b>{t("Bruitage")}</b><small>{t("Posé à la tête de lecture")}</small></span></button>
+      <form class="linkbox" onsubmit={(e) => { e.preventDefault(); fromLink(); }}>
+        <span class="mini">{t("Musique depuis un lien")}</span>
+        <label class="search"><Link2 size={14} /><input placeholder={t("Lien TikTok, YouTube ou SoundCloud")} bind:value={link} disabled={linkBusy} /></label>
+        <button class="btn small primary" type="submit" disabled={!linkOk || linkBusy}>{#if linkBusy}<Loader2 size={14} class="spin" />{t("Récupération…")}{:else}<Music size={14} />{t("Ajouter la musique")}{/if}</button>
+        {#if linkMsg}<p class="note">{linkMsg}</p>{/if}
+        <p class="note">{t("TikTok : la musique de la vidéo, sans les voix ni les effets ajoutés. La première fois pour YouTube ou SoundCloud, Rewind télécharge l'outil libre yt-dlp (environ 23 Mo).")}</p>
+      </form>
       <button class="big rec" class:live={!!studio.recording} onclick={toggleRecord}>
         {#if studio.recording}<Square size={16} fill="currentColor" /><span><b>{t("Arrêter")} · <span class="mono">{fmtTime(recSecs)}</span></b><small>{t("La voix off sera posée à sa place")}</small></span>
         {:else}<Mic size={18} /><span><b>{t("Voix off")}</b><small>{t("Enregistre ton micro pendant la lecture")}</small></span>{/if}
@@ -180,6 +222,46 @@
       {/if}
 
     {:else}
+      <!-- À chaque kill : moments exacts (kill feed), effets choisis et réglés une fois, posés partout -->
+      <section class="kills">
+        <div class="khead"><Crosshair size={16} /><b>{t("À chaque kill")}</b>
+          {#if studio.feedPending}<span class="kstate"><Loader2 size={12} class="spin" />{t("Analyse du kill feed…")}</span>
+          {:else}<span class="kstate">{t(kills > 1 ? "{n} kills trouvés" : "{n} kill trouvé", { n: kills })}</span>{/if}
+        </div>
+        <label class="ktog"><input type="checkbox" bind:checked={kfx.punch.on} /><span>{t("Zoom punch")}</span></label>
+        {#if kfx.punch.on}
+          <Slider label={t("Force")} value={kfx.punch.strength} min={0.1} max={1} step={0.05} def={0.5} format={pct} oninput={(v) => (kfx.punch.strength = v)} />
+          <Slider label={t("Durée")} value={kfx.punch.dur} min={0.15} max={1.2} step={0.05} def={0.4} format={sec} oninput={(v) => (kfx.punch.dur = v)} />
+        {/if}
+        <label class="ktog"><input type="checkbox" bind:checked={kfx.shake.on} /><span>{t("Tremblement")}</span></label>
+        {#if kfx.shake.on}
+          <Slider label={t("Force")} value={kfx.shake.strength} min={0.1} max={1} step={0.05} def={0.45} format={pct} oninput={(v) => (kfx.shake.strength = v)} />
+          <Slider label={t("Durée")} value={kfx.shake.dur} min={0.1} max={1.5} step={0.05} def={0.35} format={sec} oninput={(v) => (kfx.shake.dur = v)} />
+        {/if}
+        <label class="ktog"><input type="checkbox" bind:checked={kfx.flash.on} /><span>{t("Flash")}</span>
+          {#if kfx.flash.on}<input class="kcolor" type="color" bind:value={kfx.flash.color} title={t("Couleur du flash")} />{/if}
+        </label>
+        {#if kfx.flash.on}
+          <Slider label={t("Intensité")} value={kfx.flash.strength} min={0.1} max={1} step={0.05} def={0.6} format={pct} oninput={(v) => (kfx.flash.strength = v)} />
+          <Slider label={t("Durée")} value={kfx.flash.dur} min={0.1} max={1} step={0.05} def={0.25} format={sec} oninput={(v) => (kfx.flash.dur = v)} />
+        {/if}
+        <label class="ktog"><input type="checkbox" bind:checked={kfx.slow.on} /><span>{t("Mini-ralenti")}</span></label>
+        {#if kfx.slow.on}
+          <Slider label={t("Vitesse")} value={kfx.slow.speed} min={0.15} max={0.8} step={0.05} def={0.35} format={pct} oninput={(v) => (kfx.slow.speed = v)} />
+          <Slider label={t("Durée")} value={kfx.slow.dur} min={0.2} max={2} step={0.05} def={0.5} format={sec} oninput={(v) => (kfx.slow.dur = v)} />
+          <p class="note">{t("Tes textes et effets suivent l'image ; la musique ne bouge pas.")}</p>
+        {/if}
+        <Slider label={t("Décalage")} value={kfx.offset} min={-0.5} max={0.5} step={0.02} def={0} format={signed} oninput={(v) => (kfx.offset = v)} />
+        <div class="chips">
+          <button class="chip" class:on={kfx.scope === "all"} onclick={() => (kfx.scope = "all")}>{t("Tout le montage")}</button>
+          <button class="chip" class:on={kfx.scope === "piece"} disabled={!studio.piece} onclick={() => (kfx.scope = "piece")}>{t("Morceau choisi")}</button>
+        </div>
+        <button class="btn small primary kgo" disabled={!kills || !anyKillFx || studio.feedPending} onclick={() => studio.applyKillFx($state.snapshot(kfx) as KillFx)}>
+          <Crosshair size={14} />{t(kills > 1 ? "Poser sur les {n} kills" : "Poser sur le kill", { n: kills })}
+        </button>
+        {#if studio.hasKillFx()}<button class="btn small ghost" onclick={() => studio.removeKillFx(kfx.scope)}><Trash2 size={14} />{t("Retirer les effets des kills")}</button>{/if}
+      </section>
+
       <p class="note">{t("Un effet se pose à la tête de lecture, sur sa piste. Allonge-le ou déplace-le sur la frise : l'aperçu le montre tout de suite.")}</p>
       <span class="mini">{t("Sur toute l'image")}</span>
       <div class="fxgrid">
@@ -229,6 +311,8 @@
   .preset:hover { border-color: var(--line-2); }
   .preset small { font-size: 11px; color: var(--text-3); }
   .sample { color: #fff; }
+  /* Aperçu du chrome (le vrai rendu 3D est dessiné dans la vidéo) */
+  .preset.chrome .sample { font: 700 38px "UnifrakturCook"; background: linear-gradient(180deg, #fbfdff 0%, #dfe3ea 42%, #2b2f36 50%, #8a909a 62%, #f4f6f9 88%, #b4bac4 100%); -webkit-background-clip: text; background-clip: text; color: transparent; filter: drop-shadow(0 2px 0 #3a3f47) drop-shadow(0 0 8px rgba(255, 255, 255, 0.25)); }
   .preset.gothic .sample { font: 400 34px "UnifrakturMaguntia"; text-shadow: 0 0 10px rgba(255, 255, 255, 0.35), 0 2px 6px rgba(0, 0, 0, 0.7); }
   .preset.title .sample { font: 400 30px "Anton"; letter-spacing: 0.02em; -webkit-text-stroke: 1.2px #000; paint-order: stroke fill; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6); }
   .preset.subtitle .sample { font: 900 15px "Montserrat"; padding: 4px 10px; border-radius: 5px; background: rgba(0, 0, 0, 0.55); }
@@ -244,6 +328,19 @@
   .recent:hover { background: var(--panel); color: var(--text); }
   .recent span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tip { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; font-size: 12px; line-height: 1.45; color: var(--text-3); border: 1px dashed var(--line-2); }
+  .linkbox { display: flex; flex-direction: column; gap: 6px; }
+  .linkbox :global(.spin) { animation: kspin 1s linear infinite; }
+  /* À chaque kill */
+  .kills { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+  .khead { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+  .khead b { font-weight: 600; }
+  .kstate { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-3); }
+  .kstate :global(.spin) { animation: kspin 1s linear infinite; }
+  @keyframes kspin { to { transform: rotate(360deg); } }
+  .ktog { display: flex; align-items: center; gap: 8px; height: 28px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
+  .ktog input[type="checkbox"] { accent-color: var(--hi); }
+  .kcolor { margin-left: auto; width: 26px; height: 20px; padding: 0; border: 1px solid var(--line-2); border-radius: 5px; background: none; }
+  .kgo { margin-top: 4px; justify-content: center; }
   /* Effets : grille de deux colonnes, icône + nom + petite explication */
   .fxgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .fxb { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; padding: 10px; border-radius: 10px; text-align: left; background: var(--panel); border: 1px solid var(--line); color: var(--text-2); transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease); }

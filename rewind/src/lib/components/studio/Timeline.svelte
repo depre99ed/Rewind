@@ -1,7 +1,7 @@
 <script lang="ts">
   // Frise multi-pistes : calques en haut (la piste du haut s'affiche par-dessus), vidéo principale, son en bas.
   import {
-    Scissors, Trash2, CopyPlus, Undo2, Redo2, Magnet, ZoomIn, ZoomOut, Maximize2, Snowflake, Eye, EyeOff, Lock, LockOpen,
+    Scissors, Trash2, CopyPlus, Undo2, Redo2, Magnet, Link2, ZoomIn, ZoomOut, Maximize2, Snowflake, Eye, EyeOff, Lock, LockOpen,
     ChevronUp, ChevronDown, Volume2, VolumeX, Type, Image as ImageIcon, Film, Music, Mic, Droplets, Video, Blend, AudioLines, Sparkles, FileX,
   } from "@lucide/svelte";
   import { untrack } from "svelte";
@@ -108,7 +108,7 @@
     L.offsets.forEach((o, i) => {
       pts.push(o, o + L.lens[i]);
       // Les kills aussi : un texte ou un son se cale pile sur le moment
-      for (const m of P.pieces[i].markers) {
+      for (const m of studio.momentsOf(P.pieces[i])) {
         const lt = localAt(P.pieces[i], m.time);
         if (lt !== null) pts.push(o + lt);
       }
@@ -132,9 +132,24 @@
     | { kind: "scrub" }
     | { kind: "item"; id: string; track: string; tkind: "layer" | "audio"; video: boolean; x0: number; y0: number; at0: number; started: boolean }
     | { kind: "trimItem"; id: string; side: "start" | "end"; x0: number; at0: number; dur0: number; src0: number; max: number }
-    | { kind: "trimPiece"; id: string; side: "start" | "end"; x0: number; v0: number; speed: number; freeze: boolean }
+    | { kind: "trimPiece"; id: string; side: "start" | "end"; x0: number; v0: number; speed: number; freeze: boolean; len0: number }
     | { kind: "piece"; id: string; from: number; x0: number; y0: number; started: boolean; to: number };
   let drag = $state<Drag | null>(null);
+  /**
+   * Rognage d'un morceau, comme dans Medal : pendant le geste, seul le bord tiré suit la souris ; le reste du
+   * montage reste affiché à sa place (décalé de `shift`), puis se recolle au lâcher.
+   */
+  let ghost = $state<{ i: number; side: "start" | "end"; shift: number } | null>(null);
+  /** Juste après un rognage : le recollage est animé (jamais pendant un glissement) */
+  let settling = $state(false);
+  /** Décalage d'affichage du morceau k pendant un rognage */
+  const pieceShift = (k: number) => (ghost && (k > ghost.i || (k === ghost.i && ghost.side === "start")) ? ghost.shift : 0);
+  /** Décalage d'affichage d'un élément pendant un rognage (ceux qui suivent l'image, après le bord tiré) */
+  function itemShift(it: { at: number; kind: string }, audio: boolean): number {
+    if (!ghost || !studio.follow || (audio && it.kind === "music")) return 0;
+    const edge = ghost.side === "start" ? L.offsets[ghost.i] : L.offsets[ghost.i] + L.lens[ghost.i];
+    return it.at >= edge - 1e-3 ? ghost.shift : 0;
+  }
   let tip = $state<{ x: number; text: string } | null>(null);
   /** Piste visée pendant un glissement : « layer:<id> », « audio:<id> », « main », « new-layer », « new-audio » */
   let over = $state<string | null>(null);
@@ -182,7 +197,7 @@
     e.stopPropagation();
     studio.select({ type: "piece", id: p.uid });
     studio.snapshot();
-    drag = { kind: "trimPiece", id: p.uid, side, x0: e.clientX, v0: p.kind === "freeze" ? p.hold : side === "start" ? p.start : p.end, speed: p.speed, freeze: p.kind === "freeze" };
+    drag = { kind: "trimPiece", id: p.uid, side, x0: e.clientX, v0: p.kind === "freeze" ? p.hold : side === "start" ? p.start : p.end, speed: p.speed, freeze: p.kind === "freeze", len0: outLen(p) };
   }
   function onMove(e: PointerEvent) {
     const d = drag;
@@ -232,22 +247,27 @@
         // Bord droit aimanté (tête de lecture, autres éléments, kills)
         if (d.side === "end") hold = Math.max(0.2, Math.min(10, snap(off + hold, p.uid) - off));
         studio.updatePiece(d.id, { hold }, false);
-        tip = { x: X(off + hold), text: fmtTime(hold, true) };
+        ghost = { i, side: d.side, shift: d.len0 - hold };
+        tip = { x: X(off + hold + (d.side === "start" ? d.len0 - hold : 0)), text: fmtTime(hold, true) };
         return;
       }
       const src = dt * d.speed;
       if (d.side === "start") {
         const start = Math.max(0, Math.min(p.end - 0.2, d.v0 + src));
         studio.updatePiece(d.id, { start }, false);
-        tip = { x: X(off), text: fmtTime(outLen({ ...p, start }), true) };
+        const len = outLen({ ...p, start });
+        ghost = { i, side: "start", shift: d.len0 - len };
+        tip = { x: X(off + d.len0 - len), text: fmtTime(len, true) };
       } else {
         let end = Math.min(p.srcDur, Math.max(p.start + 0.2, d.v0 + src));
-        if (!p.ramp) {
+        if (!p.ramp && !p.killRamps?.length) {
           const edge = snap(off + (end - p.start) / d.speed, p.uid);
           end = Math.min(p.srcDur, Math.max(p.start + 0.2, p.start + (edge - off) * d.speed));
         }
         studio.updatePiece(d.id, { end }, false);
-        tip = { x: X(off + outLen({ ...p, end })), text: fmtTime(outLen({ ...p, end }), true) };
+        const len = outLen({ ...p, end });
+        ghost = { i, side: "end", shift: d.len0 - len };
+        tip = { x: X(off + len), text: fmtTime(len, true) };
       }
     } else if (d.kind === "piece") {
       if (!d.started && Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0) < 5) return;
@@ -262,6 +282,11 @@
     const d = drag;
     const target = over;
     drag = null;
+    if (ghost) {
+      settling = true;
+      setTimeout(() => (settling = false), 260);
+    }
+    ghost = null;
     tip = null;
     over = null;
     snapLine = null;
@@ -383,6 +408,7 @@
     <button class="btn icon small ghost" onclick={() => studio.removeSel()} disabled={!studio.sel} title={t("Supprimer (Suppr)")}><Trash2 size={15} /></button>
     <button class="btn small ghost" onclick={() => studio.freezeFrame()} disabled={studio.indexAt(studio.t) < 0} title={t("Figer l'image à la tête de lecture pendant 2 s")}><Snowflake size={15} />{t("Figer")}</button>
     <span class="hint faint">{studio.hint}</span>
+    <button class="magnet" class:on={studio.follow} onclick={() => studio.setFollow(!studio.follow)} aria-pressed={studio.follow} title={t(studio.follow ? "Textes et effets liés à l'image : un ralenti ou une coupe ne les décale plus (la musique reste fixe)" : "Textes et effets fixes : ils restent à leur seconde quand la vidéo change de durée")}><Link2 size={15} /></button>
     <button class="magnet" class:on={studio.snap} onclick={() => { studio.snap = !studio.snap; studio.say(studio.snap ? "Aimant activé : les éléments se calent sur les bords, la tête de lecture et les kills" : "Aimant désactivé : placement libre"); }} aria-pressed={studio.snap} title={t(studio.snap ? "Aimant activé : les éléments se calent sur les bords, la tête de lecture et les kills" : "Aimant désactivé : placement libre")}><Magnet size={15} /></button>
     <button class="btn icon small ghost" onclick={() => (studio.zoom = Math.max(1, studio.zoom / 1.4))} title={t("Dézoomer (-)")}><ZoomOut size={15} /></button>
     <input class="zoom" type="range" min="1" max="60" step="0.1" bind:value={studio.zoom} aria-label={t("Zoom de la frise")} />
@@ -421,7 +447,7 @@
           <div class="lane" onpointerdown={scrubDown} role="presentation">
             {#each tr.items as l (l.uid)}
               {@const Icon = kindIcon[l.kind]}
-              <div class="item layer {l.kind}" class:sel={isSel(l.uid)} style="left:{X(l.at)}px;width:{Math.max(6, l.dur * pps)}px" onpointerdown={(e) => itemDown(e, l, tr)} role="presentation" title={itemLabel(l)}>
+              <div class="item layer {l.kind}" class:sel={isSel(l.uid)} class:settle={settling} style="left:{X(l.at + itemShift(l, false))}px;width:{Math.max(6, l.dur * pps)}px" onpointerdown={(e) => itemDown(e, l, tr)} role="presentation" title={itemLabel(l)}>
                 <span class="grip l" onpointerdown={(e) => trimDown(e, l, "start", tr)} role="presentation"></span>
                 {#if l.kind === "image" || l.kind === "gif"}
                   <span class="ithumb" style="background-image:url('{fileUrl(l.path)}')"></span>
@@ -445,7 +471,7 @@
         <div class="head"><Film size={13} /><span class="name">{t("Vidéo")}</span></div>
         <div class="lane" onpointerdown={scrubDown} role="presentation">
           {#each P.pieces as p, i (p.uid)}
-            {@const left = X(L.offsets[i])}
+            {@const left = X(L.offsets[i] + pieceShift(i))}
             {@const w = Math.max(8, L.lens[i] * pps)}
             {@const tl = tiles(p, left, w)}
             <div
@@ -454,6 +480,7 @@
               class:freeze={p.kind === "freeze"}
               class:missing={media.missing[p.path]}
               class:moving={drag?.kind === "piece" && drag.id === p.uid && drag.started}
+              class:settle={settling}
               style="left:{left}px;width:{w}px"
               onpointerdown={(e) => pieceDown(e, p, i)}
               role="presentation"
@@ -465,10 +492,10 @@
                 <!-- Image figée : la vignette de l'image tenue + un flocon ; le nom seulement s'il y a la place -->
                 <span class="ptitle frz" class:narrow={w < 110} title={t("Image figée")}><Snowflake size={11} />{#if w >= 110}{t("Image figée")}{/if}</span>
               {:else}
-                <span class="ptitle" class:after={i > 0}>{p.title}{#if p.speed !== 1 || p.ramp} · {p.ramp ? t("ralenti") : `${p.speed}×`}{/if}</span>
-                {#each p.markers as m}
+                <span class="ptitle" class:after={i > 0}>{p.title}{#if p.speed !== 1 || p.ramp || p.killRamps?.length} · {p.ramp || p.killRamps?.length ? t("ralenti") : `${p.speed}×`}{/if}</span>
+                {#each studio.momentsOf(p) as m}
                   {@const lt = localAt(p, m.time)}
-                  {#if lt !== null}<span class="mk {momentTone(m.kind)}" style="left:{lt * pps}px" title={m.label}><MomentIcon kind={m.kind} size={13} /></span>{/if}
+                  {#if lt !== null}<span class="mk {momentTone(m.kind)}" class:precise={m.precise} style="left:{lt * pps}px" title={m.precise ? t("{x} · moment exact où le kill apparaît", { x: t(m.label) }) : t(m.label)}><MomentIcon kind={m.kind} size={13} /></span>{/if}
                 {/each}
               {/if}
               {#if media.missing[p.path]}<span class="lost" title={p.path}><FileX size={12} />{t("Fichier introuvable")}</span>{/if}
@@ -477,7 +504,7 @@
               <span class="grip r" onpointerdown={(e) => pieceTrimDown(e, p, "end")} role="presentation"></span>
             </div>
             {#if i > 0}
-              <button class="junction" class:on={studio.junction === i} class:has={P.pieces[i - 1].transition !== "none"} style="left:{X(L.offsets[i] + L.trans[i] / 2)}px" onpointerdown={(e) => e.stopPropagation()} onclick={() => { studio.sel = null; studio.junction = i; }} title={t("Transition")}><Blend size={11} /></button>
+              <button class="junction" class:on={studio.junction === i} class:has={P.pieces[i - 1].transition !== "none"} style="left:{X(L.offsets[i] + L.trans[i] / 2 + pieceShift(i))}px" onpointerdown={(e) => e.stopPropagation()} onclick={() => { studio.sel = null; studio.junction = i; }} title={t("Transition")}><Blend size={11} /></button>
             {/if}
           {/each}
           {#if dropAt !== null}<i class="dropline" style="left:{X(dropAt < P.pieces.length ? L.offsets[dropAt] : L.total)}px"></i>{/if}
@@ -498,7 +525,7 @@
             {#each tr.items as a (a.uid)}
               {@const Icon = audioIcon[(a as AudioItem).kind]}
               {@const au = a as AudioItem}
-              <div class="item audio {au.kind}" class:sel={isSel(au.uid)} style="left:{X(au.at)}px;width:{Math.max(6, au.dur * pps)}px" onpointerdown={(e) => itemDown(e, au, tr)} role="presentation" title={au.name}>
+              <div class="item audio {au.kind}" class:sel={isSel(au.uid)} class:settle={settling} style="left:{X(au.at + itemShift(au, true))}px;width:{Math.max(6, au.dur * pps)}px" onpointerdown={(e) => itemDown(e, au, tr)} role="presentation" title={au.name}>
                 <span class="grip l" onpointerdown={(e) => trimDown(e, au, "start", tr)} role="presentation"></span>
                 <canvas class="awave" use:wave={{ w: media.waves[au.path], start: au.srcStart, end: au.srcStart + au.dur, width: Math.max(6, au.dur * pps), height: AUDIO_H - 6, v: au.volume }}></canvas>
                 <span class="alabel"><Icon size={11} />{au.name}</span>
@@ -599,6 +626,8 @@
   /* Repères de kills : picto dans une pastille sombre (lisible sur n'importe quelle image) + trait à l'instant exact */
   .mk { position: absolute; top: 22px; z-index: 2; translate: -50% 0; width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; color: #f2f3f5; background: rgba(8, 9, 12, 0.88); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16), 0 2px 6px rgba(0, 0, 0, 0.6); pointer-events: none; }
   .mk::after { content: ""; position: absolute; left: 50%; top: 100%; width: 1px; height: 12px; margin-left: -0.5px; background: rgba(255, 255, 255, 0.55); }
+  /* Recalé sur le kill feed : trait plein jusqu'en bas du morceau (moment exact) */
+  .mk.precise::after { height: 26px; background: rgba(255, 255, 255, 0.85); }
   .mk.gold { color: #ffd25a; }
   .mk.green { color: #3ddc97; }
   .mk.dim { color: #9aa3b5; }
@@ -617,4 +646,7 @@
   .playhead i { position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4); }
   .playhead i::before { content: ""; position: absolute; top: 0; left: -5px; width: 12px; height: 10px; background: #fff; clip-path: polygon(0 0, 100% 0, 50% 100%); }
   .tip { position: absolute; top: 26px; z-index: 8; transform: translateX(-50%); padding: 2px 6px; border-radius: 5px; background: #fff; color: #0b0c0f; font-size: 11px; pointer-events: none; }
+  /* Au lâcher d'un rognage, le montage se recolle en douceur (pas pendant le geste) */
+  .piece.settle, .item.settle { transition: left 180ms var(--ease); }
+  @media (prefers-reduced-motion: reduce) { .piece.settle, .item.settle { transition: none; } }
 </style>

@@ -12,8 +12,10 @@ mod rapport;
 mod editor;
 mod ffmpeg;
 mod inputs;
+mod killfeed;
 mod library;
 mod media;
+mod musique;
 mod recorder;
 mod render;
 mod settings;
@@ -389,7 +391,9 @@ fn clip_last(app: &AppHandle, seconds: u32) {
             ..Default::default()
         });
     }
-    save_clip(app.clone(), now - seconds as f64, now, None, None, "manual", vec![(now, "manual".into(), "Raccourci".into())]);
+    let mut markers = kills_between(now - seconds as f64, now);
+    markers.push((now, "manual".into(), "Raccourci".into()));
+    save_clip(app.clone(), now - seconds as f64, now, None, None, "manual", markers);
 }
 
 fn screenshot(app: &AppHandle) {
@@ -427,6 +431,23 @@ fn update_hold(app: &AppHandle) {
         (x, y) => x.or(y),
     };
     state.recorder.lock().set_hold(from);
+}
+
+/// Kills reçus du jeu (GSI) ces 10 dernières minutes : les clips faits au raccourci les reçoivent aussi
+/// comme repères (avant la 0.4.8, seuls les clips automatiques et sur mesure en avaient).
+static RECENT_KILLS: parking_lot::Mutex<std::collections::VecDeque<(f64, String, String)>> = parking_lot::Mutex::new(std::collections::VecDeque::new());
+
+fn remember_kill(time: f64, kind: &str, label: &str) {
+    let mut k = RECENT_KILLS.lock();
+    k.push_back((time, kind.to_string(), label.to_string()));
+    while k.front().is_some_and(|f| time - f.0 > 600.0) || k.len() > 500 {
+        k.pop_front();
+    }
+}
+
+/// Kills du jeu entre `start` et `end` (heure du PC), pour un clip fait au raccourci.
+fn kills_between(start: f64, end: f64) -> Vec<(f64, String, String)> {
+    RECENT_KILLS.lock().iter().filter(|k| k.0 >= start && k.0 <= end).cloned().collect()
 }
 
 /// Ajoute un repère au clip sur mesure et à la session en cours (kills CS2, touche « repère »).
@@ -1074,6 +1095,82 @@ async fn edit_trim(app: AppHandle, id: String, start: f64, end: f64, exact: bool
     .map_err(err)
 }
 
+/// Raccourcit un clip SUR PLACE (bouton « Raccourcir » des Clips, comme Medal) : même fichier, même nom, mêmes
+/// collections et favori ; repères de kills et touches recalés ; l'original part dans la Corbeille de Windows.
+/// Coupe à l'image près (ré-encodage rapide) : une copie directe ne coupe que sur les images clés.
+pub fn shorten_file(source: &Clip, start: f64, end: f64, progress: &dyn Fn(f64)) -> anyhow::Result<Clip> {
+    use anyhow::Context;
+    let src = PathBuf::from(&source.path);
+    let full = ffmpeg::duration(&src).unwrap_or(source.duration);
+    let (start, end) = (start.max(0.0), end.min(full));
+    if end - start < 0.5 {
+        anyhow::bail!("Garde au moins une demi-seconde.");
+    }
+    let out = editor::trim(&src, start, end, true, progress)?;
+    if let Err(e) = library::recycle(&src) {
+        let _ = std::fs::remove_file(&out);
+        return Err(e).context("Le clip d'origine est encore ouvert (lecteur, autre logiciel) : réessaie dans un instant");
+    }
+    std::fs::rename(&out, &src).context("Remplacement du clip")?;
+    let duration = ffmpeg::duration(&src).unwrap_or(end - start);
+    let markers: Vec<library::Marker> = source
+        .markers
+        .iter()
+        .filter(|m| m.time >= start - 0.05 && m.time <= end + 0.05)
+        .map(|m| library::Marker { time: (m.time - start).clamp(0.0, duration), ..m.clone() })
+        .collect();
+    // Nouvelle vignette (nom nouveau : l'interface ne garde pas l'ancienne image en cache)
+    let thumb = library::thumbs_dir().join(format!("{}-{}.jpg", source.id, (util::now() * 1000.0) as u64));
+    let at = markers.iter().find(|m| m.kind != "manual").map(|m| m.time).unwrap_or(duration * 0.4).clamp(0.0, (duration - 0.1).max(0.0));
+    let _ = ffmpeg::thumbnail(&src, at, &thumb);
+    if thumb.is_file() && !source.thumb.is_empty() {
+        let _ = std::fs::remove_file(&source.thumb);
+    }
+    // Touches à l'écran : même découpe
+    let keys: Vec<inputs::InputEvent> = inputs::for_clip(&source.id)
+        .into_iter()
+        .filter(|e| e.t >= start && e.t <= end)
+        .map(|e| inputs::InputEvent { t: e.t - start, ..e })
+        .collect();
+    inputs::save_events(&source.id, &keys);
+    let mut c = source.clone();
+    c.duration = duration;
+    c.size = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+    c.markers = markers;
+    if thumb.is_file() {
+        c.thumb = thumb.to_string_lossy().to_string();
+    }
+    log::info!("clip raccourci : {} ({:.1} → {:.1} s)", src.display(), full, duration);
+    Ok(c)
+}
+
+#[tauri::command]
+async fn clip_shorten(app: AppHandle, id: String, start: f64, end: f64) -> Res<Clip> {
+    let source = app.state::<AppState>().library.lock().get(&id).cloned().ok_or("Clip introuvable")?;
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Clip> {
+        let c = shorten_file(&source, start, end, &progress_fn(&app, "trim"))?;
+        let state = app.state::<AppState>();
+        let mut lib = state.library.lock();
+        // Seuls la durée, la taille, la vignette et les repères changent (un renommage ou une collection
+        // faits pendant la coupe sont gardés)
+        let out = match lib.get_mut(&id) {
+            Some(x) => {
+                x.duration = c.duration;
+                x.size = c.size;
+                x.thumb = c.thumb.clone();
+                x.markers = c.markers.clone();
+                x.clone()
+            }
+            None => c,
+        };
+        lib.save()?;
+        Ok(out)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
+}
+
 #[tauri::command]
 async fn edit_merge(app: AppHandle, ids: Vec<String>) -> Res<Clip> {
     let clips: Vec<Clip> = {
@@ -1119,6 +1216,18 @@ async fn media_filmstrip(path: String) -> Res<media::Filmstrip> {
 #[tauri::command]
 async fn media_waveform(path: String) -> Res<media::Waveform> {
     tauri::async_runtime::spawn_blocking(move || media::waveform(std::path::Path::new(&path))).await.map_err(err)?.map_err(err)
+}
+
+/// Musique par lien (TikTok : son d'origine ; YouTube, SoundCloud), voir musique.rs.
+#[tauri::command]
+async fn music_from_link(url: String) -> Res<musique::LinkAudio> {
+    tauri::async_runtime::spawn_blocking(move || musique::import(&url)).await.map_err(err)?.map_err(err)
+}
+
+/// Moments où tes kills apparaissent dans le kill feed de CS2 (secondes dans le fichier), voir killfeed.rs.
+#[tauri::command]
+async fn media_killfeed(path: String) -> Res<Vec<f64>> {
+    tauri::async_runtime::spawn_blocking(move || killfeed::scan(std::path::Path::new(&path))).await.map_err(err)?.map_err(err)
 }
 
 /// Pistes son séparées d'un clip, en fichiers à part (aperçu du Studio).
@@ -2203,6 +2312,91 @@ pub fn hold_test(out: PathBuf) -> i32 {
     }
 }
 
+/// Test du raccourcissement : `rewind.exe --raccourcir <clip.mp4>` (REWIND_DATA_DIR vers un dossier de test).
+/// Travaille sur une copie : garde 4 → 13 s, vérifie durée, repères et touches recalés.
+pub fn shorten_test(path: String) -> i32 {
+    init_logging();
+    let dir = util::data_dir().join("raccourcir-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let copy = dir.join("clip de test.mp4");
+    if let Err(e) = std::fs::copy(&path, &copy) {
+        println!("ÉCHEC copie : {e}");
+        return 1;
+    }
+    let clip = Clip {
+        id: "test-raccourci".into(),
+        path: copy.to_string_lossy().to_string(),
+        title: "Test".into(),
+        duration: ffmpeg::duration(&copy).unwrap_or(0.0),
+        markers: vec![
+            library::Marker { time: 2.0, kind: "kill".into(), label: "avant".into() },
+            library::Marker { time: 5.0, kind: "headshot".into(), label: "gardé 1".into() },
+            library::Marker { time: 12.0, kind: "kill".into(), label: "gardé 2".into() },
+            library::Marker { time: 20.0, kind: "kill".into(), label: "après".into() },
+        ],
+        tags: vec!["Edit".into()],
+        ..Default::default()
+    };
+    inputs::save_events(&clip.id, &[inputs::InputEvent { t: 1.0, key: 0x57, down: true }, inputs::InputEvent { t: 6.0, key: 0x57, down: true }]);
+    let t0 = std::time::Instant::now();
+    match shorten_file(&clip, 4.0, 13.0, &|_| {}) {
+        Ok(c) => {
+            let keys = inputs::for_clip(&c.id);
+            let marks: Vec<String> = c.markers.iter().map(|m| format!("{} {:.2}", m.label, m.time)).collect();
+            println!("{:.1} s · durée {:.2} s (attendu 9) · repères {:?} · touches {:?} · collections {:?}", t0.elapsed().as_secs_f64(), c.duration, marks, keys.iter().map(|k| k.t).collect::<Vec<_>>(), c.tags);
+            let ok = (c.duration - 9.0).abs() < 0.15 && c.markers.len() == 2 && (c.markers[0].time - 1.0).abs() < 0.01 && keys.len() == 1 && (keys[0].t - 2.0).abs() < 0.01 && copy.is_file();
+            println!("{}", if ok { "OK" } else { "ÉCHEC" });
+            i32::from(!ok)
+        }
+        Err(e) => {
+            println!("ÉCHEC : {e:#}");
+            1
+        }
+    }
+}
+
+/// Test de la musique par lien : `rewind.exe --musique <lien>` (REWIND_DATA_DIR vers un dossier de test).
+pub fn music_test(url: String) -> i32 {
+    init_logging();
+    let t0 = std::time::Instant::now();
+    match musique::import(&url) {
+        Ok(a) => {
+            println!("{:.1} s · {} · {} {}", t0.elapsed().as_secs_f64(), a.name, a.path, a.note);
+            i32::from(!std::path::Path::new(&a.path).is_file())
+        }
+        Err(e) => {
+            println!("ÉCHEC : {e:#}");
+            1
+        }
+    }
+}
+
+/// Test du kill feed : `rewind.exe --killfeed <fichier ou dossier>` (REWIND_DATA_DIR vers un dossier de test).
+/// Compare avec les repères du jeu quand le clip est dans la bibliothèque.
+pub fn killfeed_test(target: String) -> i32 {
+    init_logging();
+    let p = std::path::PathBuf::from(&target);
+    let files: Vec<std::path::PathBuf> = if p.is_dir() {
+        let mut v: Vec<_> = std::fs::read_dir(&p).map(|d| d.flatten().map(|e| e.path()).filter(|f| f.extension().is_some_and(|x| x.eq_ignore_ascii_case("mp4"))).collect()).unwrap_or_default();
+        v.sort();
+        v
+    } else {
+        vec![p]
+    };
+    let mut fails = 0;
+    for f in files {
+        let t0 = std::time::Instant::now();
+        match killfeed::scan(&f) {
+            Ok(k) => println!("{:.1} s · {} · kills {:?}", t0.elapsed().as_secs_f64(), f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), k),
+            Err(e) => {
+                fails += 1;
+                println!("ÉCHEC {} : {e:#}", f.display());
+            }
+        }
+    }
+    i32::from(fails > 0)
+}
+
 /// Test des infos du Studio : `rewind.exe --media <fichier>` (pistes, vignettes, forme d'onde, temps de calcul).
 pub fn media_test(path: String) -> i32 {
     let p = std::path::Path::new(&path);
@@ -2980,6 +3174,7 @@ pub fn run() {
                             label.push_str(&format!(" · {}", m.weapon.to_uppercase()));
                         }
                         add_hold_marker(&h3, m.time, &m.kind, &label);
+                        remember_kill(m.time, &m.kind, &label);
                     }
                     let _ = h3.emit("cs2-event", ev);
                 }
@@ -3067,6 +3262,9 @@ pub fn run() {
             voiceover_stop,
             media_info,
             media_filmstrip,
+            media_killfeed,
+            music_from_link,
+            clip_shorten,
             media_waveform,
             media_stems,
             admin_input_status,

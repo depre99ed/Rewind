@@ -5,7 +5,8 @@ import { api } from "../api";
 import { t } from "../i18n.svelte";
 import {
   type Layer, type Project, type AudioItem,
-  clampSpeed, fadeWindows, frameSize, isFilterFx, kfValue, layerState, layout, opacityAnimated, projectTotal, smooth, speedSegments, typeDur,
+  clampSpeed, fadeWindows, frameSize, isFilterFx, kfValue, layerState, layout, opacityAnimated, projectTotal, mergePunches, smooth, speedSegments, typeDur,
+  LETTER_IN, LETTER_OUT, letterSpan,
 } from "./model";
 import { textPng, keysPngs, keysSize, layoutLabels, presetOf, fxPng } from "./render";
 import { app } from "../state.svelte";
@@ -134,6 +135,7 @@ export async function compile(p: Project, o: ExportOptions, onStep: (s: string) 
     zoom.push({ t: b, ...at(b - a) }, { t: b + 0.001, z: 1, x: 0.5, y: 0.5 });
   });
   zoom.sort((x, y) => x.t - y.t);
+  mergePunches(p, zoom);
 
   // ---- Calques : de la piste du bas à celle du haut ----
   const layers: any[] = [];
@@ -148,6 +150,7 @@ export async function compile(p: Project, o: ExportOptions, onStep: (s: string) 
       const { fin, fout } = fadeWindows(l);
       const opKf = opacityAnimated(l) ? smoothCurve(l.kf, "opacity", l.at) : [];
       const base = { at: l.at, dur: l.dur, opacity: opacityAnimated(l) ? 1 : l.opacity, op_kf: opKf, fade_in: fin, fade_out: fout, windows: [] as [number, number][] };
+      if (l.kind === "fx" && l.fx === "punch") continue; // dans le zoom (addPunches)
       if (l.kind === "fx") {
         // Filtre sur toute l'image : appliqué par le moteur après les calques ; voile : image plein cadre
         if (isFilterFx(l)) effects.push({ kind: l.fx, at: l.at, dur: l.dur, strength: l.strength });
@@ -163,7 +166,25 @@ export async function compile(p: Project, o: ExportOptions, onStep: (s: string) 
       const kf = layerKfs(l, W, H, maxScale);
       if (l.kind === "text") {
         const k = (H / 1080) * maxScale;
-        if (l.animIn === "type") {
+        if (LETTER_IN.includes(l.animIn) || LETTER_OUT.includes(l.animOut)) {
+          // Lettre par lettre : une image du texte toutes les 1/30 s pendant l'animation, le texte fixe entre les deux
+          const span = letterSpan(l);
+          const inA = LETTER_IN.includes(l.animIn) ? Math.min(span, l.dur) : 0;
+          const outA = LETTER_OUT.includes(l.animOut) ? Math.min(span, l.dur - inA) : 0;
+          const step = 1 / 30;
+          const frames = async (from: number, to: number) => {
+            for (let tt = from; tt < to - 1e-4; tt += step) {
+              const img = textPng(l, k, 1, Math.min(tt + step / 2, l.dur - 1e-3));
+              layers.push({ ...base, kind: "image", path: await png(img.b64), w: img.w, h: img.h, kf, windows: [[l.at + tt, l.at + Math.min(to, tt + step)]] });
+            }
+          };
+          if (inA > 0) await frames(0, inA);
+          if (l.dur - inA - outA > 1e-3) {
+            const img = textPng(l, k);
+            layers.push({ ...base, kind: "image", path: await png(img.b64), w: img.w, h: img.h, kf, windows: [[l.at + inA, l.at + l.dur - outA]] });
+          }
+          if (outA > 0) await frames(l.dur - outA, l.dur);
+        } else if (l.animIn === "type") {
           // Machine à écrire : une image par groupe de lettres, chacune affichée à son tour
           const full = l.text.replace(/\n/g, "").length;
           const steps = Math.max(1, Math.min(40, full));

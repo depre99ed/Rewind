@@ -97,6 +97,10 @@ struct Capture {
 }
 
 fn stop_child(child: &mut Child) {
+    // Déjà arrêté (stop_capture) : rien à faire
+    if let Ok(Some(_)) = child.try_wait() {
+        return;
+    }
     // Arrêt propre : « q » sur l'entrée de FFmpeg, puis arrêt forcé si besoin
     if let Some(stdin) = child.stdin.as_mut() {
         use std::io::Write;
@@ -112,6 +116,34 @@ fn stop_child(child: &mut Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Arrête l'image et le son en même temps : « q » aux deux, une seule attente commune (1,5 s).
+fn stop_children(video: &mut Child, audio: Option<&mut Child>) {
+    use std::io::Write;
+    let mut all: Vec<&mut Child> = vec![video];
+    if let Some(a) = audio {
+        all.push(a);
+    }
+    for c in all.iter_mut() {
+        if let Some(stdin) = c.stdin.as_mut() {
+            let _ = stdin.write_all(b"q");
+            let _ = stdin.flush();
+        }
+    }
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < deadline {
+        if all.iter_mut().all(|c| matches!(c.try_wait(), Ok(Some(_)))) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    for c in all.iter_mut() {
+        if !matches!(c.try_wait(), Ok(Some(_))) {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
 }
 
 impl Drop for Capture {
@@ -207,6 +239,8 @@ pub struct Recorder {
     /// 2026-11-18 : AMF « SubmitInput() failed with error 18 » sur les textures de la capture).
     fallback: u8,
     early_crashes: u32,
+    /// Dernier grand ménage (mémoire RAM non listée, dossiers de session) : toutes les 5 s suffisent
+    last_sweep: Instant,
 }
 
 /// Une session = un lancement de FFmpeg. Deux sessions de même `key` peuvent être recollées.
@@ -251,12 +285,13 @@ impl Recorder {
             mic_muted: Arc::new(AtomicBool::new(false)),
             last_tick: 0.0,
             last_checks: Instant::now(),
-            last_disk: Instant::now() - Duration::from_secs(60),
+            last_disk: util::ago(Duration::from_secs(60)),
             disk_low: false,
             sessions: VecDeque::new(),
             hold_from: None,
             fallback: 0,
             early_crashes: 0,
+            last_sweep: Instant::now(),
         }
     }
 
@@ -367,7 +402,21 @@ impl Recorder {
 
     fn stop_capture(&mut self) {
         if let Some(mut c) = self.capture.take() {
+            // 2026-11-24 : on arrête d'abord les deux FFmpeg ENSEMBLE (avant : l'un après l'autre,
+            // jusqu'à 3 s sous le verrou), puis on lit les listes : le dernier segment, écrit par
+            // FFmpeg en quittant, est maintenant gardé (avant, il était lu trop tôt et perdu).
+            stop_children(&mut c.child, c.audio_child.as_mut());
             Self::read_lists(&mut c, &mut self.segments, &mut self.audio_segments);
+            // Mode RAM : le fil de réception range le dernier segment juste après la fin de FFmpeg
+            if c.ram.is_some() {
+                for _ in 0..6 {
+                    if c.ram_wait == 0 {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                    Self::read_lists(&mut c, &mut self.segments, &mut self.audio_segments);
+                }
+            }
         }
     }
 
@@ -410,7 +459,7 @@ impl Recorder {
             let video_exit = c.child.try_wait().ok().flatten().map(|s| ("image", s, "ffmpeg.log"));
             let audio_exit = c.audio_child.as_mut().and_then(|a| a.try_wait().ok().flatten()).map(|s| ("son", s, "ffmpeg-audio.log"));
             if let Some((which, status, logname)) = video_exit.or(audio_exit) {
-                let log = fs::read_to_string(c.dir.join(logname)).unwrap_or_default();
+                let log = util::read_tail(&c.dir.join(logname), 8 << 10);
                 let last: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).rev().take(3).collect();
                 self.error = format!(
                     "L'enregistreur ({which}) s'est arrêté ({status}). {}",
@@ -501,6 +550,13 @@ impl Recorder {
             seg.discard();
             self.audio_segments.pop_front();
         }
+        // Le reste parcourt tous les segments et le dossier tampon : toutes les 5 s, pas 4 fois par seconde
+        // (2026-11-24 : des centaines d'allocations par tick pour rien).
+        if self.last_sweep.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        self.last_sweep = Instant::now();
+        self.spill_held_ram(now);
         // RAM : segments reçus mais jamais listés (fin de session coupée), ou d'une ancienne session
         {
             let used: std::collections::HashSet<String> =
@@ -540,6 +596,46 @@ impl Recorder {
                     let _ = fs::remove_dir_all(&p);
                 }
             }
+        }
+    }
+
+    /// Mode RAM + clip sur mesure / session complète : tout est gardé depuis `hold_from`. Au-delà d'un
+    /// plafond (un quart de la RAM du PC, 4 Go au plus), les segments plus vieux que le tampon normal
+    /// partent sur le disque, dans le dossier de la session (2026-11-24 : avant, la mémoire montait sans
+    /// limite, ~4,5 Go par heure à 10 Mb/s). Le clip est identique : il lit le fichier au lieu de la RAM.
+    fn spill_held_ram(&mut self, now: f64) {
+        if self.hold_from.is_none() {
+            return;
+        }
+        let mut cap = crate::ram::memory().map(|m| m.0 / 4).unwrap_or(2 << 30).min(4 << 30);
+        // Test : plafond réduit pour vérifier le passage sur le disque (`--hold`)
+        if let Some(mb) = std::env::var("REWIND_TEST_RAM_CAP_MB").ok().and_then(|v| v.parse::<u64>().ok()) {
+            cap = mb << 20;
+        }
+        if crate::ram::total_bytes() <= cap {
+            return;
+        }
+        let limit = now - self.retention();
+        let mut spilled = 0u32;
+        for list in [&mut self.segments, &mut self.audio_segments] {
+            for seg in list.iter_mut() {
+                if seg.end >= limit {
+                    break;
+                }
+                if !seg.ram {
+                    continue;
+                }
+                let name = seg.ram_name();
+                let Some(data) = crate::ram::get(&name) else { continue };
+                if fs::write(&seg.path, &*data).is_ok() {
+                    crate::ram::remove(&name);
+                    seg.ram = false;
+                    spilled += 1;
+                }
+            }
+        }
+        if spilled > 0 {
+            log::info!("tampon RAM plein (session gardée) : {spilled} segment(s) anciens écrits sur le disque");
         }
     }
 
@@ -647,7 +743,7 @@ impl Recorder {
             "-segment_list_size", "0", &video_out,
         ]);
         fs::write(dir.join("command.txt"), vargs.join(" ")).ok();
-        let child = util::command(&tools.ffmpeg)
+        let child = util::command_capture(&tools.ffmpeg, encoder == "libx264")
             .current_dir(&dir)
             .args(&vargs)
             .stdin(Stdio::piped())
@@ -730,7 +826,7 @@ impl Recorder {
                 "audio.csv", "-segment_list_type", "csv", "-segment_list_size", "0", &audio_out,
             ]);
             fs::write(dir.join("command-audio.txt"), aargs.join(" ")).ok();
-            let a = util::command(&tools.ffmpeg)
+            let a = util::command_capture(&tools.ffmpeg, false)
                 .current_dir(&dir)
                 .args(&aargs)
                 .stdin(Stdio::piped())
@@ -875,6 +971,17 @@ impl Recorder {
     /// d'avant et d'après sont recollés, chacun avec son propre calage du son (bug trouvé par le
     /// test d'endurance du 2026-11-13 : un clip juste après une panne ne faisait que 3 s).
     pub fn prepare_export(&self, start: f64, end: f64) -> Result<PreparedExport> {
+        self.prepare_export_inner(start, end, false)
+    }
+
+    /// Comme `prepare_export`, mais en mode RAM les segments ne sont PAS écrits ici (sous le verrou du
+    /// moteur) : `export()` les écrit ensuite, verrou relâché (2026-11-24 : un long clip en RAM pouvait
+    /// bloquer le moteur plus de 8 s et déclencher un faux redémarrage de la capture).
+    pub fn prepare_export_deferred(&self, start: f64, end: f64) -> Result<PreparedExport> {
+        self.prepare_export_inner(start, end, true)
+    }
+
+    fn prepare_export_inner(&self, start: f64, end: f64, defer_ram: bool) -> Result<PreparedExport> {
         let Some(latest) = self.segments.back() else {
             bail!("Le tampon est encore vide : l'enregistrement vient de démarrer.");
         };
@@ -901,12 +1008,19 @@ impl Recorder {
         fs::create_dir_all(&work)?;
         // Liens physiques : le nettoyage du tampon ne peut pas effacer les fichiers pendant la copie
         let mut counter = 0usize;
+        let mut pending: Vec<(Arc<Vec<u8>>, PathBuf)> = Vec::new();
         let mut freeze = |list: &[&Segment], ext: &str, prefix: &str| -> Result<(Vec<PathBuf>, Vec<f64>)> {
             let mut files = Vec::new();
             for seg in list {
                 let dst = work.join(format!("{prefix}{counter:06}.{ext}"));
                 counter += 1;
-                seg.freeze(&dst)?;
+                if defer_ram && seg.ram {
+                    // On garde une référence aux données : elles restent valables même si le tampon les retire
+                    let data = crate::ram::get(&seg.ram_name()).context("segment sorti de la mémoire")?;
+                    pending.push((data, dst.clone()));
+                } else {
+                    seg.freeze(&dst)?;
+                }
                 files.push(dst);
             }
             // Durée exacte de chaque segment = écart avec le suivant (l'horloge fait foi)
@@ -957,6 +1071,7 @@ impl Recorder {
             last_end: parts[parts.len() - 1].last_end,
             parts,
             tracks,
+            pending,
         })
     }
 }
@@ -980,6 +1095,8 @@ pub struct PreparedExport {
     pub first_start: f64,
     pub last_end: f64,
     tracks: Vec<String>,
+    /// Segments RAM à écrire dans `work` avant l'assemblage (`prepare_export_deferred`)
+    pending: Vec<(Arc<Vec<u8>>, PathBuf)>,
 }
 
 impl PreparedExport {
@@ -1095,7 +1212,15 @@ fn read_list(dir: &Path, list: &str, offset: &mut u64, session: u64, segments: &
 }
 
 /// Assemble le clip (sans réencodage), crée la miniature et renvoie la fiche du clip.
-pub fn export(prepared: PreparedExport, req: ExportRequest) -> Result<Clip> {
+pub fn export(mut prepared: PreparedExport, req: ExportRequest) -> Result<Clip> {
+    let _urgent = util::Urgent::begin(); // clip demandé : priorité normale-basse même en jeu
+    // Segments RAM gardés de côté par `prepare_export_deferred` : écrits maintenant, hors verrou
+    for (data, dst) in prepared.pending.drain(..) {
+        if let Err(e) = fs::write(&dst, &*data) {
+            let _ = fs::remove_dir_all(&prepared.work);
+            return Err(e).context("copie du tampon en mémoire");
+        }
+    }
     let reserved: std::cell::RefCell<Option<PathBuf>> = std::cell::RefCell::new(None);
     let result = (|| -> Result<Clip> {
         let tools = ffmpeg::tools()?;
@@ -1264,6 +1389,7 @@ pub fn export(prepared: PreparedExport, req: ExportRequest) -> Result<Clip> {
 
 /// Capture d'écran : la dernière image du segment le plus récent (instantané, marche en plein écran).
 pub fn screenshot(recorder: &Mutex<Recorder>, folder: &Path, app: &str) -> Result<Clip> {
+    let _urgent = util::Urgent::begin();
     let seg = {
         let r = recorder.lock();
         r.segments.back().cloned().context("Rien n'est encore enregistré.")?
@@ -1362,7 +1488,7 @@ mod tests {
     #[test]
     fn reperes_dans_un_clip_recolle() {
         // Morceau 1 : 100 → 105 ; panne ; morceau 2 : 109 → 120, clip demandé jusqu'à 118
-        let p = PreparedExport { work: PathBuf::new(), parts: vec![part(100.0, 105.0), part(109.0, 120.0)], first_start: 100.0, last_end: 120.0, tracks: vec![] };
+        let p = PreparedExport { work: PathBuf::new(), parts: vec![part(100.0, 105.0), part(109.0, 120.0)], first_start: 100.0, last_end: 120.0, tracks: vec![], pending: vec![] };
         assert!((p.clip_time(102.0, 118.0) - 2.0).abs() < 1e-9);
         assert!((p.clip_time(107.0, 118.0) - 5.0).abs() < 1e-9, "un repère dans le trou va au début du morceau suivant");
         assert!((p.clip_time(110.0, 118.0) - 6.0).abs() < 1e-9);

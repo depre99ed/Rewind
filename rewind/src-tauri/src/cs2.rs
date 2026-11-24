@@ -842,7 +842,9 @@ pub fn token() -> String {
 /// Sert à rejouer exactement une partie pour comprendre un clip manqué ou en trop.
 struct Journal {
     day: String,
-    file: Option<std::fs::File>,
+    /// Écriture groupée (2026-11-24) : avant, un appel au disque par message (jusqu'à 20 par seconde)
+    file: Option<std::io::BufWriter<std::fs::File>>,
+    flushed: std::time::Instant,
 }
 
 impl Journal {
@@ -854,7 +856,7 @@ impl Journal {
 
     fn open() -> Self {
         Self::prune();
-        Self { day: String::new(), file: None }
+        Self { day: String::new(), file: None, flushed: std::time::Instant::now() }
     }
 
     /// Ménage : plus de 3 jours (au démarrage et à chaque nouveau jour : Rewind reste ouvert des semaines)
@@ -878,11 +880,39 @@ impl Journal {
                 Self::prune();
             }
             self.day = day.clone();
-            self.file = std::fs::OpenOptions::new().create(true).append(true).open(Self::dir().join(format!("{day}.jsonl"))).ok();
+            self.flush();
+            self.file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(Self::dir().join(format!("{day}.jsonl")))
+                .ok()
+                .map(|f| std::io::BufWriter::with_capacity(256 * 1024, f));
         }
-        let compact: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        // Message sur une ligne (espaces regroupés), sans liste intermédiaire
+        let mut compact = String::with_capacity(body.len());
+        for (i, w) in body.split_whitespace().enumerate() {
+            if i > 0 {
+                compact.push(' ');
+            }
+            compact.push_str(w);
+        }
         if let Some(f) = self.file.as_mut() {
-            let _ = writeln!(f, "{{\"t\":{:.3},\"body\":{}}}", util::now(), if compact.starts_with('{') { compact } else { "null".into() });
+            let _ = writeln!(f, "{{\"t\":{:.3},\"body\":{}}}", util::now(), if compact.starts_with('{') { compact.as_str() } else { "null" });
+        }
+    }
+
+    /// Vide le tampon sur le disque (toutes les 2 s au plus, et au changement de jour).
+    fn flush(&mut self) {
+        use std::io::Write;
+        if let Some(f) = self.file.as_mut() {
+            let _ = f.flush();
+        }
+        self.flushed = std::time::Instant::now();
+    }
+
+    fn flush_if_due(&mut self) {
+        if self.flushed.elapsed() >= Duration::from_secs(2) {
+            self.flush();
         }
     }
 }
@@ -906,13 +936,25 @@ pub fn serve(port: u16, mut cs2: Cs2, settings_rx: std::sync::mpsc::Receiver<Cs2
                 }
                 match server.recv_timeout(Duration::from_millis(150)) {
                     Ok(Some(mut request)) => {
+                        // Taille bornée (2026-11-24) : n'importe quel programme local pouvait envoyer
+                        // un corps énorme et bloquer ce fil ou remplir la mémoire. CS2 envoie < 100 Ko.
+                        const MAX_BODY: u64 = 4 << 20;
                         let mut body = String::new();
-                        let _ = request.as_reader().read_to_string(&mut body);
+                        use std::io::Read;
+                        let _ = <&mut dyn Read as Read>::take(request.as_reader(), MAX_BODY + 1).read_to_string(&mut body);
+                        if body.len() as u64 > MAX_BODY {
+                            let _ = request.respond(tiny_http::Response::from_string("trop grand").with_status_code(413));
+                            continue;
+                        }
                         journal.write(&body);
                         cs2.handle(&body);
                         let _ = request.respond(tiny_http::Response::from_string("OK"));
+                        journal.flush_if_due();
                     }
-                    Ok(None) => cs2.tick(),
+                    Ok(None) => {
+                        cs2.tick();
+                        journal.flush_if_due();
+                    }
                     Err(_) => std::thread::sleep(Duration::from_millis(100)),
                 }
             }

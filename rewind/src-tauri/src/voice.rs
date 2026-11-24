@@ -80,22 +80,27 @@ pub fn start(on_clip: impl Fn() + Send + 'static) {
                 };
                 // Le son du micro choisi part vers le moteur
                 let feed_stop = Arc::new(AtomicBool::new(false));
+                // Micro arrêté (débranché, retiré) : avant, la commande vocale restait « à l'écoute »
+                // pour toujours sans rien entendre (2026-11-24). Maintenant on relance.
+                let mic_dead = Arc::new(AtomicBool::new(false));
                 {
                     let audio = engine.audio.clone();
                     let mic = MIC.lock().clone();
                     let stop = Arc::clone(&feed_stop);
+                    let dead = Arc::clone(&mic_dead);
                     std::thread::Builder::new()
                         .name("voix-micro".into())
                         .spawn(move || {
                             if let Err(e) = crate::audio::mic_stream(&mic, 16_000, &stop, |pcm| audio.send(pcm.to_vec()).is_ok()) {
                                 log::warn!("commande vocale : micro illisible ({e:#})");
                             }
+                            dead.store(true, Ordering::SeqCst);
                         })
                         .ok();
                 }
                 let rx = &engine.lines;
-                let mut last_clip = Instant::now() - Duration::from_secs(60);
-                let mut last_heard_log = Instant::now() - Duration::from_secs(60);
+                let mut last_clip = crate::util::ago(Duration::from_secs(60));
+                let mut last_heard_log = crate::util::ago(Duration::from_secs(60));
                 let mut fatal = false;
                 loop {
                     if !WANTED.load(Ordering::SeqCst) || RESTART.load(Ordering::SeqCst) {
@@ -136,6 +141,10 @@ pub fn start(on_clip: impl Fn() + Send + 'static) {
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                             if engine.finished() {
+                                break;
+                            }
+                            if mic_dead.load(Ordering::SeqCst) && !feed_stop.load(Ordering::SeqCst) {
+                                log::warn!("commande vocale : le micro s'est arrêté, relance");
                                 break;
                             }
                         }

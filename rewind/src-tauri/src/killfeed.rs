@@ -351,10 +351,16 @@ pub fn scan(path: &Path) -> Result<Vec<f64>> {
             println!("{t:7.3} {} | kills {:?}", list.join("  "), tracker.kills);
         }
         tracker.push(t, &found, s);
-        if history.len() >= back {
-            history.pop_front();
+        // Rotation des tampons : le plus ancien sort de l'historique et est réutilisé (aucune allocation par image)
+        match history.len() >= back {
+            true => {
+                let mut old = history.pop_front().unwrap_or_default();
+                old.clear();
+                old.extend_from_slice(&buf);
+                history.push_back(old);
+            }
+            false => history.push_back(buf.clone()),
         }
-        history.push_back(buf.clone());
         i += 1;
     }
     let _ = child.wait();

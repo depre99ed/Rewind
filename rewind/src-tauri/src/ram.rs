@@ -39,6 +39,11 @@ pub fn remove(name: &str) {
     STORE.lock().remove(&name.to_lowercase());
 }
 
+/// Mémoire occupée par les segments (octets).
+pub fn total_bytes() -> u64 {
+    STORE.lock().values().map(|d| d.len() as u64).sum()
+}
+
 /// Retire tout ce qui n'est plus utilisé (segments sortis du tampon, fin de session coupée).
 pub fn retain(keep: impl Fn(&str) -> bool) {
     STORE.lock().retain(|k, _| keep(k));
@@ -62,6 +67,8 @@ struct Shared {
     stop: AtomicBool,
     /// Tuyaux créés mais pas encore ouverts par FFmpeg
     pending: Mutex<HashSet<u64>>,
+    /// Taille du dernier segment reçu : le suivant réserve d'emblée à peu près la bonne place
+    last_size: std::sync::atomic::AtomicUsize,
 }
 
 impl Shared {
@@ -89,7 +96,7 @@ impl Drop for Handle {
 
 impl Sink {
     pub fn start(prefix: &str, ext: &str) -> Result<Self> {
-        let shared = Arc::new(Shared { prefix: prefix.to_string(), ext: ext.to_string(), stop: AtomicBool::new(false), pending: Mutex::new(HashSet::new()) });
+        let shared = Arc::new(Shared { prefix: prefix.to_string(), ext: ext.to_string(), stop: AtomicBool::new(false), pending: Mutex::new(HashSet::new()), last_size: std::sync::atomic::AtomicUsize::new(256 << 10) });
         for i in 0..AHEAD {
             serve(&shared, i)?;
         }
@@ -145,21 +152,35 @@ fn serve(shared: &Arc<Shared>, i: u64) -> Result<()> {
         if let Err(e) = serve(&shared, i + AHEAD) {
             log::warn!("tampon RAM : {e:#}");
         }
-        let mut data: Vec<u8> = Vec::with_capacity(4 << 20);
-        let mut buf = vec![0u8; 1 << 20];
+        // 2026-11-24 : lecture directe dans le segment final, à la taille du segment précédent (+ marge).
+        // Avant : 4 Mo + 1 Mo alloués par segment, chaque octet copié deux fois, puis réalloué.
+        const CHUNK: usize = 256 << 10;
+        let guess = shared.last_size.load(Ordering::Relaxed);
+        let mut data: Vec<u8> = Vec::with_capacity(guess + guess / 8 + CHUNK);
         loop {
+            if data.capacity() - data.len() < CHUNK {
+                data.reserve(CHUNK.max(data.len() / 2));
+            }
+            let spare = data.spare_capacity_mut();
+            let want = spare.len().min(u32::MAX as usize) as u32;
             let mut read = 0u32;
-            // SAFETY : tampon et taille cohérents
-            let ok = unsafe { ReadFile(handle.0, buf.as_mut_ptr(), buf.len() as u32, &mut read, std::ptr::null_mut()) != 0 };
+            // SAFETY : on écrit au plus `want` octets dans la capacité libre de `data`, puis on ne
+            // compte comme initialisés que les `read` octets réellement écrits par ReadFile.
+            let ok = unsafe { ReadFile(handle.0, spare.as_mut_ptr() as *mut u8, want, &mut read, std::ptr::null_mut()) != 0 };
             if read > 0 {
-                data.extend_from_slice(&buf[..read as usize]);
+                // SAFETY : ReadFile a écrit `read` octets à la suite de `len`
+                unsafe { data.set_len(data.len() + read as usize) };
             }
             if !ok || read == 0 {
                 break; // FFmpeg a fermé le segment
             }
         }
         if !data.is_empty() && !shared.stop.load(Ordering::SeqCst) {
-            data.shrink_to_fit();
+            shared.last_size.store(data.len(), Ordering::Relaxed);
+            // Rendre la place en trop (gardée 2 min par segment : la mémoire compte plus que la copie)
+            if data.capacity() - data.len() > 64 << 10 {
+                data.shrink_to_fit();
+            }
             STORE.lock().insert(shared.name(i).to_lowercase(), Arc::new(data));
         }
     })?;

@@ -29,20 +29,119 @@ pub fn output_next_to(source: &Path, suffix: &str) -> PathBuf {
     unique(source.with_file_name(format!("{} {suffix}.mp4", util::safe_name(&stem))))
 }
 
-pub(crate) fn encoder_args() -> Vec<String> {
-    let enc = ffmpeg::pick_encoder("auto");
-    let mut a: Vec<String> = vec!["-c:v".into(), enc.clone()];
+/// Options d'encodage « qualité constante » pour `enc`. `fallback` : repli logiciel après l'échec d'un
+/// encodeur matériel (x264 un peu plus généreux que le réglage normal, pour ne rien perdre en qualité).
+pub(crate) fn encoder_args_for(enc: &str, fallback: bool) -> Vec<String> {
+    let mut a: Vec<String> = vec!["-c:v".into(), enc.to_string()];
     if enc.contains("nvenc") {
         a.extend(["-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0"].map(String::from));
     } else if enc.contains("amf") {
         a.extend(["-quality", "quality", "-rc", "cqp", "-qp_i", "21", "-qp_p", "23"].map(String::from));
     } else if enc.contains("qsv") {
         a.extend(["-global_quality", "22"].map(String::from));
+    } else if fallback {
+        a.extend(["-preset", "veryfast", "-crf", "19"].map(String::from));
     } else {
         a.extend(["-preset", "fast", "-crf", "21"].map(String::from));
     }
     a.extend(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"].map(String::from));
     a
+}
+
+/// Options d'encodage à débit visé (taille maximale : Discord, modèles d'export), de `-c:v` à `+faststart`.
+pub(crate) fn bitrate_args(enc: &str, kbps: f64, audio_kbps: f64) -> Vec<String> {
+    let mut a: Vec<String> = vec!["-c:v".into(), enc.to_string()];
+    if enc.contains("nvenc") {
+        a.extend(["-preset", "p6", "-tune", "hq", "-rc", "cbr", "-multipass", "fullres"].map(String::from));
+    } else if enc == "libx264" {
+        a.extend(["-preset", "medium"].map(String::from));
+    }
+    a.extend([
+        "-b:v".into(), format!("{kbps:.0}k"), "-maxrate".into(), format!("{kbps:.0}k"), "-bufsize".into(), format!("{:.0}k", kbps * 2.0),
+        "-pix_fmt".into(), "yuv420p".into(), "-c:a".into(), "aac".into(), "-b:a".into(), format!("{audio_kbps:.0}k"),
+        "-movflags".into(), "+faststart".into(),
+    ]);
+    a
+}
+
+/// Échec de FFmpeg : message court affiché à l'utilisateur + sortie d'erreur complète (pour reconnaître
+/// une panne d'encodeur matériel).
+#[derive(Debug)]
+pub(crate) struct FfmpegFailure {
+    last: String,
+    full: String,
+}
+
+impl std::fmt::Display for FfmpegFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Montage impossible : {}", self.last)
+    }
+}
+
+impl std::error::Error for FfmpegFailure {}
+
+/// Cette sortie d'erreur de FFmpeg vient-elle de l'ouverture / du fonctionnement de l'encodeur matériel
+/// (et non d'un filtre ou d'un fichier) ?
+fn encoder_failure_text(text: &str) -> bool {
+    let t = text.to_lowercase();
+    [
+        "error while opening encoder",
+        "could not open encoder",
+        "no capable devices",
+        "cannot load nvcuda",
+        "cannot load libcuda",
+        "cannot load nvencodeapi",
+        "cannot load amf",
+        "openencodesessionex",
+        "nvenc",
+        "h264_amf",
+        "h264_qsv",
+        "mfx session",
+    ]
+    .iter()
+    .any(|p| t.contains(p))
+}
+
+fn is_encoder_failure(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<FfmpegFailure>().is_some_and(|f| encoder_failure_text(&f.full))
+}
+
+/// Une panne d'encodeur matériel déjà constatée (puis réglée par x264) : les essais suivants du même lancement
+/// de Rewind passent directement par x264 au lieu de re-échouer.
+static HW_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Lance FFmpeg avec l'encodeur « auto ». `build(encodeur, repli)` fabrique les arguments. Si l'encodeur
+/// matériel échoue pour une raison propre à l'encodeur (ouverture, pilote, NVENC / AMF / QSV), relance UNE fois
+/// avec libx264 (même débit, ou CRF 19 sans cible de taille), journalise le repli et remet la progression à 0.
+/// Une erreur de filtre ou de fichier ne relance rien.
+pub(crate) fn run_with_fallback(
+    build: &dyn Fn(&str, bool) -> Result<Vec<String>>,
+    out: &Path,
+    total: f64,
+    progress: &dyn Fn(f64),
+) -> Result<()> {
+    use std::sync::atomic::Ordering;
+    let enc = ffmpeg::pick_encoder("auto");
+    if enc == "libx264" {
+        return run(build(&enc, false)?, out, total, progress);
+    }
+    if HW_FAILED.load(Ordering::Relaxed) {
+        return run(build("libx264", true)?, out, total, progress);
+    }
+    // Test du repli : REWIND_TEST_ENC_FAIL=1 remplace l'encodeur matériel par un nom inconnu (FFmpeg refuse de l'ouvrir)
+    let first = if std::env::var_os("REWIND_TEST_ENC_FAIL").is_some() { format!("{enc}_essai_panne") } else { enc.clone() };
+    match run(build(&first, false)?, out, total, progress) {
+        Err(e) if is_encoder_failure(&e) => {
+            log::warn!("encodeur {enc} en échec ({e:#}) : nouvel essai avec libx264 (processeur)");
+            progress(0.0);
+            let r = run(build("libx264", true)?, out, total, progress);
+            if r.is_ok() {
+                HW_FAILED.store(true, Ordering::Relaxed);
+            }
+            r
+        }
+        other => other,
+    }
 }
 
 /// Lance FFmpeg en suivant l'avancement (0..1) sur la durée attendue.
@@ -58,6 +157,11 @@ pub(crate) fn run(args: Vec<String>, out: &Path, total: f64, progress: &dyn Fn(f
         .stderr(Stdio::piped())
         .spawn()
         .context("Lancement de FFmpeg")?;
+    // FFmpeg meurt avec Rewind (fermé ou tué) au lieu de continuer seul et d'abîmer le fichier
+    let job = util::Job::new();
+    if let Some(j) = &job {
+        j.adopt(&child);
+    }
     let stderr = child.stderr.take();
     let err_thread = std::thread::spawn(move || {
         let mut s = String::new();
@@ -78,10 +182,15 @@ pub(crate) fn run(args: Vec<String>, out: &Path, total: f64, progress: &dyn Fn(f
         }
     }
     let status = child.wait()?;
+    drop(job);
     let err = err_thread.join().unwrap_or_default();
     if !status.success() {
         let _ = std::fs::remove_file(&partial);
-        bail!("Montage impossible : {}", err.lines().last().unwrap_or("erreur inconnue"));
+        let last = err.lines().last().unwrap_or("erreur inconnue").to_string();
+        // Seule la fin de la sortie compte (les erreurs d'encodeur y sont) : on borne la taille gardée
+        let skip = err.chars().count().saturating_sub(6000);
+        let full: String = err.chars().skip(skip).collect();
+        return Err(FfmpegFailure { last, full }.into());
     }
     std::fs::rename(&partial, out)?;
     progress(1.0);
@@ -98,11 +207,20 @@ pub fn trim(source: &Path, start: f64, end: f64, exact: bool, progress: &dyn Fn(
     args.extend(["-t".into(), format!("{:.3}", end - start), "-map".into(), "0".into()]);
     if exact {
         args.extend(["-map".into(), "-0:d?".into()]);
-        args.extend(encoder_args());
+        run_with_fallback(
+            &|enc, fb| {
+                let mut a = args.clone();
+                a.extend(encoder_args_for(enc, fb));
+                Ok(a)
+            },
+            &out,
+            end - start,
+            progress,
+        )?;
     } else {
         args.extend(["-c".into(), "copy".into(), "-avoid_negative_ts".into(), "make_zero".into(), "-movflags".into(), "+faststart".into()]);
+        run(args, &out, end - start, progress)?;
     }
-    run(args, &out, end - start, progress)?;
     Ok(out)
 }
 
@@ -157,8 +275,16 @@ pub fn merge(sources: &[PathBuf], progress: &dyn Fn(f64)) -> Result<PathBuf> {
     }
     graph.push_str(&format!("concat=n={}:v=1:a=1[v][a]", sources.len()));
     args.extend(["-filter_complex".into(), graph, "-map".into(), "[v]".into(), "-map".into(), "[a]".into()]);
-    args.extend(encoder_args());
-    run(args, &out, total, progress)?;
+    run_with_fallback(
+        &|enc, fb| {
+            let mut a = args.clone();
+            a.extend(encoder_args_for(enc, fb));
+            Ok(a)
+        },
+        &out,
+        total,
+        progress,
+    )?;
     Ok(out)
 }
 
@@ -174,8 +300,16 @@ pub fn vertical(source: &Path, mode: &str, start: f64, end: f64, progress: &dyn 
     let (s, e) = if end > start && end > 0.0 { (start, end) } else { (0.0, total) };
     let mut args: Vec<String> = vec!["-ss".into(), format!("{s:.3}"), "-i".into(), source.to_string_lossy().into(), "-t".into(), format!("{:.3}", e - s)];
     args.extend(["-filter_complex".into(), filter, "-map".into(), "[v]".into(), "-map".into(), "0:a:0?".into()]);
-    args.extend(encoder_args());
-    run(args, &out, e - s, progress)?;
+    run_with_fallback(
+        &|enc, fb| {
+            let mut a = args.clone();
+            a.extend(encoder_args_for(enc, fb));
+            Ok(a)
+        },
+        &out,
+        e - s,
+        progress,
+    )?;
     Ok(out)
 }
 
@@ -211,24 +345,22 @@ pub fn prepare_for_discord(source: &Path, max_mb: f64, out_dir: &Path, progress:
     std::fs::create_dir_all(out_dir)?;
     let stem = source.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "clip".into());
     let out = out_dir.join(format!("{}.mp4", util::safe_name(&stem)));
-    let enc = ffmpeg::pick_encoder("auto");
     // Deux essais : si le premier dépasse (rare), on retente avec 15 % de débit en moins
     for factor in [0.92, 0.80] {
         let v = budget(factor).max(300.0);
-        let mut args: Vec<String> = vec!["-i".into(), source.to_string_lossy().into(), "-map".into(), "0:v:0".into(), "-map".into(), "0:a:0?".into()];
-        args.extend(["-vf".into(), format!("scale=-2:{height}:flags=lanczos"), "-c:v".into(), enc.clone()]);
-        if enc.contains("nvenc") {
-            args.extend(["-preset", "p6", "-tune", "hq", "-rc", "cbr", "-multipass", "fullres"].map(String::from));
-        } else if enc == "libx264" {
-            args.extend(["-preset", "medium"].map(String::from));
-        }
-        args.extend([
-            "-b:v".into(), format!("{v:.0}k"), "-maxrate".into(), format!("{v:.0}k"), "-bufsize".into(), format!("{:.0}k", v * 2.0),
-            "-pix_fmt".into(), "yuv420p".into(), "-c:a".into(), "aac".into(), "-b:a".into(), format!("{audio_kbps:.0}k"),
-            "-movflags".into(), "+faststart".into(),
-        ]);
+        let mut base: Vec<String> = vec!["-i".into(), source.to_string_lossy().into(), "-map".into(), "0:v:0".into(), "-map".into(), "0:a:0?".into()];
+        base.extend(["-vf".into(), format!("scale=-2:{height}:flags=lanczos")]);
         let _ = std::fs::remove_file(&out);
-        run(args, &out, dur, progress)?;
+        run_with_fallback(
+            &|enc, _| {
+                let mut a = base.clone();
+                a.extend(bitrate_args(enc, v, audio_kbps));
+                Ok(a)
+            },
+            &out,
+            dur,
+            progress,
+        )?;
         let got = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(u64::MAX) as f64 / 1_048_576.0;
         if got <= max_mb {
             return Ok(DiscordFile { path: out, height, compressed: true });
@@ -244,18 +376,20 @@ pub fn compress(source: &Path, max_mb: f64, progress: &dyn Fn(f64)) -> Result<Pa
     let video_kbps = ((max_mb * 8192.0 * 0.92) / dur - audio_kbps).max(250.0);
     let height = if video_kbps < 1500.0 { 720 } else { 1080 };
     let out = output_next_to(source, "(discord)");
-    let enc = ffmpeg::pick_encoder("auto");
-    let mut args: Vec<String> = vec!["-i".into(), source.to_string_lossy().into(), "-map".into(), "0:v:0".into(), "-map".into(), "0:a:0?".into()];
-    args.extend(["-vf".into(), format!("scale=-2:'min({height},ih)'"), "-c:v".into(), enc.clone()]);
-    if enc.contains("nvenc") {
-        args.extend(["-preset", "p6", "-rc", "cbr"].map(String::from));
-    }
-    args.extend([
-        "-b:v".into(), format!("{video_kbps:.0}k"), "-maxrate".into(), format!("{video_kbps:.0}k"),
-        "-bufsize".into(), format!("{:.0}k", video_kbps * 2.0), "-pix_fmt".into(), "yuv420p".into(),
-        "-c:a".into(), "aac".into(), "-b:a".into(), format!("{audio_kbps:.0}k"), "-movflags".into(), "+faststart".into(),
-    ]);
-    run(args, &out, dur, progress)?;
+    let build = |enc: &str, _fb: bool| -> Result<Vec<String>> {
+        let mut args: Vec<String> = vec!["-i".into(), source.to_string_lossy().into(), "-map".into(), "0:v:0".into(), "-map".into(), "0:a:0?".into()];
+        args.extend(["-vf".into(), format!("scale=-2:'min({height},ih)'"), "-c:v".into(), enc.to_string()]);
+        if enc.contains("nvenc") {
+            args.extend(["-preset", "p6", "-rc", "cbr"].map(String::from));
+        }
+        args.extend([
+            "-b:v".into(), format!("{video_kbps:.0}k"), "-maxrate".into(), format!("{video_kbps:.0}k"),
+            "-bufsize".into(), format!("{:.0}k", video_kbps * 2.0), "-pix_fmt".into(), "yuv420p".into(),
+            "-c:a".into(), "aac".into(), "-b:a".into(), format!("{audio_kbps:.0}k"), "-movflags".into(), "+faststart".into(),
+        ]);
+        Ok(args)
+    };
+    run_with_fallback(&build, &out, dur, progress)?;
     Ok(out)
 }
 
@@ -640,11 +774,22 @@ pub fn studio_export(pieces: &[Piece], opts: &StudioOptions, folder: &Path, prog
     let factors: &[f64] = if target_kbps.is_some() { &[1.0, 0.85] } else { &[1.0] };
     let mut last_err = None;
     for &factor in factors {
-        let args = studio_args(pieces, opts, height, fps, target_kbps.map(|k| k * factor), total);
-        let result = run(args.clone(), &out, total, progress);
-        // Fichier du graphe de filtres : plus utile une fois FFmpeg terminé
-        if let Some(i) = args.iter().position(|a| a == "-/filter_complex") {
-            let _ = std::fs::remove_file(&args[i + 1]);
+        // Fichiers du graphe de filtres (un par essai d'encodeur) : plus utiles une fois FFmpeg terminé
+        let graphs: std::cell::RefCell<Vec<String>> = Default::default();
+        let result = run_with_fallback(
+            &|enc, fb| {
+                let args = studio_args(pieces, opts, height, fps, target_kbps.map(|k| k * factor), total, enc, fb);
+                if let Some(i) = args.iter().position(|a| a == "-/filter_complex") {
+                    graphs.borrow_mut().push(args[i + 1].clone());
+                }
+                Ok(args)
+            },
+            &out,
+            total,
+            progress,
+        );
+        for g in graphs.borrow().iter() {
+            let _ = std::fs::remove_file(g);
         }
         match result {
             Ok(()) => {
@@ -665,7 +810,8 @@ pub fn studio_export(pieces: &[Piece], opts: &StudioOptions, folder: &Path, prog
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Export impossible")))
 }
 
-fn studio_args(pieces: &[Piece], opts: &StudioOptions, height: u32, fps: u32, kbps: Option<f64>, total: f64) -> Vec<String> {
+#[allow(clippy::too_many_arguments)]
+fn studio_args(pieces: &[Piece], opts: &StudioOptions, height: u32, fps: u32, kbps: Option<f64>, total: f64, enc: &str, fallback: bool) -> Vec<String> {
     let vertical = opts.format.starts_with("9:16");
     // Dimensions paires obligatoires en H.264 (480p : 852 et non 853)
     let long = (height * 16 / 9) / 2 * 2;
@@ -797,21 +943,8 @@ fn studio_args(pieces: &[Piece], opts: &StudioOptions, height: u32, fps: u32, kb
     args.extend(["-map".into(), format!("[{cur_v}]"), "-map".into(), "[aout]".into()]);
     args.extend(["-t".into(), format!("{total:.4}")]);
     match kbps {
-        Some(v) => {
-            let enc = ffmpeg::pick_encoder("auto");
-            args.extend(["-c:v".into(), enc.clone()]);
-            if enc.contains("nvenc") {
-                args.extend(["-preset", "p6", "-tune", "hq", "-rc", "cbr", "-multipass", "fullres"].map(String::from));
-            } else if enc == "libx264" {
-                args.extend(["-preset", "medium"].map(String::from));
-            }
-            args.extend([
-                "-b:v".into(), format!("{v:.0}k"), "-maxrate".into(), format!("{v:.0}k"), "-bufsize".into(), format!("{:.0}k", v * 2.0),
-                "-pix_fmt".into(), "yuv420p".into(), "-c:a".into(), "aac".into(), "-b:a".into(), format!("{STUDIO_AUDIO_KBPS:.0}k"),
-                "-movflags".into(), "+faststart".into(),
-            ]);
-        }
-        None => args.extend(encoder_args()),
+        Some(v) => args.extend(bitrate_args(enc, v, STUDIO_AUDIO_KBPS)),
+        None => args.extend(encoder_args_for(enc, fallback)),
     }
     args.extend(["-metadata".into(), format!("title={}", opts.title)]);
     args
@@ -850,6 +983,30 @@ mod tests {
         assert_eq!(studio_fps(59.94), 60);
         assert_eq!(studio_fps(50.0), 50);
         assert_eq!(studio_fps(30.0), 30);
+    }
+
+    #[test]
+    fn panne_d_encodeur_reconnue() {
+        // Pannes d'encodeur : repli x264
+        assert!(encoder_failure_text("[h264_nvenc @ 000001] OpenEncodeSessionEx failed: no encode device (1)\nError while opening encoder for output stream #0:0"));
+        assert!(encoder_failure_text("[h264_nvenc @ 0x1] Cannot load nvcuda.dll"));
+        assert!(encoder_failure_text("[h264_nvenc @ 0x1] No capable devices found"));
+        assert!(encoder_failure_text("[h264_amf @ 0x1] SubmitInput() failed with error 18"));
+        assert!(encoder_failure_text("[h264_qsv @ 0x1] Error initializing an MFX session: -9"));
+        // Fichier absent, filtre ou police : pas de repli
+        assert!(!encoder_failure_text("C:/x.mp4: No such file or directory"));
+        assert!(!encoder_failure_text("[Parsed_drawtext_3 @ 0x1] Cannot load font file\nError initializing filter 'drawtext'\nConversion failed!"));
+        assert!(!encoder_failure_text("Error reinitializing filters!\nFailed to inject frame into filter network: Invalid argument"));
+    }
+
+    #[test]
+    fn options_d_encodage_de_repli() {
+        let a = encoder_args_for("libx264", true);
+        assert!(a.windows(2).any(|w| w == ["-crf", "19"]) && a.windows(2).any(|w| w == ["-preset", "veryfast"]));
+        let n = encoder_args_for("libx264", false);
+        assert!(n.windows(2).any(|w| w == ["-crf", "21"]));
+        let b = bitrate_args("libx264", 6000.0, 128.0);
+        assert!(b.windows(2).any(|w| w == ["-b:v", "6000k"]) && b.windows(2).any(|w| w == ["-preset", "medium"]));
     }
 
     #[test]

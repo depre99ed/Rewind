@@ -83,6 +83,13 @@
   animation-duration: 0ms !important;
   transition-duration: 0ms !important;
 }
+/* Fenêtre réduite, masquée ou derrière le jeu (activity.svelte.ts) : animations CSS en pause, la
+   carte graphique ne recompose plus rien. Au premier plan, rien ne change. */
+:root[data-bg="1"] *,
+:root[data-bg="1"] *::before,
+:root[data-bg="1"] *::after {
+  animation-play-state: paused !important;
+}
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0ms !important;

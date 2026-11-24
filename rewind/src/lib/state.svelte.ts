@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, logFront, type Clip, type Settings, type Status, type Cs2Event, type Moment, type UpdateInfo } from "./api";
 import { installErrorLog } from "./errlog";
+import { activity } from "./activity.svelte";
 import { t } from "./i18n.svelte";
 
 // Le Studio (montage) vit dans studio/store.svelte.ts depuis la 0.3.0 (projets, calques, pistes son).
@@ -32,6 +33,7 @@ class AppState {
 
   async init() {
     installErrorLog();
+    activity.start();
     this.settings = await api.getSettings();
     this.applyLook();
     this.clips = await api.clips();
@@ -54,8 +56,13 @@ class AppState {
       this.settings = e.payload;
       this.applyLook();
     });
-    await listen("library-changed", async () => {
-      this.clips = await api.clips();
+    // Plusieurs changements rapprochés (miniatures, collections…) = une seule relecture de la liste
+    let libTimer: ReturnType<typeof setTimeout> | undefined;
+    await listen("library-changed", () => {
+      clearTimeout(libTimer);
+      libTimer = setTimeout(async () => {
+        try { this.clips = await api.clips(); } catch {}
+      }, 200);
     });
     await listen<{ op: string; value: number }>("edit-progress", (e) => {
       this.progress = e.payload.value >= 1 ? null : e.payload;
@@ -66,11 +73,18 @@ class AppState {
     await listen("game-front", () => this.pauseMedia());
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) this.pauseMedia();
+      else this.pollNow();
     });
+    window.addEventListener("focus", () => this.pollNow());
     try {
+      // Redimensionner envoie des dizaines d'événements par seconde : on ne vérifie qu'à la fin.
       const win = getCurrentWindow();
-      await win.onResized(async () => {
-        if (await win.isMinimized()) this.pauseMedia();
+      let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+      await win.onResized(() => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(async () => {
+          try { if (await win.isMinimized()) this.pauseMedia(); } catch {}
+        }, 150);
       });
     } catch {}
   }
@@ -105,11 +119,29 @@ class AppState {
     this.cs2Feed = [{ at: Date.now(), text, kind }, ...this.cs2Feed].slice(0, 60);
   }
 
+  // État du moteur : 400 ms au premier plan (inchangé), 1 s derrière le jeu, 5 s réduite ou masquée.
+  // Un état identique au précédent ne remplace pas l'objet (rien ne se recalcule dans l'interface).
+  private pollTimer: ReturnType<typeof setTimeout> | undefined;
+  private polling = false;
+  private lastStatus = "";
   private async poll() {
+    clearTimeout(this.pollTimer);
+    this.polling = true;
     try {
-      this.status = await api.status();
+      const s = await api.status();
+      const json = JSON.stringify(s);
+      if (json !== this.lastStatus) {
+        this.lastStatus = json;
+        this.status = s;
+      }
     } catch {}
-    setTimeout(() => this.poll(), 400);
+    this.polling = false;
+    const delay = !activity.visible ? 5000 : activity.focused ? 400 : 1000;
+    this.pollTimer = setTimeout(() => this.poll(), delay);
+  }
+  /** Relit l'état tout de suite (retour au premier plan) au lieu d'attendre le prochain tour. */
+  private pollNow() {
+    if (!this.polling) this.poll();
   }
 
   toast(kind: Toast["kind"], title: string, text?: string, clip?: Clip) {

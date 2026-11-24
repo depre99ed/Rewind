@@ -45,12 +45,12 @@
 <div class="card" style="--c:{gameTone(clip.game)}" class:selected role="button" tabindex="0" onclick={click} onkeydown={(e) => e.key === "Enter" && onopen()} onmouseenter={enter} onmouseleave={leave}>
   <div class="media">
     {#if clip.thumb}
-      <img use:fit src={fileUrl(clip.thumb)} alt="" loading="lazy" draggable="false" />
+      <img use:fit src={fileUrl(clip.thumb)} alt="" loading="lazy" decoding="async" draggable="false" />
     {:else}
       <div class="ph"></div>
     {/if}
     {#if hover}
-      <video use:fit bind:this={video} src={fileUrl(clip.path)} muted playsinline preload="auto" class="appear"></video>
+      <video use:fit bind:this={video} src={fileUrl(clip.path)} muted playsinline preload="metadata" class="appear"></video>
     {/if}
     <div class="top">
       <div class="badges">

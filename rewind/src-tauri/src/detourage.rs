@@ -16,7 +16,8 @@ use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Once, OnceLock};
+use std::time::{Duration, Instant};
 
 const URL: &str = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx";
 const SHA256: &str = "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a";
@@ -68,23 +69,55 @@ pub fn model(progress: &dyn Fn(f64)) -> Result<PathBuf> {
     Ok(path)
 }
 
-static SESSION: OnceLock<Mutex<Session>> = OnceLock::new();
+/// Session ONNX gardée en mémoire (178 Mo de modèle + tampons) seulement tant qu'elle sert : libérée après
+/// `IDLE` sans appel, recréée au besoin (quelques secondes) au détourage suivant.
+struct Loaded {
+    session: Session,
+    last_use: Instant,
+}
 
-fn session() -> Result<&'static Mutex<Session>> {
-    if let Some(s) = SESSION.get() {
-        return Ok(s);
-    }
+static SESSION: Mutex<Option<Loaded>> = Mutex::new(None);
+/// L'environnement ONNX Runtime ne peut être créé qu'une fois par processus : il reste, lui (quelques ko).
+static ENV: OnceLock<ort::environment::Environment> = OnceLock::new();
+static WATCHER: Once = Once::new();
+const IDLE: Duration = Duration::from_secs(120);
+
+fn create_session() -> Result<Session> {
     let path = model(&|_| {})?;
-    let env = ort::init().with_name("rewind").build().map_err(|e| anyhow!("ONNX Runtime : {e}"))?;
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 16);
-    let s = Session::builder(&env)
+    if ENV.get().is_none() {
+        let env = ort::init().with_name("rewind").build().map_err(|e| anyhow!("ONNX Runtime : {e}"))?;
+        let _ = ENV.set(env);
+    }
+    let env = ENV.get().context("ONNX Runtime")?;
+    // La moitié des cœurs (2 à 6) : le détourage ne doit pas écraser le reste de l'appli, et les fils
+    // inactifs ne tournent pas à vide (« spinning » coupé)
+    let threads = (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).clamp(2, 6);
+    Session::builder(env)
         .map_err(|e| anyhow!("{e}"))?
         .with_intra_threads(threads)
         .map_err(|e| anyhow!("{e}"))?
+        .with_intra_op_spinning(false)
+        .map_err(|e| anyhow!("{e}"))?
+        .with_inter_op_spinning(false)
+        .map_err(|e| anyhow!("{e}"))?
         .commit_from_file(&path)
-        .map_err(|e| anyhow!("Modèle de détourage illisible : {e}"))?;
-    let _ = SESSION.set(Mutex::new(s));
-    SESSION.get().context("session")
+        .map_err(|e| anyhow!("Modèle de détourage illisible : {e}"))
+}
+
+/// Petit fil, démarré une seule fois : libère la session inutilisée depuis `IDLE`.
+fn start_watcher() {
+    WATCHER.call_once(|| {
+        let _ = std::thread::Builder::new().name("detourage-idle".into()).spawn(|| {
+            loop {
+                std::thread::sleep(Duration::from_secs(30));
+                let mut slot = SESSION.lock();
+                if slot.as_ref().is_some_and(|l| l.last_use.elapsed() >= IDLE) {
+                    *slot = None;
+                    log::info!("détourage : modèle libéré de la mémoire (inutilisé depuis 2 min)");
+                }
+            }
+        });
+    });
 }
 
 /// Masque (SIDE × SIDE, 0..255 ; 255 = sujet gardé) d'une image RGBA SIDE × SIDE.
@@ -102,15 +135,23 @@ pub fn mask_rgba(rgba: &[u8]) -> Result<Vec<u8>> {
         }
     }
     let input = Tensor::from_array(([1usize, 3, SIDE, SIDE], data)).map_err(|e| anyhow!("{e}"))?;
-    let lock = session()?;
-    let mut s = lock.lock();
-    let name = s.inputs()[0].name().to_string();
-    let outputs = s.run(ort::inputs![name => input]).map_err(|e| anyhow!("Détourage : {e}"))?;
-    let (_, pred) = outputs[0].try_extract_tensor::<f32>().map_err(|e| anyhow!("{e}"))?;
-    let pred = &pred[..plane.min(pred.len())];
-    let (mi, ma) = pred.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
-    let span = (ma - mi).max(1e-6);
-    Ok(pred.iter().map(|v| (((v - mi) / span) * 255.0).round().clamp(0.0, 255.0) as u8).collect())
+    start_watcher();
+    let mut slot = SESSION.lock();
+    if slot.is_none() {
+        *slot = Some(Loaded { session: create_session()?, last_use: Instant::now() });
+    }
+    let loaded = slot.as_mut().context("session")?;
+    let name = loaded.session.inputs()[0].name().to_string();
+    let mask = {
+        let outputs = loaded.session.run(ort::inputs![name => input]).map_err(|e| anyhow!("Détourage : {e}"))?;
+        let (_, pred) = outputs[0].try_extract_tensor::<f32>().map_err(|e| anyhow!("{e}"))?;
+        let pred = &pred[..plane.min(pred.len())];
+        let (mi, ma) = pred.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+        let span = (ma - mi).max(1e-6);
+        pred.iter().map(|v| (((v - mi) / span) * 255.0).round().clamp(0.0, 255.0) as u8).collect::<Vec<u8>>()
+    };
+    loaded.last_use = Instant::now();
+    Ok(mask)
 }
 
 /// PNG (base64) SIDE × SIDE → masque en base64 (SIDE × SIDE octets).

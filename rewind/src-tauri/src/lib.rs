@@ -16,6 +16,7 @@ mod inputs;
 mod killfeed;
 mod library;
 mod media;
+mod menage;
 mod musique;
 mod recorder;
 mod render;
@@ -316,7 +317,7 @@ fn save_clip_blocking(app: &AppHandle, start: f64, end: f64, title: Option<Strin
             let (prepared, game) = {
                 let r = recorder.lock();
                 let game = game.clone().unwrap_or_else(|| r.main_app(start, end));
-                (r.prepare_export(start, end)?, game)
+                (r.prepare_export_deferred(start, end)?, game)
             };
             let title = title.clone().unwrap_or_else(|| game.clone());
             let folder = recorder::clip_folder(&settings, &game);
@@ -2694,7 +2695,7 @@ pub fn stress(minutes: u64, out: PathBuf) -> i32 {
     let mut worst_recovery = 0.0f64;
     let mut last_clip = std::time::Instant::now();
     let mut last_burst = std::time::Instant::now();
-    let mut last_sample = std::time::Instant::now() - Duration::from_secs(60);
+    let mut last_sample = util::ago(Duration::from_secs(60));
     let mut last_video_fault = std::time::Instant::now();
     let mut last_audio_fault = std::time::Instant::now();
     let mut waiting_recovery: Option<(std::time::Instant, usize)> = None;
@@ -3153,6 +3154,8 @@ pub fn run() {
                     std::thread::sleep(Duration::from_millis(500));
                     let fg = util::foreground();
                     let game = fg.as_ref().is_some_and(|f| util::is_game(&f.exe, f.fullscreen));
+                    // Tâches annexes (miniatures, montage, partage…) : priorité minimale tant qu'un jeu est devant
+                    util::set_game_active(game);
                     // Les touches ne sont notées que quand un jeu est devant (jamais du texte ailleurs)
                     inputs::set_game(if game { fg.as_ref().map_or(0, |f| f.pid) } else { 0 });
                     // Présence Discord : dernier jeu vu au premier plan
@@ -3166,6 +3169,10 @@ pub fn run() {
                     was_game = game;
                     let Some(fg) = fg else { continue };
                     if !game {
+                        continue;
+                    }
+                    // Même processus qu'au tour précédent et déjà annoncé : rien à rouvrir
+                    if announced.last().is_some_and(|a| a.0 == fg.pid) {
                         continue;
                     }
                     let start = util::process_start(fg.pid).unwrap_or(0.0);
@@ -3186,6 +3193,9 @@ pub fn run() {
                     welcome(&h5, &settings, &util::friendly_app(&fg.exe));
                 }
             })?;
+
+            // Ménage des fichiers temporaires (3 min après le démarrage, puis toutes les 12 h)
+            menage::start();
 
             // Miniatures / durées des clips importés
             let lib = Arc::clone(&library);

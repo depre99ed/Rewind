@@ -5,6 +5,8 @@
     CalendarDays, Gamepad2, CalendarClock, ArrowDownWideNarrow, Loader2, Pencil, CheckSquare,
   } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
+  import { activity } from "$lib/activity.svelte";
+  import { untrack } from "svelte";
   import { fit } from "$lib/fit";
   import { api, dayGroup, fileUrl, formatDuration, formatSize, relativeDate, badges, gameTone, sessions, type Clip, gameLabel } from "$lib/api";
   import ClipCard from "./ClipCard.svelte";
@@ -88,11 +90,20 @@
     if (heroVideo && hero) {
       const start = hero.markers.find((m) => m.kind !== "manual")?.time;
       heroVideo.currentTime = start ? Math.max(0, start - 2.5) : Math.min(2, hero.duration * 0.2);
-      heroVideo.play().catch(() => {});
+      if (untrack(() => activity.active)) heroVideo.play().catch(() => {});
     }
   });
+  // Vidéo « À la une » (muette, décorative) : arrêtée quand la fenêtre est réduite ou derrière le jeu,
+  // reprise au retour au premier plan. Le carrousel n'avance que fenêtre au premier plan.
   $effect(() => {
-    if (featured.length < 2 || !app.settings?.animations) return;
+    const on = activity.active;
+    const v = heroVideo;
+    if (!v) return;
+    if (!on) { if (!v.paused) v.pause(); }
+    else if (v.paused) v.play().catch(() => {});
+  });
+  $effect(() => {
+    if (featured.length < 2 || !app.settings?.animations || !activity.active) return;
     const t = setInterval(() => (heroIndex = (heroIndex + 1) % featured.length), 11000);
     return () => clearInterval(t);
   });

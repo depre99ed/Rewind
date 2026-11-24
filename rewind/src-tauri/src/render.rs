@@ -351,7 +351,8 @@ fn enable_of(l: &LayerSpec) -> String {
 }
 
 /// Construit les arguments FFmpeg. `out_short` : petit côté de sortie (réduction finale éventuelle).
-pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64>, graph_file: &Path) -> Result<Vec<String>> {
+#[allow(clippy::too_many_arguments)]
+pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64>, graph_file: &Path, enc: &str, fallback: bool) -> Result<Vec<String>> {
     let (w, h) = (spec.w.max(2) / 2 * 2, spec.h.max(2) / 2 * 2);
     let total = spec.total.max(0.1);
     let mut args: Vec<String> = Vec::new();
@@ -704,21 +705,8 @@ pub fn render_args(spec: &RenderSpec, out_short: u32, fps: u32, kbps: Option<f64
     args.extend(["-/filter_complex".into(), graph_file.to_string_lossy().to_string()]);
     args.extend(["-map".into(), "[vout]".into(), "-map".into(), "[aout]".into(), "-t".into(), n(total), "-r".into(), fps.to_string()]);
     match kbps {
-        Some(v) => {
-            let enc = ffmpeg::pick_encoder("auto");
-            args.extend(["-c:v".into(), enc.clone()]);
-            if enc.contains("nvenc") {
-                args.extend(["-preset", "p6", "-tune", "hq", "-rc", "cbr", "-multipass", "fullres"].map(String::from));
-            } else if enc == "libx264" {
-                args.extend(["-preset", "medium"].map(String::from));
-            }
-            args.extend([
-                "-b:v".into(), format!("{v:.0}k"), "-maxrate".into(), format!("{v:.0}k"), "-bufsize".into(), format!("{:.0}k", v * 2.0),
-                "-pix_fmt".into(), "yuv420p".into(), "-c:a".into(), "aac".into(), "-b:a".into(), format!("{STUDIO_AUDIO_KBPS:.0}k"),
-                "-movflags".into(), "+faststart".into(),
-            ]);
-        }
-        None => args.extend(editor::encoder_args()),
+        Some(v) => args.extend(editor::bitrate_args(enc, v, STUDIO_AUDIO_KBPS)),
+        None => args.extend(editor::encoder_args_for(enc, fallback)),
     }
     args.extend(["-metadata".into(), format!("title={}", spec.title)]);
     Ok(args)
@@ -762,9 +750,16 @@ pub fn render(spec: &RenderSpec, folder: &Path, progress: &dyn Fn(f64)) -> Resul
     let _ = std::fs::create_dir_all(graph.parent().unwrap_or(Path::new(".")));
     let factors: &[f64] = if target_kbps.is_some() { &[1.0, 0.85] } else { &[1.0] };
     let mut last_err = None;
+    // Le graphe est gardé seulement si FFmpeg échoue (pour comprendre l'erreur) ; `studio::clean_cache`
+    // supprime ensuite les `graphe-*.txt` de plus de 24 h
+    let mut keep_graph = false;
     for &factor in factors {
-        let args = render_args(&spec, short, fps, target_kbps.map(|k| k * factor), &graph)?;
-        let result = editor::run(args, &out, total, progress);
+        let result = editor::run_with_fallback(
+            &|enc, fb| render_args(&spec, short, fps, target_kbps.map(|k| k * factor), &graph, enc, fb),
+            &out,
+            total,
+            progress,
+        );
         match result {
             Ok(()) => {
                 let mb = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0;
@@ -776,12 +771,15 @@ pub fn render(spec: &RenderSpec, folder: &Path, progress: &dyn Fn(f64)) -> Resul
                 last_err = Some(anyhow::anyhow!("Impossible de passer sous {:.0} Mo : raccourcis le montage.", spec.max_mb));
             }
             Err(e) => {
-                // Le graphe est gardé pour comprendre l'erreur (rapport de diagnostic)
                 log::warn!("export du Studio : {e:#} (graphe : {})", graph.display());
                 last_err = Some(e);
+                keep_graph = true;
                 break;
             }
         }
+    }
+    if !keep_graph {
+        let _ = std::fs::remove_file(&graph);
     }
     let _ = std::fs::remove_file(&out);
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Export impossible")))

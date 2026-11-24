@@ -14,12 +14,13 @@
   ].flatMap(([key, a, b]) => [{ t: a, key, down: true }, { t: b, key, down: false }]);
   let demoT = $state(0);
   $effect(() => {
-    if (section !== "overlay") return;
+    if (section !== "overlay" || !activity.active) return; // démo animée : fenêtre au premier plan seulement
     const start = performance.now();
     const id = setInterval(() => (demoT = ((performance.now() - start) / 1000) % 4), 80);
     return () => clearInterval(id);
   });
   import { app } from "$lib/state.svelte";
+  import { activity } from "$lib/activity.svelte";
   import { api, type Hardware, type AudioSource, type VoiceHeard, type MedalInfo } from "$lib/api";
   import HotkeyInput from "./HotkeyInput.svelte";
 
@@ -33,7 +34,7 @@
   let heard = $state<VoiceHeard | null>(null);
   let nowSec = $state(Date.now() / 1000);
   $effect(() => {
-    if (!s?.voice_command || section !== "keys") return;
+    if (!s?.voice_command || section !== "keys" || !activity.visible) return;
     const id = setInterval(async () => {
       nowSec = Date.now() / 1000;
       heard = await api.voiceLast().catch(() => null);

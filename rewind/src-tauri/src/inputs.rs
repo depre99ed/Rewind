@@ -232,6 +232,8 @@ struct Binding {
 }
 
 static BINDINGS: Mutex<Vec<Binding>> = Mutex::new(Vec::new());
+/// Change à chaque nouvelle liste de raccourcis (le secours en jeu recalcule alors ses touches)
+static BINDINGS_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static HANDLER: OnceLock<Box<dyn Fn(&'static str) + Send + Sync>> = OnceLock::new();
 /// Pendant la saisie d'un raccourci dans les Réglages : rien ne se déclenche (heure de fin).
 static PAUSED_UNTIL: Mutex<f64> = Mutex::new(0.0);
@@ -377,6 +379,7 @@ pub fn set_bindings(list: &[(String, &'static str)]) -> Vec<String> {
         }
     }
     *BINDINGS.lock() = out;
+    BINDINGS_GEN.fetch_add(1, Ordering::Relaxed);
     errors
 }
 
@@ -801,8 +804,15 @@ fn vk_of(main: Main, layout: isize) -> i32 {
 /// sur le bureau). Quand un jeu est au premier plan, on lit donc l'état réel des touches toutes les 8 ms
 /// (GetAsyncKeyState). Les doublons avec Raw Input sont filtrés (anti-rebond des raccourcis, état tenu).
 fn poll_loop() {
+    // 2026-11-24 : 125 tours par seconde en jeu. Les codes des touches (MapVirtualKeyExW) et la liste
+    // des raccourcis ne sont plus recalculés à chaque tour, et plus aucune allocation par tour :
+    // seulement quand la disposition du clavier ou les raccourcis changent.
     let mut hot_prev: HashMap<i32, bool> = HashMap::new();
     let mut key_prev: HashMap<u16, bool> = HashMap::new();
+    let mut hot_vks: Vec<(Main, i32)> = Vec::new();
+    let mut key_vks: Vec<(u16, i32)> = Vec::new();
+    let mut state: Vec<(u16, bool)> = Vec::with_capacity(KEYS.len());
+    let mut cached: Option<(isize, u64)> = None;
     let mut noted = false;
     // Diagnostic : après 2 min de jeu au premier plan, une ligne dit si des touches ont été vues
     // (lues directement / reçues par Raw Input) : le journal dira où ça bloque chez l'utilisateur.
@@ -826,11 +836,15 @@ fn poll_loop() {
             continue;
         }
         let layout = GAME_LAYOUT.load(Ordering::Relaxed);
+        let generation = BINDINGS_GEN.load(Ordering::Relaxed);
+        if cached != Some((layout, generation)) {
+            cached = Some((layout, generation));
+            hot_vks = BINDINGS.lock().iter().map(|b| (b.main, vk_of(b.main, layout))).collect();
+            key_vks = KEYS.iter().map(|(qwerty, sc, _)| (*qwerty, if *sc == 0 { *qwerty as i32 } else { vk_of(Main::Key(*sc), layout) })).collect();
+        }
         let down = |vk: i32| vk != 0 && unsafe { GetAsyncKeyState(vk) } < 0;
         // Raccourcis : un passage « relâché → appuyé » = un appui
-        let mains: Vec<Main> = BINDINGS.lock().iter().map(|b| b.main).collect();
-        for main in mains {
-            let vk = vk_of(main, layout);
+        for &(main, vk) in &hot_vks {
             let now_down = down(vk);
             let was = hot_prev.insert(vk, now_down).unwrap_or(true);
             if now_down && !was {
@@ -844,13 +858,15 @@ fn poll_loop() {
         }
         // Touches à l'écran (Maj gauche / droite = une seule touche)
         if OVERLAY.load(Ordering::Relaxed) {
-            let mut state: HashMap<u16, bool> = HashMap::new();
-            for (qwerty, sc, _) in KEYS {
-                let vk = if *sc == 0 { *qwerty as i32 } else { vk_of(Main::Key(*sc), layout) };
+            state.clear();
+            for &(k, vk) in &key_vks {
                 let d = down(vk);
-                state.entry(*qwerty).and_modify(|x| *x |= d).or_insert(d);
+                match state.iter_mut().find(|e| e.0 == k) {
+                    Some(e) => e.1 |= d,
+                    None => state.push((k, d)),
+                }
             }
-            for (k, d) in state {
+            for &(k, d) in &state {
                 let before = key_prev.insert(k, d);
                 if before.is_some() && before != Some(d) && d {
                     seen_poll += 1;

@@ -98,8 +98,12 @@ fn read_sealed(path: &Path) -> Option<SigningKey> {
     Some(SigningKey::from_bytes(&seed))
 }
 
+/// Compte ou clé modifiés : le fil de relève refait sa vérification tout de suite.
+static ACCOUNT_DIRTY: AtomicBool = AtomicBool::new(true);
+
 fn write_sealed(path: &Path, key: &SigningKey) -> Result<()> {
     std::fs::write(path, dpapi(&key.to_bytes(), true)?)?;
+    ACCOUNT_DIRTY.store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -269,6 +273,7 @@ fn load_account() -> Option<Account> {
 
 fn save_account(a: &Account) {
     let _ = std::fs::write(account_path(), serde_json::to_string_pretty(a).unwrap_or_default());
+    ACCOUNT_DIRTY.store(true, Ordering::SeqCst);
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +678,7 @@ pub fn delete_identity(app: &AppHandle) -> Result<()> {
     let _ = std::fs::remove_file(key_path());
     let _ = std::fs::remove_file(recovery_path());
     let _ = std::fs::remove_file(account_path());
+    ACCOUNT_DIRTY.store(true, Ordering::SeqCst);
     disable(app);
     {
         let mut v = view().lock();
@@ -973,26 +979,42 @@ pub fn start(app: AppHandle) {
     let _ = std::thread::Builder::new().name("amis".into()).spawn(move || {
         // Clips allégés d'un envoi interrompu (Rewind fermé pendant l'envoi)
         let _ = std::fs::remove_dir_all(dir().join("envoi"));
-        let mut last = Instant::now() - POLL;
+        let mut last = crate::util::ago(POLL);
+        // 2026-11-24 : le compte et la clé (lecture de 2 fichiers + déchiffrement) étaient relus
+        // 2 fois par seconde, même partage coupé. Maintenant : au réveil, ou toutes les 10 s.
+        let mut ready = false;
+        let mut checked: Option<Instant> = None;
+        let mut pending_download = false;
         loop {
             let (enabled, auto) = {
                 let state = app.state::<AppState>();
                 let s = state.settings.lock();
                 (s.share_enabled, s.share_auto_download)
             };
-            let ready = load_account().is_some() && load_key().is_some();
+            let wake = WAKE.swap(false, Ordering::SeqCst);
+            let dirty = ACCOUNT_DIRTY.swap(false, Ordering::SeqCst);
+            if wake || dirty || checked.is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
+                ready = load_account().is_some() && load_key().is_some();
+                checked = Some(Instant::now());
+            }
             {
                 let mut v = view().lock();
                 v.enabled = enabled;
                 v.ready = ready;
             }
-            let wake = WAKE.swap(false, Ordering::SeqCst);
-            let watching = FOCUS.load(Ordering::SeqCst) && app.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false));
-            let every = if watching { POLL_FOCUS } else { POLL };
-            if enabled && ready && (wake || last.elapsed() >= every) {
-                last = Instant::now();
-                sync_now(&app);
-                if auto {
+            if enabled && ready {
+                let watching = FOCUS.load(Ordering::SeqCst)
+                    && app.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false));
+                let every = if watching { POLL_FOCUS } else { POLL };
+                if wake || last.elapsed() >= every {
+                    last = Instant::now();
+                    sync_now(&app);
+                    pending_download = auto;
+                }
+                // Réception automatique : jamais pendant qu'un jeu est au premier plan (téléchargement,
+                // empreinte, miniature) ; elle reprend dès que le jeu n'est plus devant.
+                if pending_download && !crate::util::game_active() {
+                    pending_download = false;
                     start_next_download(&app);
                 }
             }

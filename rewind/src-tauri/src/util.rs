@@ -11,7 +11,7 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, HWND, LPARAM, RECT},
     Graphics::Gdi::{
         DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW, HDC, HMONITOR,
-        MONITORINFOEXW,
+        MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
     },
     System::{
         Diagnostics::ToolHelp::{
@@ -41,6 +41,26 @@ pub fn now() -> f64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or_default()
+}
+
+/// Fin d'un fichier texte (les `max` derniers octets), sans le lire en entier (journaux de FFmpeg).
+pub fn read_tail(path: &Path, max: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return String::new() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    if len > max {
+        let _ = f.seek(SeekFrom::Start(len - max));
+    }
+    let mut buf = Vec::new();
+    let _ = f.read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// « Il y a `d` » sans paniquer : juste après le démarrage de Windows, `Instant::now() - 60 s` panique
+/// (l'horloge monotone part de zéro au démarrage ; Rewind se lance avec Windows). Dans ce cas : maintenant.
+pub fn ago(d: std::time::Duration) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    now.checked_sub(d).unwrap_or(now)
 }
 
 pub fn wide(text: &str) -> Vec<u16> {
@@ -145,10 +165,65 @@ pub fn videos_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("C:\\"))
 }
 
-/// Commande sans fenêtre console, en priorité un peu basse pour ne pas gêner les jeux.
+// ---------------------------------------------------------------------------
+// Priorités (2026-11-24, audit de performances)
+// ---------------------------------------------------------------------------
+// - Capture (FFmpeg image et son) : au-dessus de la normale. Décision de l'utilisateur : quand le PC
+//   est à fond, l'enregistrement passe avant le jeu (avant : priorité basse, images perdues possibles).
+// - Clips et captures d'écran : un peu basse (l'utilisateur attend le résultat, même en jeu).
+// - Tout le reste (miniatures, montage, partage, analyse…) : un peu basse, et « inactive » quand un
+//   jeu est au premier plan : ces tâches ne prennent que le processeur que le jeu laisse.
+
+const NORMAL_PRIORITY_CLASS: u32 = 0x20;
+const ABOVE_NORMAL_PRIORITY_CLASS: u32 = 0x8000;
+const IDLE_PRIORITY_CLASS: u32 = 0x40;
+
+static GAME_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Posé par le fil « jeux » (toutes les 500 ms) : un jeu est au premier plan.
+pub fn set_game_active(on: bool) {
+    GAME_ACTIVE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Un jeu est-il au premier plan ? (tâches annexes : attendre ou passer en priorité minimale)
+pub fn game_active() -> bool {
+    GAME_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+thread_local! {
+    static URGENT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Tant que ce garde vit, les commandes lancées par ce fil gardent la priorité « un peu basse »
+/// même en jeu (clip demandé par l'utilisateur : sa miniature ne doit pas retarder l'annonce).
+pub struct Urgent;
+impl Urgent {
+    pub fn begin() -> Self {
+        URGENT.with(|u| u.set(u.get() + 1));
+        Urgent
+    }
+}
+impl Drop for Urgent {
+    fn drop(&mut self) {
+        URGENT.with(|u| u.set(u.get().saturating_sub(1)));
+    }
+}
+
+/// Commande sans fenêtre console, en priorité un peu basse pour ne pas gêner les jeux
+/// (priorité minimale si un jeu est au premier plan, sauf travail urgent : voir `Urgent`).
 pub fn command(program: &Path) -> Command {
     let mut cmd = Command::new(program);
-    cmd.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+    let urgent = URGENT.with(|u| u.get() > 0);
+    let class = if game_active() && !urgent { IDLE_PRIORITY_CLASS } else { BELOW_NORMAL_PRIORITY_CLASS };
+    cmd.creation_flags(CREATE_NO_WINDOW | class);
+    cmd
+}
+
+/// FFmpeg de capture (image et son) : l'enregistrement passe avant tout. `cpu_encoder` : encodage
+/// par le processeur (x264, secours) → priorité normale seulement, pour ne pas écraser le jeu.
+pub fn command_capture(program: &Path, cpu_encoder: bool) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW | if cpu_encoder { NORMAL_PRIORITY_CLASS } else { ABOVE_NORMAL_PRIORITY_CLASS });
     cmd
 }
 
@@ -396,12 +471,16 @@ pub fn foreground() -> Option<Foreground> {
         let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
         let mut rect: RECT = std::mem::zeroed();
         GetWindowRect(hwnd, &mut rect);
-        let fullscreen = monitors().iter().any(|m| {
-            rect.left <= m.x
-                && rect.top <= m.y
-                && rect.right >= m.x + m.width
-                && rect.bottom >= m.y + m.height
-        });
+        // Plein écran = la fenêtre couvre tout son écran. Seulement l'écran de la fenêtre : appelé
+        // plusieurs fois par seconde, l'ancienne version relisait tous les écrans et leur fréquence
+        // (EnumDisplaySettingsW, parfois lent selon le pilote) à chaque appel (2026-11-24).
+        let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        let fullscreen = !mon.is_null() && GetMonitorInfoW(mon, &mut info) != 0 && {
+            let m = info.rcMonitor;
+            rect.left <= m.left && rect.top <= m.top && rect.right >= m.right && rect.bottom >= m.bottom
+        };
         Some(Foreground { exe, title, fullscreen, pid })
     }
 }

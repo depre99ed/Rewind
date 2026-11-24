@@ -41,10 +41,22 @@ pub fn watch() {
     let _ = std::thread::Builder::new().name("entrees-admin-tache".into()).spawn(|| {
         ENABLED.store(exists(), Ordering::Relaxed);
         let mut warned = false;
+        // Essais espacés (2026-11-24) : si l'assistant ne se connecte jamais, `schtasks` était relancé
+        // toutes les 15 s à vie. Maintenant 15 s, 30 s, 1 min… jusqu'à 5 min ; remis à zéro dès qu'il marche.
+        let mut tries = 0u32;
+        let mut next = std::time::Instant::now();
         loop {
-            if enabled() && !inputs::HELPER_ON.load(Ordering::Relaxed) && !run() && !warned {
-                warned = true;
-                log::warn!("entrées : impossible de lancer l'assistant administrateur (tâche « {TASK} »)");
+            let helper_on = inputs::HELPER_ON.load(Ordering::Relaxed);
+            if helper_on {
+                tries = 0;
+            }
+            if enabled() && !helper_on && std::time::Instant::now() >= next {
+                tries += 1;
+                next = std::time::Instant::now() + std::time::Duration::from_secs((15u64 << (tries - 1).min(5)).min(300));
+                if !run() && !warned {
+                    warned = true;
+                    log::warn!("entrées : impossible de lancer l'assistant administrateur (tâche « {TASK} »)");
+                }
             }
             if !enabled() && inputs::game_needs_helper() && !warned {
                 warned = true;

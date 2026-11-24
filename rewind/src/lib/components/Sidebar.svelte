@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Clapperboard, Crosshair, Settings2, Users, Camera, Mic, MicOff, Pause, Play, Film, Scissors, Timer, Ellipsis, History, Send, Download, X, ShieldExclamationPoint } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
+  import { activity } from "$lib/activity.svelte";
   import { friends } from "$lib/friends.svelte";
   import { api, fileUrl, relativeDate } from "$lib/api";
   import { fit } from "$lib/fit";
@@ -70,6 +71,7 @@
 
   // Jeu lancé en administrateur : ses touches sont invisibles pour Rewind tant que l'assistant n'est pas autorisé
   $effect(() => {
+    if (!activity.visible) return; // fenêtre réduite : rien à afficher, relu dès le retour
     const read = () => api.adminInputStatus().then((a) => (app.adminInput = a)).catch(() => {});
     read();
     const id = setInterval(read, 5000);

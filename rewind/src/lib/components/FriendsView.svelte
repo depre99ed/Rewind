@@ -4,6 +4,7 @@
   import { Copy, Check, UserPlus, X, Download, Ban, Loader2, Play, RotateCw, Trash2, Film, Upload, ArrowLeft, KeyRound, Save, Camera, Clock } from "@lucide/svelte";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { app } from "$lib/state.svelte";
+  import { activity } from "$lib/activity.svelte";
   import { friends } from "$lib/friends.svelte";
   import { api, fileUrl, formatDuration, formatSize, relativeDate, type FriendIncoming, type FriendPerson } from "$lib/api";
   import { fit } from "$lib/fit";
@@ -32,6 +33,12 @@
   $effect(() => {
     friends.start();
     api.friendsRefresh().catch(() => {});
+    return () => {};
+  });
+  // Horloge des « en ligne il y a… » : seulement fenêtre affichée
+  $effect(() => {
+    if (!activity.visible) return;
+    now = Date.now() / 1000;
     const timer = setInterval(() => (now = Date.now() / 1000), 5000);
     return () => clearInterval(timer);
   });

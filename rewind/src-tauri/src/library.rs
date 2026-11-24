@@ -305,8 +305,18 @@ impl Library {
     }
 
     /// Calcule durée et miniature des clips importés qui n'en ont pas.
+    /// Durées et miniatures manquantes. Ne sauvegarde pas : l'appelant enregistre sous le verrou de la
+    /// vraie bibliothèque (2026-11-24 : la copie écrivait l'index hors verrou, risque d'écraser un clip
+    /// ajouté pendant le calcul). Pendant un jeu, attend qu'il ne soit plus devant (10 min au plus).
     pub fn fill_missing(&mut self) -> bool {
         let mut changed = false;
+        let mut waited = std::time::Duration::ZERO;
+        let mut wait_game = || {
+            while crate::util::game_active() && waited < std::time::Duration::from_secs(600) {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                waited += std::time::Duration::from_secs(5);
+            }
+        };
         for clip in self.clips.iter_mut().take(400) {
             let path = PathBuf::from(&clip.path);
             if clip.kind == "screenshot" {
@@ -317,19 +327,18 @@ impl Library {
                 continue;
             }
             if clip.duration <= 0.0 {
+                wait_game();
                 clip.duration = ffmpeg::duration(&path).unwrap_or(0.0);
                 changed = true;
             }
             if clip.thumb.is_empty() || !Path::new(&clip.thumb).is_file() {
                 let out = thumbs_dir().join(format!("{}.jpg", clip.id));
+                wait_game();
                 if ffmpeg::thumbnail(&path, (clip.duration * 0.5).min(3.0), &out).is_ok() {
                     clip.thumb = out.to_string_lossy().to_string();
                     changed = true;
                 }
             }
-        }
-        if changed {
-            let _ = self.save();
         }
         changed
     }

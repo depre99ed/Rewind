@@ -171,6 +171,11 @@
 
   function frame(now: number) {
     raf = requestAnimationFrame(frame);
+    // Fenêtre cachée (réduite, autre bureau) : rien à dessiner ; la boucle reste armée et reprend au retour
+    if (document.hidden) {
+      lastNow = 0;
+      return;
+    }
     const pieces = P.pieces;
     const total = studio.total;
     const dt = lastNow ? Math.min(0.1, (now - lastNow) / 1000) : 0;

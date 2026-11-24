@@ -3,10 +3,12 @@
   import { onMount } from "svelte";
   import { CheckCircle2, AlertTriangle, Wrench, Radio, RotateCw, ChevronDown, Shield, Skull } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
+  import { activity } from "$lib/activity.svelte";
   import { api, type Cs2Info, type Cs2Rules, type Settings } from "$lib/api";
 
   let info = $state<Cs2Info | null>(null);
-  onMount(() => {
+  $effect(() => {
+    if (!activity.visible) return; // fenêtre réduite : relu dès le retour
     const load = async () => { try { info = await api.cs2Info(); } catch {} };
     load();
     const t = setInterval(load, 2000);

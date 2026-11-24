@@ -117,16 +117,72 @@ pub fn cache_dir() -> PathBuf {
     d
 }
 
-/// Ménage du cache : images de plus d'un jour.
+/// Âge d'un fichier en secondes (métadonnées lues sur le fichier lui-même : celles de la liste du dossier
+/// restent périmées tant qu'un processus garde le fichier ouvert).
+fn age_secs(path: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map(|a| a.as_secs())
+}
+
+/// Ménage du cache : images de plus d'un jour, et graphes de filtres `graphe-*.txt` (gardés par l'export
+/// du Studio après une erreur FFmpeg, pour le diagnostic) de plus d'un jour.
 pub fn clean_cache() {
     if let Ok(entries) = std::fs::read_dir(cache_dir()) {
         for e in entries.flatten() {
-            let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a.as_secs() > 86_400);
-            if old {
+            if age_secs(&e.path()).is_some_and(|a| a > 86_400) {
                 let _ = std::fs::remove_file(e.path());
             }
         }
     }
+    if let Ok(entries) = std::fs::read_dir(util::data_dir().join("cache")) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with("graphe-") && name.ends_with(".txt") && age_secs(&e.path()).is_some_and(|a| a > 86_400) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+/// À appeler au démarrage (et périodiquement) : supprime les `*.partial.mp4` abandonnés (export ou compression
+/// interrompu par un plantage ou une fermeture de Rewind) quand ils n'ont pas été modifiés depuis plus de 10 min.
+/// Dossier des clips : lu dans `settings.json` (lecture seule, aucun effet de bord), sinon le dossier par défaut.
+/// Renvoie le nombre de fichiers supprimés.
+pub fn clean_stale_outputs() -> usize {
+    let configured = std::fs::read_to_string(util::data_dir().join("settings.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v["clip_folder"].as_str().map(PathBuf::from))
+        .filter(|p| !p.as_os_str().is_empty());
+    clean_stale_outputs_in(&configured.unwrap_or_else(|| util::videos_dir().join("Rewind")))
+}
+
+/// Même ménage dans le dossier de clips donné. Parcourt ce dossier et ses
+/// sous-dossiers (2 niveaux : un dossier par jeu, « Montages »…), plus `<données>/discord`. Ne touche JAMAIS
+/// à un autre fichier (un clip complet n'a pas `.partial.` dans son nom) ni au dossier `Reçus` : les
+/// téléchargements d'amis y sont des `<id>.partial.mp4` volontairement conservés pour être repris.
+/// Renvoie le nombre de fichiers supprimés.
+pub fn clean_stale_outputs_in(clip_folder: &std::path::Path) -> usize {
+    fn scan(dir: &std::path::Path, depth: u32, removed: &mut usize) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let path = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+                if depth > 0 && !name.eq_ignore_ascii_case("Reçus") {
+                    scan(&path, depth - 1, removed);
+                }
+            } else if name.to_lowercase().ends_with(".partial.mp4") && age_secs(&path).is_some_and(|a| a > 600) && std::fs::remove_file(&path).is_ok() {
+                log::info!("fichier temporaire abandonné supprimé : {}", path.display());
+                *removed += 1;
+            }
+        }
+    }
+    let mut removed = 0;
+    if !clip_folder.as_os_str().is_empty() {
+        scan(clip_folder, 2, &mut removed);
+    }
+    scan(&util::data_dir().join("discord"), 0, &mut removed);
+    removed
 }
 
 /// PNG envoyé en base64 → fichier du cache (même contenu = même fichier).
@@ -236,6 +292,32 @@ fn write_wav_header(f: &mut std::fs::File, rate: u32, data: u32) -> std::io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menage_des_fichiers_partiels() {
+        let root = std::env::temp_dir().join(format!("rewind-partiels-{}", std::process::id()));
+        let jeu = root.join("CS2");
+        let recus = root.join("Reçus").join("ami");
+        std::fs::create_dir_all(&jeu).unwrap();
+        std::fs::create_dir_all(&recus).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let make = |p: &std::path::Path, aged: bool| {
+            let f = std::fs::File::create(p).unwrap();
+            if aged {
+                f.set_modified(old).unwrap();
+            }
+        };
+        make(&jeu.join("Clip (coupé).partial.mp4"), true); // abandonné : supprimé
+        make(&jeu.join("Autre.partial.mp4"), false); // récent (export en cours) : gardé
+        make(&jeu.join("Clip complet.mp4"), true); // clip de la bibliothèque : jamais touché
+        make(&recus.join("abc123.partial.mp4"), true); // téléchargement d'ami reprenable : gardé
+        assert_eq!(clean_stale_outputs_in(&root), 1);
+        assert!(!jeu.join("Clip (coupé).partial.mp4").exists());
+        assert!(jeu.join("Autre.partial.mp4").exists());
+        assert!(jeu.join("Clip complet.mp4").exists());
+        assert!(recus.join("abc123.partial.mp4").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn projets_enregistres_et_listes() {

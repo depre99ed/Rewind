@@ -45,6 +45,42 @@ class MediaCache {
   inputs = $state.raw<Record<string, InputEvent[]>>({});
   labels = $state.raw<Record<string, string>>({});
   private asked = new Set<string>();
+  /** Analyses lancées au plus deux à la fois, dans l'ordre de la frise (audit 0.4.12 : ouvrir le
+   *  Studio demandait d'un coup infos, formes d'onde, vignettes et kill feed de tous les morceaux). */
+  private queue: (() => void)[] = [];
+  private running = 0;
+  private run<T>(job: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const go = () => {
+        this.running++;
+        job().then(resolve, reject).finally(() => {
+          this.running--;
+          this.queue.shift()?.();
+        });
+      };
+      if (this.running < 2) go();
+      else this.queue.push(go);
+    });
+  }
+  /** Échec : la demande pourra être refaite plus tard (avant, l'échec restait gardé pour toujours). */
+  private retryLater(key: string) {
+    setTimeout(() => this.asked.delete(key), 30_000);
+  }
+  /** Fichier modifié sur place (« Raccourcir ») : ses infos seront relues. */
+  forget(path: string) {
+    for (const k of [...this.asked]) if (k === path || k.endsWith(":" + path)) this.asked.delete(k);
+    const drop = <T,>(r: Record<string, T>) => {
+      if (!(path in r)) return r;
+      const c = { ...r };
+      delete c[path];
+      return c;
+    };
+    this.info = drop(this.info);
+    this.strips = drop(this.strips);
+    this.waves = drop(this.waves);
+    this.stems = drop(this.stems);
+    this.feed = drop(this.feed);
+  }
 
   loadInputs(clipId: string) {
     const key = "inputs:" + clipId;
@@ -61,18 +97,19 @@ class MediaCache {
   load(path: string) {
     if (!path || this.asked.has(path)) return;
     this.asked.add(path);
-    api.mediaInfo(path)
+    this.run(() => api.mediaInfo(path))
       .then((i) => i && (this.info = { ...this.info, [path]: i }))
       .catch((e) => {
         if (/introuvable|not found|does not exist/i.test(String(e))) this.missing = { ...this.missing, [path]: true };
+        else this.retryLater(path);
       });
-    api.mediaWaveform(path).then((w) => w && (this.waves = { ...this.waves, [path]: w })).catch(() => {});
+    this.run(() => api.mediaWaveform(path)).then((w) => w && (this.waves = { ...this.waves, [path]: w })).catch(() => {});
   }
   loadStrip(path: string) {
     const key = "strip:" + path;
     if (!path || this.asked.has(key)) return;
     this.asked.add(key);
-    api.mediaFilmstrip(path).then((s) => s && (this.strips = { ...this.strips, [path]: s })).catch(() => {});
+    this.run(() => api.mediaFilmstrip(path)).then((s) => s && (this.strips = { ...this.strips, [path]: s })).catch(() => this.retryLater(key));
   }
   /** Pistes son séparées en fichiers (aperçu des volumes par piste), demandées au premier besoin. */
   stems = $state.raw<Record<string, string[]>>({});
@@ -80,7 +117,10 @@ class MediaCache {
     const key = "stems:" + path;
     if (!path || this.asked.has(key)) return;
     this.asked.add(key);
-    api.mediaStems(path).then((s) => (this.stems = { ...this.stems, [path]: s ?? [] })).catch(() => (this.stems = { ...this.stems, [path]: [] }));
+    this.run(() => api.mediaStems(path)).then((s) => (this.stems = { ...this.stems, [path]: s ?? [] })).catch(() => {
+      this.stems = { ...this.stems, [path]: [] };
+      this.retryLater(key);
+    });
   }
   /** Kill feed de CS2 : moments où tes kills apparaissent (secondes dans le fichier), analysé une fois par clip. */
   feed = $state.raw<Record<string, number[]>>({});
@@ -90,9 +130,12 @@ class MediaCache {
     if (!path || this.asked.has(key)) return;
     this.asked.add(key);
     this.feedBusy = { ...this.feedBusy, [path]: true };
-    api.mediaKillfeed(path)
+    this.run(() => api.mediaKillfeed(path))
       .then((k) => (this.feed = { ...this.feed, [path]: k ?? [] }))
-      .catch(() => (this.feed = { ...this.feed, [path]: [] }))
+      .catch(() => {
+        this.feed = { ...this.feed, [path]: [] };
+        this.retryLater(key);
+      })
       .finally(() => (this.feedBusy = { ...this.feedBusy, [path]: false }));
   }
   /** Pistes séparées d'un clip (sans la piste de mixage) ; vide si une seule piste. */
@@ -271,21 +314,35 @@ class StudioStore {
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => this.saveNow(), 700);
   }
-  async saveNow() {
+  /** Sauvegardes à la file (audit 0.4.12) : deux sauvegardes du même projet ne se croisent plus. */
+  private saveChain: Promise<void> = Promise.resolve();
+  /** Projets supprimés : une sauvegarde retardée ne les fait pas revenir. */
+  private deleted = new Set<string>();
+  /** Projets déjà écrits sur le disque pendant cette session */
+  private written = new Set<string>();
+  saveNow(): Promise<void> {
     clearTimeout(this.saveTimer);
     const p = this.project;
-    // Un projet vide et jamais nommé n'est pas gardé (pas de liste remplie de « Montage » vides)
-    if (!p.pieces.length && !p.tracks.length) {
-      this.saved = true;
-      return;
-    }
-    try {
-      await api.projectSave(p.id, JSON.stringify(p));
-      this.saved = true;
-      try { localStorage.setItem(LAST_KEY, p.id); } catch {}
-    } catch {
-      this.saved = false;
-    }
+    const json = JSON.stringify(p);
+    const known = this.written.has(p.id) || this.projects.some((x) => x.id === p.id);
+    this.saveChain = this.saveChain.then(async () => {
+      // Un projet vide et jamais enregistré n'est pas gardé (pas de liste remplie de « Montage » vides).
+      // Un projet existant vidé est bien enregistré vide (avant, son ancien contenu revenait).
+      if ((!p.pieces.length && !p.tracks.length && !known) || this.deleted.has(p.id)) {
+        this.saved = true;
+        return;
+      }
+      try {
+        await api.projectSave(p.id, json);
+        this.written.add(p.id);
+        this.saved = true;
+        try { localStorage.setItem(LAST_KEY, p.id); } catch {}
+      } catch (e) {
+        this.saved = false;
+        this.say(t("Projet non enregistré : {e}", { e: String(e) }));
+      }
+    });
+    return this.saveChain;
   }
   async refreshList() {
     this.projects = (await api.projectsList().catch(() => [])) ?? [];
@@ -333,6 +390,10 @@ class StudioStore {
     await this.refreshList();
   }
   async remove(id: string) {
+    this.deleted.add(id);
+    if (this.project.id === id) clearTimeout(this.saveTimer);
+    // Après les sauvegardes déjà parties : la suppression passe en dernier
+    await this.saveChain;
     await api.projectDelete(id).catch(() => {});
     if (this.project.id === id) {
       this.project = newProject();

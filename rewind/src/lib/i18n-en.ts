@@ -523,6 +523,8 @@ export const EN: Record<string, string> = {
   "pas lancée": "not running",
   "Le son du jeu seul, sans la musique ni le navigateur": "Game audio only, without music or the browser",
   "aucun jeu lancé": "no game running",
+  "Projet non enregistré : {e}": "Project not saved: {e}",
+  "qualité réduite : aucun encodeur de carte graphique disponible": "reduced quality: no graphics card encoder available",
   "Autres sons du PC": "Other PC audio",
   "Avec la piste « Jeu », la sortie du PC garde tout le reste (musique, navigateur…) : au montage, baisse-la pour ne garder que le jeu.": "With the “Game” track, PC output keeps everything else (music, browser…): lower it while editing to keep only the game.",
   "Micro par défaut de Windows": "Windows default microphone",

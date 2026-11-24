@@ -7,6 +7,7 @@
   import { onMount } from "svelte";
   import { Play, Pause, SkipBack, SkipForward, Maximize, Film, Sparkles, RotateCw, FileX } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
+  import { activity } from "$lib/activity.svelte";
   import { studio, media, fmtTime } from "$lib/studio/store.svelte";
   import { FORMAT_RATIO, endFadeAt, frameSize, glitchShift, isFilterFx, kfValue, layerState, punchAt, shakeAt, segSpeedAt as speedAt, type BlurLayer, type Layer, type Piece } from "$lib/studio/model";
   import { mixer, newAudioEl, Ducker } from "$lib/studio/mixer";
@@ -81,6 +82,8 @@
   let slots: Slot[] = [];
   let raf = 0;
   let lastNow = 0;
+  /** Dernière image calculée à l'arrêt en arrière-plan (les suivantes sont sautées) */
+  let settled = false;
   const audios = new Map<string, HTMLAudioElement>();
   const stemEls = new Map<string, HTMLAudioElement>();
   const ducker = new Ducker();
@@ -176,6 +179,13 @@
       lastNow = 0;
       return;
     }
+    // À l'arrêt et fenêtre pas au premier plan (derrière un jeu) : rien ne peut changer l'image, on ne
+    // recalcule rien (audit 0.4.12). Au premier plan ou pendant la lecture, rien ne change.
+    if (!studio.playing && !activity.active && settled) {
+      lastNow = 0;
+      return;
+    }
+    settled = !studio.playing && !activity.active;
     const pieces = P.pieces;
     const total = studio.total;
     const dt = lastNow ? Math.min(0.1, (now - lastNow) / 1000) : 0;

@@ -334,6 +334,40 @@ pub fn wake_running(tray: bool) -> bool {
     true
 }
 
+/// Verrou de lancement (audit 0.4.12) : deux lancements simultanés chargeaient, analysaient et
+/// réécrivaient tous les deux la bibliothèque AVANT que l'extension « une seule instance » ne tranche
+/// (un favori ou un identifiant pouvait être perdu). Pris tout au début de `run()`, gardé jusqu'à la
+/// fin du processus. false : un autre Rewind tourne ou démarre, ce lancement doit s'arrêter (après lui
+/// avoir demandé d'ouvrir sa fenêtre). Une relance (mise à jour, passage en administrateur) attend que
+/// l'ancien Rewind ait fini de se fermer (10 s au plus).
+pub fn acquire_instance(tray: bool) -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    let name = util::wide(&format!("Local\\{APP_ID}-lancement"));
+    for _ in 0..100 {
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        let code = unsafe { GetLastError() };
+        if !handle.is_null() && code != ERROR_ALREADY_EXISTS {
+            // Jamais fermé : gardé jusqu'à la fin du processus (Windows le libère à la sortie)
+            return true;
+        }
+        if !handle.is_null() {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        } else if code != ERROR_ACCESS_DENIED {
+            // Erreur inattendue : on ne bloque pas le lancement
+            return true;
+        }
+        // Un Rewind tourne déjà avec sa fenêtre de réveil : on la lui fait ouvrir et on s'arrête
+        if instance_window().is_some() {
+            wake_running(tray);
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    log::info!("un autre Rewind démarre : ce lancement s'arrête");
+    false
+}
+
 /// Rewind déjà ouvert : accepter le message « ouvre ta fenêtre » d'un lancement sans droits
 /// administrateur (sinon Windows le bloque quand Rewind est administrateur).
 pub fn accept_wake_messages() {

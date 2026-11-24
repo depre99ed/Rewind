@@ -100,8 +100,10 @@ export const fontOf = (id: string): FontDef => FONTS.find((f) => f.id === id) ??
 
 export const cssFont = (f: FontDef, px: number) => `${f.weight} ${px}px "${f.family}"`;
 
-/** Attend que toutes les polices soient prêtes (avant de dessiner le texte pour l'export). */
-export async function loadFonts(): Promise<void> {
+/** Attend que les polices soient prêtes (avant de dessiner le texte pour l'export). `ids` : seulement
+ *  celles-là (export : les polices vraiment utilisées, audit 0.4.12) ; sans `ids` : toutes (sélecteur). */
+export async function loadFonts(ids?: Iterable<string>): Promise<void> {
   if (typeof document === "undefined" || !document.fonts) return;
-  await Promise.all(FONTS.map((f) => document.fonts.load(cssFont(f, 48), "AÉazé09").catch(() => [])));
+  const list = ids ? [...new Set(ids)].map(fontOf) : FONTS;
+  await Promise.all(list.map((f) => document.fonts.load(cssFont(f, 48), "AÉazé09").catch(() => [])));
 }

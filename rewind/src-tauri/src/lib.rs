@@ -311,9 +311,9 @@ fn save_clip_blocking(app: &AppHandle, start: f64, end: f64, title: Option<Strin
         let state = app.state::<AppState>();
         let recorder = Arc::clone(&state.recorder);
         // Attendre que l'image et le son qui contiennent « end » soient écrits
-        recorder::wait_written(&recorder, end, Duration::from_millis(4000));
+        let complete = recorder::wait_written(&recorder, end, Duration::from_millis(4000));
         let settings = state.settings.lock().clone();
-        let result = (|| -> anyhow::Result<Clip> {
+        let result = (|| -> anyhow::Result<(Clip, bool)> {
             let (prepared, game) = {
                 let r = recorder.lock();
                 let game = game.clone().unwrap_or_else(|| r.main_app(start, end));
@@ -321,19 +321,34 @@ fn save_clip_blocking(app: &AppHandle, start: f64, end: f64, title: Option<Strin
             };
             let title = title.clone().unwrap_or_else(|| game.clone());
             let folder = recorder::clip_folder(&settings, &game);
-            let first = prepared.first_start;
-            let clip = recorder::export(prepared, ExportRequest { start, end, title, game, kind: kind.clone(), markers: markers.clone(), folder })?;
+            let spans = prepared.spans(end);
+            let truncated = prepared.truncated;
+            // Au plus deux assemblages à la fois (raccourcis rapprochés : disque et processeur épargnés)
+            let _slot = ExportSlot::take();
+            let clip = recorder::export(prepared, ExportRequest { end, title, game, kind: kind.clone(), markers: markers.clone(), folder })?;
             if settings.input_overlay {
-                inputs::save_for_clip(&clip.id, first, first + clip.duration);
+                inputs::save_for_clip(&clip.id, &spans);
             }
-            Ok(clip)
+            Ok((clip, truncated))
         })();
         match result {
-            Ok(clip) => {
+            Ok((clip, truncated)) => {
+                // La fiche d'abord (audit 0.4.12) : le clip n'est annoncé qu'une fois dans la bibliothèque
+                let indexed = state.library.lock().add(clip.clone());
                 play_sound(&settings);
-                toast::show(app, &settings, toast_for(&clip, "saved"));
-                let _ = state.library.lock().add(clip.clone());
-                log::info!("clip enregistré : {}", clip.path);
+                let mut t = toast_for(&clip, "saved");
+                if !complete {
+                    t.subtitle = format!("{} · {}", t.subtitle, tr(&settings, "fin du clip incomplète", "end of clip incomplete"));
+                }
+                if truncated {
+                    t.subtitle = format!("{} · {}", t.subtitle, tr(&settings, "début manquant (réglages changés)", "start missing (settings changed)"));
+                }
+                if let Err(e) = &indexed {
+                    log::warn!("clip enregistré mais bibliothèque non écrite : {e:#}");
+                    t.subtitle = tr(&settings, "Fichier enregistré, bibliothèque non mise à jour", "File saved, library not updated");
+                }
+                toast::show(app, &settings, t);
+                log::info!("clip enregistré : {}{}", clip.path, if complete { "" } else { " (fin incomplète)" });
                 let _ = app.emit("clip-saved", clip.clone());
                 Some(clip)
             }
@@ -344,6 +359,32 @@ fn save_clip_blocking(app: &AppHandle, start: f64, end: f64, title: Option<Strin
                 None
             }
         }
+    }
+}
+
+/// Place d'assemblage : au plus deux clips assemblés en même temps, les autres attendent leur tour.
+struct ExportSlot;
+
+static EXPORT_SLOTS: (std::sync::Mutex<u32>, std::sync::Condvar) = (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+impl ExportSlot {
+    fn take() -> Self {
+        let (lock, cv) = &EXPORT_SLOTS;
+        let mut n = lock.lock().unwrap_or_else(|e| e.into_inner());
+        while *n >= 2 {
+            n = cv.wait(n).unwrap_or_else(|e| e.into_inner());
+        }
+        *n += 1;
+        ExportSlot
+    }
+}
+
+impl Drop for ExportSlot {
+    fn drop(&mut self) {
+        let (lock, cv) = &EXPORT_SLOTS;
+        let mut n = lock.lock().unwrap_or_else(|e| e.into_inner());
+        *n = n.saturating_sub(1);
+        cv.notify_one();
     }
 }
 
@@ -442,6 +483,9 @@ static RECENT_KILLS: parking_lot::Mutex<std::collections::VecDeque<(f64, String,
 
 fn remember_kill(time: f64, kind: &str, label: &str) {
     let mut k = RECENT_KILLS.lock();
+    if upgrade_headshot(k.iter_mut(), time, kind, label) {
+        return;
+    }
     k.push_back((time, kind.to_string(), label.to_string()));
     while k.front().is_some_and(|f| time - f.0 > 600.0) || k.len() > 500 {
         k.pop_front();
@@ -453,14 +497,32 @@ fn kills_between(start: f64, end: f64) -> Vec<(f64, String, String)> {
     RECENT_KILLS.lock().iter().filter(|k| k.0 >= start && k.0 <= end).cloned().collect()
 }
 
+/// Un headshot jugé ensuite « one tap » arrive deux fois (headshot, puis one tap à la même heure) :
+/// le repère existant est remplacé au lieu d'en ajouter un second (audit 0.4.12).
+fn upgrade_headshot<'a>(list: impl Iterator<Item = &'a mut (f64, String, String)>, time: f64, kind: &str, label: &str) -> bool {
+    if kind != "onetap" {
+        return false;
+    }
+    for m in list {
+        if m.1 == "headshot" && (m.0 - time).abs() < 0.001 {
+            m.1 = kind.to_string();
+            m.2 = label.to_string();
+            return true;
+        }
+    }
+    false
+}
+
 /// Ajoute un repère au clip sur mesure et à la session en cours (kills CS2, touche « repère »).
 fn add_hold_marker(app: &AppHandle, time: f64, kind: &str, label: &str) -> bool {
     let state = app.state::<AppState>();
     let mut added = false;
     for hold in [&state.custom, &state.session] {
         if let Some(h) = hold.lock().as_mut() {
-            h.markers.push((time, kind.to_string(), label.to_string()));
             added = true;
+            if upgrade_headshot(h.markers.iter_mut(), time, kind, label) {
+                continue;
+            }
         }
     }
     added
@@ -1086,18 +1148,6 @@ fn progress_fn(app: &AppHandle, op: &str) -> impl Fn(f64) + use<> {
     }
 }
 
-#[tauri::command]
-async fn edit_trim(app: AppHandle, id: String, start: f64, end: f64, exact: bool) -> Res<Clip> {
-    let source = app.state::<AppState>().library.lock().get(&id).cloned().ok_or("Clip introuvable")?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let out = editor::trim(&PathBuf::from(&source.path), start, end, exact, &progress_fn(&app, "trim"))?;
-        add_edit_result(&app, &source, out, "(coupé)")
-    })
-    .await
-    .map_err(err)?
-    .map_err(err)
-}
-
 /// Raccourcit un clip SUR PLACE (bouton « Raccourcir » des Clips, comme Medal) : même fichier, même nom, mêmes
 /// collections et favori ; repères de kills et touches recalés ; l'original part dans la Corbeille de Windows.
 /// Coupe à l'image près (ré-encodage rapide) : une copie directe ne coupe que sur les images clés.
@@ -1109,12 +1159,25 @@ pub fn shorten_file(source: &Clip, start: f64, end: f64, progress: &dyn Fn(f64))
     if end - start < 0.5 {
         anyhow::bail!("Garde au moins une demi-seconde.");
     }
+    let _busy = library::Busy::begin(&source.id);
     let out = editor::trim(&src, start, end, true, progress)?;
-    if let Err(e) = library::recycle(&src) {
-        let _ = std::fs::remove_file(&out);
-        return Err(e).context("Le clip d'origine est encore ouvert (lecteur, autre logiciel) : réessaie dans un instant");
+    // Remplacement récupérable (audit 0.4.12) : Windows échange les deux fichiers d'un coup et garde
+    // l'original à côté ; s'il échoue, rien n'a bougé. L'original part ensuite à la Corbeille.
+    let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let ext = src.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "mp4".into());
+    let mut backup = src.with_file_name(format!("{stem} (original).{ext}"));
+    let mut n = 2;
+    while backup.exists() {
+        backup = src.with_file_name(format!("{stem} (original {n}).{ext}"));
+        n += 1;
     }
-    std::fs::rename(&out, &src).context("Remplacement du clip")?;
+    if let Err(e) = util::replace_file(&src, &out, &backup) {
+        let _ = std::fs::remove_file(&out);
+        return Err(e).context("Le clip d'origine est encore ouvert (lecteur, autre logiciel) ou a été déplacé : réessaie dans un instant");
+    }
+    if library::recycle(&backup).is_err() {
+        log::warn!("original gardé à côté du clip (Corbeille indisponible) : {}", backup.display());
+    }
     let duration = ffmpeg::duration(&src).unwrap_or(end - start);
     let markers: Vec<library::Marker> = source
         .markers
@@ -1154,52 +1217,22 @@ async fn clip_shorten(app: AppHandle, id: String, start: f64, end: f64) -> Res<C
         let c = shorten_file(&source, start, end, &progress_fn(&app, "trim"))?;
         let state = app.state::<AppState>();
         let mut lib = state.library.lock();
-        // Seuls la durée, la taille, la vignette et les repères changent (un renommage ou une collection
-        // faits pendant la coupe sont gardés)
+        // Seuls la durée, la taille, la vignette et les repères changent (une collection faite pendant
+        // la coupe est gardée ; le renommage est refusé pendant la coupe)
         let out = match lib.get_mut(&id) {
-            Some(x) => {
+            Some(x) if x.path == source.path => {
                 x.duration = c.duration;
                 x.size = c.size;
                 x.thumb = c.thumb.clone();
                 x.markers = c.markers.clone();
                 x.clone()
             }
+            // Fiche disparue ou fichier déplacé pendant la coupe : la fiche actuelle n'est pas touchée
+            Some(x) => x.clone(),
             None => c,
         };
         lib.save()?;
         Ok(out)
-    })
-    .await
-    .map_err(err)?
-    .map_err(err)
-}
-
-#[tauri::command]
-async fn edit_merge(app: AppHandle, ids: Vec<String>) -> Res<Clip> {
-    let clips: Vec<Clip> = {
-        let state = app.state::<AppState>();
-        let lib = state.library.lock();
-        ids.iter().filter_map(|id| lib.get(id).cloned()).collect()
-    };
-    if clips.len() < 2 {
-        return Err("Choisis au moins deux clips.".into());
-    }
-    tauri::async_runtime::spawn_blocking(move || {
-        let paths: Vec<PathBuf> = clips.iter().map(|c| PathBuf::from(&c.path)).collect();
-        let out = editor::merge(&paths, &progress_fn(&app, "merge"))?;
-        add_edit_result(&app, &clips[0], out, "(fusion)")
-    })
-    .await
-    .map_err(err)?
-    .map_err(err)
-}
-
-#[tauri::command]
-async fn edit_vertical(app: AppHandle, id: String, mode: String, start: f64, end: f64) -> Res<Clip> {
-    let source = app.state::<AppState>().library.lock().get(&id).cloned().ok_or("Clip introuvable")?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let out = editor::vertical(&PathBuf::from(&source.path), &mode, start, end, &progress_fn(&app, "vertical"))?;
-        add_edit_result(&app, &source, out, "(vertical)")
     })
     .await
     .map_err(err)?
@@ -1280,27 +1313,6 @@ async fn media_killfeed(path: String) -> Res<Vec<f64>> {
 #[tauri::command]
 async fn media_stems(path: String) -> Res<Vec<String>> {
     tauri::async_runtime::spawn_blocking(move || media::stems(std::path::Path::new(&path))).await.map_err(err)?.map_err(err)
-}
-
-#[tauri::command]
-async fn studio_export(app: AppHandle, pieces: Vec<editor::Piece>, options: editor::StudioOptions, game: String) -> Res<Clip> {
-    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Clip> {
-        let settings = app.state::<AppState>().settings.lock().clone();
-        let folder = recorder::clip_folder(&settings, if game.is_empty() { "Montages" } else { &game });
-        let out = editor::studio_export(&pieces, &options, &folder, &progress_fn(&app, "studio"))?;
-        let source = Clip { title: options.title.clone(), game: game.clone(), ..Default::default() };
-        let mut clip = add_edit_result(&app, &source, out, "")?;
-        clip.title = options.title.clone();
-        let state = app.state::<AppState>();
-        if let Some(c) = state.library.lock().get_mut(&clip.id) {
-            c.title = options.title.clone();
-        }
-        let _ = state.library.lock().save();
-        Ok(clip)
-    })
-    .await
-    .map_err(err)?
-    .map_err(err)
 }
 
 /// Export du Studio v2 (calques, zoom, plusieurs pistes son…) : voir render.rs.
@@ -1510,10 +1522,13 @@ async fn share_discord(app: AppHandle, id: String, webhook: usize, message: Stri
         let size_mb = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0;
         let cleanup;
         if size_mb > share::DISCORD_LIMIT_MB - 0.3 && source.kind != "screenshot" {
-            let out = editor::compress(&path, share::DISCORD_LIMIT_MB - 0.6, &progress_fn(&app, "compress"))?;
-            compressed = true;
-            cleanup = Some(out.clone());
-            path = out;
+            // Même préparation que « Copier pour Discord » (taille vérifiée avant l'envoi, audit 0.4.12),
+            // dans un dossier de travail : jamais le clip d'origine supprimé
+            let dir = util::data_dir().join("discord");
+            let f = editor::prepare_for_discord(&path, share::DISCORD_LIMIT_MB - 0.6, &dir, &progress_fn(&app, "compress"))?;
+            compressed = f.compressed;
+            cleanup = f.compressed.then(|| f.path.clone());
+            path = f.path;
         } else {
             cleanup = None;
         }
@@ -1754,18 +1769,15 @@ fn medal_import(app: AppHandle, state: State<AppState>, from: Option<String>) ->
     std::thread::spawn(move || {
         let state = handle.state::<AppState>();
         // Copie : la bibliothèque n'est pas bloquée pendant le calcul des miniatures
-        let mut copy = Library { clips: state.library.lock().clips.clone() };
+        let before = state.library.lock().clips.clone();
+        let mut copy = Library { clips: before.clone() };
         if copy.fill_missing() {
             let mut l = state.library.lock();
-            for c in copy.clips {
-                if let Some(x) = l.get_mut(&c.id) {
-                    x.duration = c.duration;
-                    x.thumb = c.thumb;
-                }
+            if l.merge_filled(&before, copy.clips) {
+                let _ = l.save();
+                drop(l);
+                let _ = handle.emit("library-changed", ());
             }
-            let _ = l.save();
-            drop(l);
-            let _ = handle.emit("library-changed", ());
         }
     });
     Ok(res)
@@ -1809,6 +1821,13 @@ fn last_proposed_update() -> String {
 
 fn mark_proposed_update(version: &str) {
     let _ = std::fs::write(util::data_dir().join("update-proposed.txt"), version);
+}
+
+/// Un enregistrement que la mise à jour couperait : clip sur mesure, session complète, clip en cours
+/// d'assemblage, clip en cours de raccourcissement.
+pub(crate) fn recording_busy(app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    state.custom.lock().is_some() || state.session.lock().is_some() || *EXPORT_SLOTS.0.lock().unwrap_or_else(|e| e.into_inner()) > 0 || library::Busy::any()
 }
 
 /// L'utilisateur est occupé : jeu ou plein écran au premier plan, clip sur mesure ou session en cours.
@@ -1889,7 +1908,19 @@ fn quit_app(app: AppHandle) {
 
 /// Affiche la fenêtre ; la recrée si elle a été fermée (l'interface est détruite à la fermeture
 /// pour libérer ~350 Mo de mémoire pendant que l'enregistrement continue).
+/// Démarrage terminé (fin de `setup`). Avant, une demande « ouvre ta fenêtre » (2e lancement arrivé
+/// pendant le démarrage) figeait Rewind : elle est maintenant gardée et servie à la fin du démarrage.
+static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SHOW_LATER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn show_main(app: &AppHandle) {
+    if !READY.load(std::sync::atomic::Ordering::SeqCst) {
+        // Noté d'abord, revérifié ensuite : jamais perdu si le démarrage se termine entre les deux
+        SHOW_LATER.store(true, std::sync::atomic::Ordering::SeqCst);
+        if !READY.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+    }
     let window = match app.get_webview_window("main") {
         Some(w) => Some(w),
         None => app
@@ -2033,7 +2064,6 @@ pub fn selftest(seconds: u64, out: PathBuf) -> i32 {
         recorder::export(
             p,
             ExportRequest {
-                start: now - clip_len,
                 end: now,
                 title: "Autotest".into(),
                 game: "Test".into(),
@@ -2362,7 +2392,7 @@ pub fn hold_test(out: PathBuf) -> i32 {
     };
     let (parts, tracks) = (prepared.parts(), prepared.track_count());
     rec.lock().set_hold(None);
-    match recorder::export(prepared, ExportRequest { start, end, title: "Session test".into(), game: "Test".into(), kind: "session".into(), markers, folder: out }) {
+    match recorder::export(prepared, ExportRequest { end, title: "Session test".into(), game: "Test".into(), kind: "session".into(), markers, folder: out }) {
         Ok(c) => {
             println!("clip : {:.1} s attendus ~{:.1} s (sans session : 13 s max), {parts} morceau(x)", c.duration, end - start);
             for m in &c.markers {
@@ -2560,7 +2590,7 @@ pub fn stitch_test(out: PathBuf, audio_fault: bool) -> i32 {
         };
         let tracks = prepared.track_count();
         println!("tampon à jour : {written} ; morceaux : {}", prepared.parts());
-        let req = ExportRequest { start: now - 12.0, end: now, title: "Son coupé".into(), game: "Test".into(), kind: "manual".into(), markers: vec![], folder: out };
+        let req = ExportRequest { end: now, title: "Son coupé".into(), game: "Test".into(), kind: "manual".into(), markers: vec![], folder: out };
         return match recorder::export(prepared, req) {
             Ok(c) => {
                 for s in ffmpeg::streams(std::path::Path::new(&c.path)) {
@@ -2638,7 +2668,7 @@ pub fn stitch_test(out: PathBuf, audio_fault: bool) -> i32 {
     };
     let (parts, tracks) = (prepared.parts(), prepared.track_count());
     println!("tampon à jour : {written} ; morceaux : {parts} ; pistes son : {tracks}");
-    let res = recorder::export(prepared, ExportRequest { start, end: now, title: "Recollage".into(), game: "Test".into(), kind: "manual".into(), markers: vec![(now - 3.0, "manual".into(), "repère".into())], folder: out });
+    let res = recorder::export(prepared, ExportRequest { end: now, title: "Recollage".into(), game: "Test".into(), kind: "manual".into(), markers: vec![(now - 3.0, "manual".into(), "repère".into())], folder: out });
     match res {
         Ok(c) => {
             for s in ffmpeg::streams(std::path::Path::new(&c.path)) {
@@ -2725,7 +2755,7 @@ pub fn stress(minutes: u64, out: PathBuf) -> i32 {
             let res = prepared.map_err(|e| format!("{e:#}")).and_then(|p| {
                 let parts = p.parts();
                 let tracks = p.track_count();
-                recorder::export(p, ExportRequest { start: now - 15.0, end: now, title: "Stress".into(), game: "Test".into(), kind: "manual".into(), markers: vec![], folder: out.join("clips") })
+                recorder::export(p, ExportRequest { end: now, title: "Stress".into(), game: "Test".into(), kind: "manual".into(), markers: vec![], folder: out.join("clips") })
                     .map_err(|e| format!("{e:#}"))
                     .and_then(|c| {
                         // Clip à cheval sur une panne : il manque forcément les secondes sans enregistrement
@@ -3000,6 +3030,10 @@ fn install_crash_report() {
 pub fn run() {
     init_logging();
     install_crash_report();
+    // Avant toute lecture ou écriture de la bibliothèque et des réglages : un seul Rewind à la fois
+    if !admin::acquire_instance(std::env::args().any(|a| a == "--tray")) {
+        return;
+    }
     let settings = Settings::load();
     log::info!("Rewind démarre");
     let recorder = Arc::new(Mutex::new(Recorder::new(settings.clone())));
@@ -3145,7 +3179,11 @@ pub fn run() {
             // Surveillance du moteur
             let rec = Arc::clone(&recorder);
             std::thread::Builder::new().name("engine".into()).spawn(move || loop {
-                rec.lock().tick();
+                let asked = std::time::Instant::now();
+                let mut r = rec.lock();
+                r.note_lock_wait(asked.elapsed());
+                r.tick();
+                drop(r);
                 std::thread::sleep(Duration::from_millis(250));
             })?;
 
@@ -3246,17 +3284,15 @@ pub fn run() {
             std::thread::spawn(move || {
                 let changed = {
                     // copie pour ne pas bloquer la bibliothèque pendant le calcul
-                    let mut copy = Library { clips: lib.lock().clips.clone() };
-                    let changed = copy.fill_missing();
-                    if changed {
+                    let before = lib.lock().clips.clone();
+                    let mut copy = Library { clips: before.clone() };
+                    let mut changed = false;
+                    if copy.fill_missing() {
                         let mut l = lib.lock();
-                        for c in copy.clips {
-                            if let Some(x) = l.get_mut(&c.id) {
-                                x.duration = c.duration;
-                                x.thumb = c.thumb;
-                            }
+                        changed = l.merge_filled(&before, copy.clips);
+                        if changed {
+                            let _ = l.save();
                         }
-                        let _ = l.save();
                     }
                     changed
                 };
@@ -3346,6 +3382,11 @@ pub fn run() {
                     }
                 }
             });
+            READY.store(true, std::sync::atomic::Ordering::SeqCst);
+            if SHOW_LATER.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                log::info!("lancement reçu pendant le démarrage : la fenêtre s'ouvre maintenant");
+                show_main(&handle);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -3382,7 +3423,6 @@ pub fn run() {
             open_folder,
             copy_clip,
             copy_for_discord,
-            studio_export,
             studio_render,
             projects_list,
             project_load,
@@ -3409,9 +3449,6 @@ pub fn run() {
             sound_preview,
             sound_import,
             admin_input_set,
-            edit_trim,
-            edit_merge,
-            edit_vertical,
             share_discord,
             friends_view,
             discord_context,

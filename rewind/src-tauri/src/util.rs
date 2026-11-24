@@ -132,9 +132,17 @@ pub fn data_dir() -> PathBuf {
     {
         let dir = std::env::var_os("REWIND_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("rewind-tests"));
         let _ = std::fs::create_dir_all(&dir);
-        return dir;
+        dir
     }
-    #[allow(unreachable_code)]
+    #[cfg(not(test))]
+    {
+        data_dir_installed()
+    }
+}
+
+/// Dossier des données hors tests (calculé une fois).
+#[cfg(not(test))]
+fn data_dir_installed() -> PathBuf {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
         // Tests : dossier séparé (ne jamais toucher au Rewind installé qui tourne)
@@ -188,6 +196,61 @@ pub fn set_game_active(on: bool) {
 /// Un jeu est-il au premier plan ? (tâches annexes : attendre ou passer en priorité minimale)
 pub fn game_active() -> bool {
     GAME_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Remplace `target` par `replacement` d'un seul coup (ReplaceFileW) et garde l'ancien `target` sous
+/// le nom `backup`. En cas d'échec, les fichiers restent comme avant.
+pub fn replace_file(target: &Path, replacement: &Path, backup: &Path) -> std::io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+    let (t, r, b) = (wide(&target.to_string_lossy()), wide(&replacement.to_string_lossy()), wide(&backup.to_string_lossy()));
+    let ok = unsafe { ReplaceFileW(t.as_ptr(), r.as_ptr(), b.as_ptr(), 0, std::ptr::null(), std::ptr::null()) };
+    if ok == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+}
+
+/// `Command::output` avec un délai maximal (audit 0.4.12) : un FFmpeg/FFprobe bloqué (fichier
+/// abîmé, disque réseau figé) ne doit plus immobiliser pour toujours la file des clips ou le Studio.
+/// Au-delà du délai, le processus est arrêté et une erreur « TimedOut » est renvoyée.
+pub trait OutputTimeout {
+    fn output_timeout(&mut self, max: std::time::Duration) -> std::io::Result<std::process::Output>;
+}
+
+impl OutputTimeout for std::process::Command {
+    fn output_timeout(&mut self, max: std::time::Duration) -> std::io::Result<std::process::Output> {
+        use std::io::Read;
+        let mut child = self.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()?;
+        let (mut so, mut se) = (child.stdout.take(), child.stderr.take());
+        let t1 = std::thread::spawn(move || {
+            let mut b = Vec::new();
+            if let Some(s) = so.as_mut() {
+                let _ = s.read_to_end(&mut b);
+            }
+            b
+        });
+        let t2 = std::thread::spawn(move || {
+            let mut b = Vec::new();
+            if let Some(s) = se.as_mut() {
+                let _ = s.read_to_end(&mut b);
+            }
+            b
+        });
+        let deadline = std::time::Instant::now() + max;
+        let status = loop {
+            if let Some(st) = child.try_wait()? {
+                break st;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = (t1.join(), t2.join());
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("le traitement ne répond plus après {} s : arrêté", max.as_secs()),
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        Ok(std::process::Output { status, stdout: t1.join().unwrap_or_default(), stderr: t2.join().unwrap_or_default() })
+    }
 }
 
 /// Dernier jeu vu au premier plan (processus), gardé quand on passe sur le bureau : la piste « Jeu »

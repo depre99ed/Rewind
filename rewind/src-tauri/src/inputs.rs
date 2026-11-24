@@ -157,12 +157,23 @@ fn dir() -> std::path::PathBuf {
     d
 }
 
-/// Garde les touches d'un clip (heures converties en position dans le clip).
-pub fn save_for_clip(id: &str, clip_start: f64, clip_end: f64) {
-    let list: Vec<InputEvent> = between(clip_start, clip_end)
-        .into_iter()
-        .map(|e| InputEvent { t: (e.t - clip_start).max(0.0), ..e })
-        .collect();
+/// Garde les touches d'un clip (heures converties en position dans le clip). `spans` : morceaux
+/// d'enregistrement recollés dans le clip (heure de début, heure de fin), dans l'ordre. Une touche
+/// tombée dans un trou entre deux morceaux (capture relancée) est écartée, les suivantes sont recalées
+/// comme les repères (audit 0.4.12 : elles étaient en retard après le premier trou).
+pub fn save_for_clip(id: &str, spans: &[(f64, f64)]) {
+    let (Some(first), Some(last)) = (spans.first(), spans.last()) else { return };
+    let mut list: Vec<InputEvent> = Vec::new();
+    for e in between(first.0, last.1) {
+        let mut offset = 0.0;
+        for (a, b) in spans {
+            if e.t >= *a && e.t <= *b {
+                list.push(InputEvent { t: offset + (e.t - a).max(0.0), ..e });
+                break;
+            }
+            offset += (b - a).max(0.0);
+        }
+    }
     if list.is_empty() {
         return;
     }

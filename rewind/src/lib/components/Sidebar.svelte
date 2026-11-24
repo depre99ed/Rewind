@@ -66,7 +66,8 @@
   const quality = $derived.by(() => {
     if (!st?.encoder || !st.width || !st.height) return null;
     const enc = encoderLabel(st.encoder);
-    return { res: `${Math.min(st.width, st.height)}p`, fps: `${st.fps} FPS`, enc: enc.chip, full: `${st.width}×${st.height} · ${st.fps} ${t("i/s")} · ${enc.chip} ${enc.codec}` };
+    const limited = st.limited ? ` · ${t("qualité réduite : aucun encodeur de carte graphique disponible")}` : "";
+    return { res: `${Math.min(st.width, st.height)}p`, fps: `${st.fps} FPS`, enc: enc.chip, full: `${st.width}×${st.height} · ${st.fps} ${t("i/s")} · ${enc.chip} ${enc.codec}${limited}` };
   });
 
   // Jeu lancé en administrateur : ses touches sont invisibles pour Rewind tant que l'assistant n'est pas autorisé

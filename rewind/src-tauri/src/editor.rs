@@ -1,6 +1,7 @@
 //! Montage : couper, fusionner, format vertical (TikTok / Shorts), compression pour Discord.
 //! Les fichiers d'origine ne sont jamais modifiés : chaque opération crée un nouveau fichier.
 
+use crate::util::OutputTimeout;
 use crate::{ffmpeg, util};
 use anyhow::{Context, Result, bail};
 use std::{
@@ -224,93 +225,16 @@ pub fn trim(source: &Path, start: f64, end: f64, exact: bool, progress: &dyn Fn(
     Ok(out)
 }
 
-fn has_audio(path: &Path) -> bool {
-    let Ok(tools) = ffmpeg::tools() else { return false };
-    util::command(&tools.ffprobe)
-        .args(["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0"])
-        .arg(path)
-        .output()
-        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-        .unwrap_or(false)
-}
-
 fn video_size(path: &Path) -> (u32, u32) {
     let Ok(tools) = ffmpeg::tools() else { return (1920, 1080) };
     let out = util::command(&tools.ffprobe)
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0"])
         .arg(path)
-        .output()
+        .output_timeout(std::time::Duration::from_secs(30))
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
     let mut it = out.trim().split(',').filter_map(|x| x.parse::<u32>().ok());
     (it.next().unwrap_or(1920), it.next().unwrap_or(1080))
-}
-
-/// Colle plusieurs clips bout à bout (tailles différentes acceptées).
-pub fn merge(sources: &[PathBuf], progress: &dyn Fn(f64)) -> Result<PathBuf> {
-    if sources.len() < 2 {
-        bail!("Choisis au moins deux clips.");
-    }
-    let (w, h) = video_size(&sources[0]);
-    let first = &sources[0];
-    let out = output_next_to(first, "(fusion)");
-    let mut args: Vec<String> = Vec::new();
-    let mut graph = String::new();
-    let mut total = 0.0;
-    for (i, s) in sources.iter().enumerate() {
-        let d = ffmpeg::duration(s).unwrap_or(0.0);
-        total += d;
-        args.extend(["-i".into(), s.to_string_lossy().into()]);
-        graph.push_str(&format!(
-            "[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=60,format=yuv420p[v{i}];"
-        ));
-        if has_audio(s) {
-            graph.push_str(&format!("[{i}:a:0]aresample=48000,aformat=channel_layouts=stereo[a{i}];"));
-        } else {
-            graph.push_str(&format!("aevalsrc=0|0:s=48000:d={d:.3}[a{i}];"));
-        }
-    }
-    for i in 0..sources.len() {
-        graph.push_str(&format!("[v{i}][a{i}]"));
-    }
-    graph.push_str(&format!("concat=n={}:v=1:a=1[v][a]", sources.len()));
-    args.extend(["-filter_complex".into(), graph, "-map".into(), "[v]".into(), "-map".into(), "[a]".into()]);
-    run_with_fallback(
-        &|enc, fb| {
-            let mut a = args.clone();
-            a.extend(encoder_args_for(enc, fb));
-            Ok(a)
-        },
-        &out,
-        total,
-        progress,
-    )?;
-    Ok(out)
-}
-
-/// Format vertical 1080×1920. mode = "crop" (recadrage centré) ou "blur" (fond flou).
-pub fn vertical(source: &Path, mode: &str, start: f64, end: f64, progress: &dyn Fn(f64)) -> Result<PathBuf> {
-    let out = output_next_to(source, "(vertical)");
-    let filter = if mode == "crop" {
-        "[0:v]crop=ih*9/16:ih,scale=1080:1920,setsar=1[v]".to_string()
-    } else {
-        "[0:v]split[a][b];[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=24:2[bg];[b]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]".to_string()
-    };
-    let total = ffmpeg::duration(source).unwrap_or(0.0);
-    let (s, e) = if end > start && end > 0.0 { (start, end) } else { (0.0, total) };
-    let mut args: Vec<String> = vec!["-ss".into(), format!("{s:.3}"), "-i".into(), source.to_string_lossy().into(), "-t".into(), format!("{:.3}", e - s)];
-    args.extend(["-filter_complex".into(), filter, "-map".into(), "[v]".into(), "-map".into(), "0:a:0?".into()]);
-    run_with_fallback(
-        &|enc, fb| {
-            let mut a = args.clone();
-            a.extend(encoder_args_for(enc, fb));
-            Ok(a)
-        },
-        &out,
-        e - s,
-        progress,
-    )?;
-    Ok(out)
 }
 
 /// Résultat de la préparation pour Discord.
@@ -344,13 +268,15 @@ pub fn prepare_for_discord(source: &Path, max_mb: f64, out_dir: &Path, progress:
     };
     std::fs::create_dir_all(out_dir)?;
     let stem = source.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "clip".into());
-    let out = out_dir.join(format!("{}.mp4", util::safe_name(&stem)));
+    // Nom réservé pour CETTE opération (audit 0.4.12) : deux clips de même nom dans deux dossiers
+    // partageaient la même cible de compression.
+    let out = util::reserve_file(out_dir, &util::safe_name(&stem), "mp4")?;
+    let result = (|| -> Result<DiscordFile> {
     // Deux essais : si le premier dépasse (rare), on retente avec 15 % de débit en moins
     for factor in [0.92, 0.80] {
         let v = budget(factor).max(300.0);
         let mut base: Vec<String> = vec!["-i".into(), source.to_string_lossy().into(), "-map".into(), "0:v:0".into(), "-map".into(), "0:a:0?".into()];
         base.extend(["-vf".into(), format!("scale=-2:{height}:flags=lanczos")]);
-        let _ = std::fs::remove_file(&out);
         run_with_fallback(
             &|enc, _| {
                 let mut a = base.clone();
@@ -363,34 +289,15 @@ pub fn prepare_for_discord(source: &Path, max_mb: f64, out_dir: &Path, progress:
         )?;
         let got = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(u64::MAX) as f64 / 1_048_576.0;
         if got <= max_mb {
-            return Ok(DiscordFile { path: out, height, compressed: true });
+            return Ok(DiscordFile { path: out.clone(), height, compressed: true });
         }
     }
     bail!("Impossible de passer sous {max_mb:.0} Mo : rogne le clip dans le Studio.")
-}
-
-/// Réencode pour tenir sous `max_mb` Mo (limite d'envoi de Discord).
-pub fn compress(source: &Path, max_mb: f64, progress: &dyn Fn(f64)) -> Result<PathBuf> {
-    let dur = ffmpeg::duration(source).context("Durée inconnue")?.max(1.0);
-    let audio_kbps = 96.0;
-    let video_kbps = ((max_mb * 8192.0 * 0.92) / dur - audio_kbps).max(250.0);
-    let height = if video_kbps < 1500.0 { 720 } else { 1080 };
-    let out = output_next_to(source, "(discord)");
-    let build = |enc: &str, _fb: bool| -> Result<Vec<String>> {
-        let mut args: Vec<String> = vec!["-i".into(), source.to_string_lossy().into(), "-map".into(), "0:v:0".into(), "-map".into(), "0:a:0?".into()];
-        args.extend(["-vf".into(), format!("scale=-2:'min({height},ih)'"), "-c:v".into(), enc.to_string()]);
-        if enc.contains("nvenc") {
-            args.extend(["-preset", "p6", "-rc", "cbr"].map(String::from));
-        }
-        args.extend([
-            "-b:v".into(), format!("{video_kbps:.0}k"), "-maxrate".into(), format!("{video_kbps:.0}k"),
-            "-bufsize".into(), format!("{:.0}k", video_kbps * 2.0), "-pix_fmt".into(), "yuv420p".into(),
-            "-c:a".into(), "aac".into(), "-b:a".into(), format!("{audio_kbps:.0}k"), "-movflags".into(), "+faststart".into(),
-        ]);
-        Ok(args)
-    };
-    run_with_fallback(&build, &out, dur, progress)?;
-    Ok(out)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&out);
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -630,7 +537,7 @@ pub(crate) fn frame_rate(path: &Path) -> f64 {
     let out = util::command(&tools.ffprobe)
         .args(["-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries", "stream=avg_frame_rate,nb_read_packets:format=duration", "-of", "json"])
         .arg(path)
-        .output()
+        .output_timeout(std::time::Duration::from_secs(30))
         .map(|o| o.stdout)
         .unwrap_or_default();
     let json: serde_json::Value = serde_json::from_slice(&out).unwrap_or_default();

@@ -11,6 +11,7 @@
   import CollectionPicker from "./CollectionPicker.svelte";
   import Avatar from "./Avatar.svelte";
   import { momentTone } from "$lib/moments";
+  import { media } from "$lib/studio/store.svelte";
   import { t, locale } from "$lib/i18n.svelte";
 
   let { clip }: { clip: Clip } = $props();
@@ -99,6 +100,8 @@
     try {
       const c = await api.shortenClip(clip.id, start, end);
       app.updateClip(c);
+      // Le Studio relira ce fichier (durée, vignettes, forme d'onde) au lieu de garder l'ancienne version
+      media.forget(c.path);
       trim = null;
       app.toast("ok", t("Clip raccourci"), t("{n} gardées · l'original est dans la Corbeille de Windows.", { n: formatDuration(c.duration) }));
     } catch (e) {

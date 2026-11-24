@@ -169,7 +169,9 @@ impl Library {
         let mut lib = Self { clips };
         // D'abord retrouver les clips déplacés (dossier changé, fichiers copiés ailleurs) : ils gardent leur
         // identifiant, leurs repères de kills et leurs touches. Ensuite seulement on oublie les fichiers disparus.
-        lib.scan(clip_folder);
+        // Sans FFprobe au démarrage (audit 0.4.12) : les durées manquantes sont calculées juste après par
+        // le fil des miniatures, l'enregistrement démarre sans attendre un FFprobe par fichier découvert.
+        lib.scan_with(clip_folder, false);
         // Un disque absent (clé, disque externe pas encore monté) ne doit pas effacer ses clips de l'index :
         // ils perdraient leurs collections, favoris et repères quand le disque revient.
         lib.clips.retain(|c| Path::new(&c.path).is_file() || !drive_available(Path::new(&c.path)));
@@ -180,19 +182,34 @@ impl Library {
 
     /// Ajoute les vidéos/images du dossier qui ne sont pas encore dans l'index (ex. copiées à la main).
     pub fn scan(&mut self, folder: &Path) {
-        let mut stack = vec![folder.to_path_buf()];
-        let mut depth = 0;
-        while let Some(dir) = stack.pop() {
-            depth += 1;
-            if depth > 200 {
+        self.scan_with(folder, true);
+    }
+
+    /// `probe` : lire tout de suite la durée des vidéos trouvées (FFprobe), sinon plus tard.
+    /// Parcours (audit 0.4.12, reproduit : 199 photos sur 205 dossiers) : l'ancien compteur de
+    /// « profondeur » comptait en fait les dossiers ouverts et arrêtait tout au 200e. Maintenant :
+    /// profondeur réelle de 16 niveaux, jusqu'à 50 000 dossiers, sans suivre les liens ni les jonctions
+    /// (pas de boucle), et un index des chemins déjà connus (plus de recherche dans toute la liste).
+    pub fn scan_with(&mut self, folder: &Path, probe: bool) {
+        let mut known: std::collections::HashSet<String> = self.clips.iter().map(|c| c.path.to_lowercase()).collect();
+        let mut stack = vec![(folder.to_path_buf(), 0u32)];
+        let mut opened = 0u32;
+        while let Some((dir, depth)) = stack.pop() {
+            opened += 1;
+            if opened > 50_000 {
+                log::warn!("bibliothèque : plus de 50 000 dossiers, parcours arrêté");
                 break;
             }
             let Ok(entries) = std::fs::read_dir(&dir) else { continue };
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_dir() {
-                    if path.file_name().is_some_and(|n| n != ".rewind-tmp") {
-                        stack.push(path);
+                let Ok(kind) = entry.file_type() else { continue };
+                if kind.is_symlink() || is_reparse_point(&entry) {
+                    continue;
+                }
+                if kind.is_dir() {
+                    if depth < 16 && path.file_name().is_some_and(|n| n != ".rewind-tmp") {
+                        stack.push((path, depth + 1));
                     }
                     continue;
                 }
@@ -203,7 +220,7 @@ impl Library {
                     continue;
                 }
                 let p = path.to_string_lossy().to_string();
-                if self.clips.iter().any(|c| c.path == p) {
+                if known.contains(&p.to_lowercase()) {
                     continue;
                 }
                 let meta = entry.metadata().ok();
@@ -215,9 +232,11 @@ impl Library {
                 let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                 if let Some(old) = self.clips.iter_mut().find(|c| moved_here(c, &path, size)) {
                     log::info!("clip retrouvé après déplacement : {} -> {}", old.path, p);
+                    known.insert(p.to_lowercase());
                     old.path = p;
                     continue;
                 }
+                known.insert(p.to_lowercase());
                 let created = meta
                     .as_ref()
                     .and_then(|m| m.modified().ok())
@@ -238,7 +257,7 @@ impl Library {
                     created,
                     size: meta.map(|m| m.len()).unwrap_or(0),
                     // Durée lue tout de suite (sinon le clip s'affichait « 0:00 » jusqu'au prochain démarrage)
-                    duration: if is_video { ffmpeg::duration(&path).unwrap_or(0.0) } else { 0.0 },
+                    duration: if is_video && probe { ffmpeg::duration(&path).unwrap_or(0.0) } else { 0.0 },
                     kind: if is_image { "screenshot".into() } else { "manual".into() },
                     ..Default::default()
                 });
@@ -287,6 +306,9 @@ impl Library {
 
     /// Renomme le fichier sur le disque en même temps que le titre.
     pub fn rename(&mut self, id: &str, title: &str) -> Result<()> {
+        if Busy::is(id) {
+            bail!("Ce clip est en train d'être raccourci : réessaie dans un instant");
+        }
         let clip = self.get_mut(id).ok_or_else(|| anyhow::anyhow!("Clip introuvable"))?;
         let old = PathBuf::from(&clip.path);
         let ext = old.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "mp4".into());
@@ -302,6 +324,26 @@ impl Library {
         clip.path = new.to_string_lossy().to_string();
         clip.title = title.to_string();
         self.save()
+    }
+
+    /// Reporte les durées et miniatures calculées sur une copie (`before` → `after`) sans écraser un clip
+    /// modifié entre-temps (raccourci, remplacé, déplacé : audit 0.4.12). Renvoie true si quelque chose a changé.
+    pub fn merge_filled(&mut self, before: &[Clip], after: Vec<Clip>) -> bool {
+        let mut changed = false;
+        for (b, a) in before.iter().zip(after) {
+            if a.id != b.id || (a.duration == b.duration && a.thumb == b.thumb) {
+                continue;
+            }
+            let Some(x) = self.get_mut(&a.id) else { continue };
+            // Le clip a changé depuis la copie : on garde la version actuelle
+            if x.path != b.path || x.size != b.size || x.duration != b.duration || x.thumb != b.thumb {
+                continue;
+            }
+            x.duration = a.duration;
+            x.thumb = a.thumb;
+            changed = true;
+        }
+        changed
     }
 
     /// Calcule durée et miniature des clips importés qui n'en ont pas.
@@ -342,6 +384,42 @@ impl Library {
         }
         changed
     }
+}
+
+/// Clips en cours de traitement sur place (« Raccourcir ») : pas de renommage pendant ce temps.
+static BUSY: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+pub struct Busy(String);
+
+impl Busy {
+    pub fn begin(id: &str) -> Self {
+        BUSY.lock().push(id.to_string());
+        Busy(id.to_string())
+    }
+
+    pub fn is(id: &str) -> bool {
+        BUSY.lock().iter().any(|x| x == id)
+    }
+
+    pub fn any() -> bool {
+        !BUSY.lock().is_empty()
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        let mut b = BUSY.lock();
+        if let Some(i) = b.iter().position(|x| *x == self.0) {
+            b.remove(i);
+        }
+    }
+}
+
+/// Jonction ou lien de dossier Windows (peut boucler sur un dossier parent) : jamais suivi.
+fn is_reparse_point(entry: &std::fs::DirEntry) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    std::fs::symlink_metadata(entry.path()).is_ok_and(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
 }
 
 /// Corbeille Windows (annulable), jamais de suppression définitive.
@@ -426,5 +504,35 @@ mod tests {
         // Un autre fichier de même nom mais de taille différente n'est pas confondu
         assert!(!moved_here(&lib.clips[0], &new, 99));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Audit 0.4.12 : 205 dossiers voisins, 205 photos trouvées (avant : 199, arrêt au 200e dossier).
+    #[test]
+    fn parcours_de_nombreux_dossiers() {
+        let root = std::env::temp_dir().join(format!("rewind-test-scan-{}", new_id()));
+        for i in 0..205 {
+            let d = root.join(format!("d{i}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("photo.png"), b"x").unwrap();
+        }
+        let mut lib = Library { clips: vec![] };
+        lib.scan_with(&root, false);
+        assert_eq!(lib.clips.len(), 205);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Une miniature calculée sur une copie ne remplace pas un clip raccourci entre-temps.
+    #[test]
+    fn fusion_des_miniatures_sans_ecraser() {
+        let clip = |id: &str, d: f64| Clip { id: id.into(), path: format!("{id}.mp4"), duration: d, ..Default::default() };
+        let before = vec![clip("a", 0.0), clip("b", 0.0)];
+        let mut after = before.clone();
+        after[0].duration = 30.0;
+        after[1].duration = 40.0;
+        let mut lib = Library { clips: before.clone() };
+        lib.get_mut("b").unwrap().duration = 12.0; // raccourci pendant le calcul
+        assert!(lib.merge_filled(&before, after));
+        assert_eq!(lib.get("a").unwrap().duration, 30.0);
+        assert_eq!(lib.get("b").unwrap().duration, 12.0, "la version raccourcie est gardée");
     }
 }

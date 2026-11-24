@@ -5,7 +5,9 @@ import type { Clip, Settings } from "./api";
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window && !(window as any).__REWIND_MOCK__;
 
-if (typeof window !== "undefined" && !inTauri) {
+// Développement seulement (audit 0.4.12) : en version publiée, ce bloc et ses données d'exemple
+// disparaissent du paquet (import.meta.env.DEV vaut false à la compilation).
+if (import.meta.env.DEV && typeof window !== "undefined" && !inTauri) {
   (window as any).__REWIND_MOCK__ = true;
   mockWindows("main");
   const now = Date.now() / 1000;
@@ -81,7 +83,7 @@ if (typeof window !== "undefined" && !inTauri) {
         ),
       },
     },
-    theme: "dark", accent: "#c8f031", animations: true, density: "comfortable", webhooks: [], discord_max_mb: 20, share_enabled: true, share_auto_download: true, discord_presence: true, max_library_gb: 0, first_run_done: true, clip_sound: "shutter", clip_sound_name: "", welcome_done: !new URLSearchParams(location.search).has("welcome"), medal_prompt_dismissed: false,
+    theme: "dark", accent: "#c8f031", animations: true, density: "comfortable", webhooks: [], discord_max_mb: 20, share_enabled: true, share_auto_download: true, discord_presence: true, first_run_done: true, clip_sound: "shutter", clip_sound_name: "", welcome_done: !new URLSearchParams(location.search).has("welcome"), medal_prompt_dismissed: false,
   };
   const params = new URLSearchParams(location.search);
   if (params.get("theme") === "light") settings.theme = "light";

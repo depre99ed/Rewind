@@ -1,6 +1,8 @@
 //! Localisation de FFmpeg et choix de l'encodeur vidéo.
 
+use crate::util::OutputTimeout;
 use crate::util;
+use parking_lot::Mutex;
 use anyhow::{Context, Result, bail};
 use std::{
     path::{Path, PathBuf},
@@ -151,14 +153,52 @@ pub fn upload_filter(encoder: &str) -> Option<&'static str> {
     }
 }
 
+/// Résultats de FFprobe gardés par fichier (chemin + taille + date) : un export du Studio sondait le
+/// même fichier pour chaque morceau et à chaque essai (audit 0.4.12). Un fichier modifié est relu.
+static PROBES: Mutex<Vec<(String, Option<f64>, Option<Vec<StreamInfo>>)>> = Mutex::new(Vec::new());
+
+fn probe_key(path: &Path) -> Option<String> {
+    let m = std::fs::metadata(path).ok()?;
+    let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    Some(format!("{}|{}|{t}", path.to_string_lossy().to_lowercase(), m.len()))
+}
+
+fn remember(key: &str, f: impl FnOnce(&mut (String, Option<f64>, Option<Vec<StreamInfo>>))) {
+    let mut c = PROBES.lock();
+    if let Some(e) = c.iter_mut().find(|e| e.0 == key) {
+        f(e);
+        return;
+    }
+    if c.len() >= 256 {
+        c.remove(0);
+    }
+    let mut e = (key.to_string(), None, None);
+    f(&mut e);
+    c.push(e);
+}
+
 /// Durée d'un fichier vidéo en secondes.
 pub fn duration(path: &Path) -> Option<f64> {
+    let key = probe_key(path);
+    if let Some(k) = &key
+        && let Some(d) = PROBES.lock().iter().find(|e| &e.0 == k).and_then(|e| e.1)
+    {
+        return Some(d);
+    }
+    let d = duration_uncached(path);
+    if let (Some(k), Some(v)) = (&key, d) {
+        remember(k, |e| e.1 = Some(v));
+    }
+    d
+}
+
+fn duration_uncached(path: &Path) -> Option<f64> {
     let tools = tools().ok()?;
     let out = util::command(&tools.ffprobe)
         .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1"])
         .arg(path)
         .stdin(Stdio::null())
-        .output()
+        .output_timeout(std::time::Duration::from_secs(30))
         .ok()?;
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
@@ -177,12 +217,28 @@ pub struct StreamInfo {
 
 /// Pistes d'un fichier, avec leur début et leur durée. Sert aux contrôles automatiques.
 pub fn streams(path: &Path) -> Vec<StreamInfo> {
+    let key = probe_key(path);
+    if let Some(k) = &key
+        && let Some(s) = PROBES.lock().iter().find(|e| &e.0 == k).and_then(|e| e.2.clone())
+    {
+        return s;
+    }
+    let s = streams_uncached(path);
+    if let Some(k) = &key
+        && !s.is_empty()
+    {
+        remember(k, |e| e.2 = Some(s.clone()));
+    }
+    s
+}
+
+fn streams_uncached(path: &Path) -> Vec<StreamInfo> {
     let Ok(tools) = tools() else { return Vec::new() };
     let Ok(out) = util::command(&tools.ffprobe)
         .args(["-v", "error", "-show_entries", "stream=codec_type,start_time,duration,width,height", "-of", "json"])
         .arg(path)
         .stdin(Stdio::null())
-        .output()
+        .output_timeout(std::time::Duration::from_secs(30))
     else {
         return Vec::new();
     };
@@ -213,7 +269,7 @@ pub fn thumbnail(video: &Path, at: f64, out: &Path) -> Result<()> {
         .args(["-frames:v", "1", "-vf", "scale=480:-2,format=yuvj420p", "-q:v", "4"])
         .arg(out)
         .stdin(Stdio::null())
-        .output()?;
+        .output_timeout(std::time::Duration::from_secs(60))?;
     checked(output, "Miniature")?;
     Ok(())
 }

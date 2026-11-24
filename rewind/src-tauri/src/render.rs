@@ -15,7 +15,7 @@
 //! - ralentis et accélérés : un seul décodage par morceau (setpts avec une courbe), au lieu d'un morceau
 //!   (une lecture du fichier) par marche de vitesse, ce qui rendait l'export très lent.
 
-use crate::editor::{self, Piece, LADDER, STUDIO_AUDIO_KBPS};
+use crate::editor::{self, Piece, STUDIO_AUDIO_KBPS};
 use crate::{ffmpeg, util};
 use anyhow::{Result, bail};
 use serde::Deserialize;
@@ -742,7 +742,6 @@ pub fn render(spec: &RenderSpec, folder: &Path, progress: &dyn Fn(f64)) -> Resul
         fps = f;
         target_kbps = Some(kbps);
     }
-    let _ = LADDER;
     std::fs::create_dir_all(folder)?;
     let stamp = chrono::Local::now().format("%Y-%m-%d %Hh%M-%S");
     let out = util::reserve_file(folder, &util::safe_name(&format!("{} {stamp}", spec.title)), "mp4")?;

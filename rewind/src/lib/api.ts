@@ -108,7 +108,6 @@ export type Settings = {
   share_auto_download: boolean;
   /** Présence Discord (profil : « Enregistre Counter-Strike 2 ») */
   discord_presence: boolean;
-  max_library_gb: number;
   first_run_done: boolean;
   clip_sound: string;
   clip_sound_name: string;
@@ -148,6 +147,8 @@ export type Status = {
   session_since: number;
   /** Commande vocale : 0 coupée, 1 démarrage, 2 à l'écoute, 3 indisponible, 4 erreur */
   voice: number;
+  /** Repli sur le processeur sans l'avoir choisi : qualité bridée (720p30) */
+  limited?: boolean;
 };
 
 export type Hardware = {
@@ -179,28 +180,6 @@ export type InputEvent = { t: number; key: number; down: boolean };
 export type MediaInfo = { duration: number; width: number; height: number; fps: number; tracks: string[] };
 export type Filmstrip = { sprite: string; frames: number; interval: number; frame_w: number; frame_h: number };
 export type Waveform = { rate: number; peaks: number[] };
-
-export type StudioExportPiece = {
-  path: string;
-  start: number;
-  end: number;
-  speed: number;
-  volume: number;
-  track_volumes: number[];
-  transition: string;
-  transition_dur: number;
-  clip_id: string;
-};
-export type StudioExportOptions = {
-  title: string;
-  format: string;
-  height: number;
-  fps: number;
-  max_mb: number;
-  music: { path: string; volume: number; offset: number; at: number; fade_in: number; fade_out: number; duck: boolean } | null;
-  keys: boolean;
-  lang: string;
-};
 
 export type Moment = { time: number; kind: string; multi: string; weapon: string; round: number; count?: number };
 export type Cs2Event =
@@ -243,8 +222,6 @@ export const api = {
   openFolder: (path: string) => invoke<void>("open_folder", { path }),
   copy: (id: string) => invoke<void>("copy_clip", { id }),
   copyForDiscord: (id: string) => invoke<{ compressed: boolean; size_mb: number; height: number; max_mb: number }>("copy_for_discord", { id }),
-  studioExport: (pieces: StudioExportPiece[], options: StudioExportOptions, game: string) =>
-    invoke<Clip>("studio_export", { pieces, options, game }),
   /** Export du Studio v2 (spec calculée par studio/export.ts). */
   studioRender: (spec: unknown, game: string) => invoke<Clip>("studio_render", { spec, game }),
   projectsList: () => invoke<{ id: string; name: string; updated: number; duration: number; thumb: string; pieces: number }[]>("projects_list"),
@@ -278,9 +255,6 @@ export const api = {
   adminInputSet: (on: boolean) => invoke<void>("admin_input_set", { on }),
   /** Raccourcit le clip sur place (même fichier ; l'original va dans la Corbeille) */
   shortenClip: (id: string, start: number, end: number) => invoke<Clip>("clip_shorten", { id, start, end }),
-  trim: (id: string, start: number, end: number, exact: boolean) => invoke<Clip>("edit_trim", { id, start, end, exact }),
-  merge: (ids: string[]) => invoke<Clip>("edit_merge", { ids }),
-  vertical: (id: string, mode: string, start: number, end: number) => invoke<Clip>("edit_vertical", { id, mode, start, end }),
   shareDiscord: (id: string, webhook: number, message: string) =>
     invoke<{ url: string; compressed: boolean }>("share_discord", { id, webhook, message }),
   hardware: () => invoke<Hardware>("get_hardware"),

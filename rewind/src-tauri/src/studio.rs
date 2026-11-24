@@ -88,13 +88,21 @@ pub fn load(id: &str) -> Result<String> {
 }
 
 /// Écriture sûre : fichier temporaire puis renommage (jamais de projet à moitié écrit).
+/// Les sauvegardes d'un projet passent une par une, chacune avec son propre fichier temporaire
+/// (audit 0.4.12 : deux sauvegardes simultanées partageaient le même « .tmp »).
+static SAVING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 pub fn save(id: &str, json: &str) -> Result<()> {
     check_id(id)?;
     serde_json::from_str::<serde_json::Value>(json).context("projet illisible")?;
+    let _one = SAVING.lock();
     let path = projects_dir().join(format!("{id}.json"));
-    let tmp = projects_dir().join(format!("{id}.json.tmp"));
+    let tmp = projects_dir().join(format!("{id}.{}.json.tmp", crate::library::new_id()));
     std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, &path)?;
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
 }
 

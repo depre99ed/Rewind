@@ -102,7 +102,8 @@ export async function compile(p: Project, o: ExportOptions, onStep: (s: string) 
   const { w: W, h: H } = frameSize(p.format, 1080);
   const lay = layout(p.pieces);
   const total = projectTotal(p, lay);
-  await loadFonts();
+  // Seulement les polices des textes du montage (audit 0.4.12 : toutes étaient chargées à chaque export)
+  await loadFonts(["", ...[...JSON.stringify(p).matchAll(/"font":"([^"]*)"/g)].map((m) => m[1])]);
 
   // ---- Piste principale (ralentis / accélérés : marches fines, appliquées en une courbe par le moteur) ----
   const pieces: any[] = [];

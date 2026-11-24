@@ -1302,6 +1302,7 @@ static DOWNLOADING: AtomicBool = AtomicBool::new(false);
 
 /// Lance la réception du prochain clip en attente (un à la fois).
 fn start_next_download(app: &AppHandle) {
+    retry_acks();
     if DOWNLOADING.load(Ordering::SeqCst) {
         return;
     }
@@ -1365,7 +1366,61 @@ fn download(app: &AppHandle, item: Incoming) {
     }
 }
 
+/// Réception en cours de rangement : chemin du fichier final, écrit AVANT de le ranger. Si Rewind
+/// s'arrête entre le rangement et l'inscription dans la bibliothèque, la reprise finit le travail au
+/// lieu de retélécharger le clip (audit 0.4.12).
+fn finishing_path(share_id: &str) -> PathBuf {
+    dir().join("reception").join(format!("{}.txt", util::safe_name(share_id)))
+}
+
+/// Confirmations de réception pas encore acceptées par le guichet (réessayées plus tard)
+fn pending_acks_path() -> PathBuf {
+    dir().join("confirmations.json")
+}
+
+fn ack(share_id: &str) {
+    if let Err(e) = call("POST", &format!("/v1/shares/{share_id}/done"), Some(json!({ "state": "received" }))) {
+        log::warn!("partage : confirmation de réception impossible ({e}), réessai plus tard");
+        let mut list: Vec<String> = std::fs::read_to_string(pending_acks_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        if !list.iter().any(|x| x == share_id) {
+            list.push(share_id.to_string());
+            let _ = std::fs::write(pending_acks_path(), serde_json::to_string(&list).unwrap_or_default());
+        }
+    }
+}
+
+static ACKING: AtomicBool = AtomicBool::new(false);
+
+/// Réessaie les confirmations en attente (sans bloquer l'appelant).
+fn retry_acks() {
+    if !pending_acks_path().is_file() || ACKING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("amis-confirmations".into()).spawn(|| {
+        let list: Vec<String> = std::fs::read_to_string(pending_acks_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let left: Vec<String> = list
+            .into_iter()
+            .filter(|id| call("POST", &format!("/v1/shares/{id}/done"), Some(json!({ "state": "received" }))).is_err())
+            .collect();
+        if left.is_empty() {
+            let _ = std::fs::remove_file(pending_acks_path());
+        } else {
+            let _ = std::fs::write(pending_acks_path(), serde_json::to_string(&left).unwrap_or_default());
+        }
+        ACKING.store(false, Ordering::SeqCst);
+    });
+}
+
 fn receive(app: &AppHandle, item: &Incoming, t: &mut Transfer) -> Result<()> {
+    // Rangement interrompu la dernière fois : on le termine sans retélécharger
+    if let Ok(prev) = std::fs::read_to_string(finishing_path(&item.id)) {
+        let target = PathBuf::from(prev.trim());
+        if std::fs::metadata(&target).is_ok_and(|m| m.len() == item.size) {
+            log::info!("partage : reprise du rangement de « {} »", item.title);
+            return finish_received(app, item, &target);
+        }
+        let _ = std::fs::remove_file(finishing_path(&item.id));
+    }
     let clip_folder = PathBuf::from(&app.state::<AppState>().settings.lock().clip_folder);
     let folder = clip_folder.join("Reçus").join(util::safe_name(&item.sender_name));
     std::fs::create_dir_all(&folder)?;
@@ -1413,7 +1468,7 @@ fn receive(app: &AppHandle, item: &Incoming, t: &mut Transfer) -> Result<()> {
         let _ = std::fs::remove_file(&partial);
         bail!("ami:hash_mismatch");
     }
-    let duration = ffmpeg::duration(&partial).filter(|d| *d > 0.0).ok_or_else(|| {
+    ffmpeg::duration(&partial).filter(|d| *d > 0.0).ok_or_else(|| {
         let _ = std::fs::remove_file(&partial);
         coded("not_a_video")
     })?;
@@ -1421,8 +1476,19 @@ fn receive(app: &AppHandle, item: &Incoming, t: &mut Transfer) -> Result<()> {
     let date = chrono::DateTime::from_timestamp_millis(item.created as i64).map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %Hh%M").to_string()).unwrap_or_default();
     let target = util::reserve_file(&folder, &util::safe_name(&format!("{} {date}", item.title)), "mp4")?;
     let _ = std::fs::remove_file(&target);
+    let _ = std::fs::create_dir_all(finishing_path(&item.id).parent().unwrap_or(&folder));
+    std::fs::write(finishing_path(&item.id), target.to_string_lossy().as_bytes())?;
     std::fs::rename(&partial, &target).context("rangement du clip reçu")?;
-    let id = library::new_id();
+    finish_received(app, item, &target)
+}
+
+/// Inscrit un clip reçu (déjà rangé à `target`) dans la bibliothèque et l'historique, puis prévient le
+/// guichet. Rejouable : un clip déjà inscrit (même fichier) n'est pas ajouté deux fois.
+fn finish_received(app: &AppHandle, item: &Incoming, target: &Path) -> Result<()> {
+    let size = std::fs::metadata(target)?.len();
+    let duration = ffmpeg::duration(target).unwrap_or(0.0);
+    let existing = app.state::<AppState>().library.lock().clips.iter().find(|c| Path::new(&c.path) == target).map(|c| c.id.clone());
+    let id = existing.clone().unwrap_or_else(library::new_id);
     let thumb = library::thumbs_dir().join(format!("{id}.jpg"));
     let _ = ffmpeg::thumbnail(&target, (duration * 0.4).min(3.0), &thumb);
     let clip = library::Clip {
@@ -1439,10 +1505,13 @@ fn receive(app: &AppHandle, item: &Incoming, t: &mut Transfer) -> Result<()> {
         favorite: false,
         tags: Vec::new(),
     };
-    app.state::<AppState>().library.lock().add(clip)?;
+    if existing.is_none() {
+        app.state::<AppState>().library.lock().add(clip)?;
+    }
     let _ = app.emit("library-changed", ());
     {
         let mut v = view().lock();
+        v.received.retain(|r| r.share_id != item.id);
         v.received.insert(
             0,
             Received {
@@ -1458,10 +1527,9 @@ fn receive(app: &AppHandle, item: &Incoming, t: &mut Transfer) -> Result<()> {
         v.received.truncate(500);
         save_received(&v.received);
     }
-    // Prévenir le guichet : le fichier est supprimé dès que tous l'ont reçu
-    if let Err(e) = call("POST", &format!("/v1/shares/{}/done", item.id), Some(json!({ "state": "received" }))) {
-        log::warn!("partage : confirmation de réception impossible ({e})");
-    }
+    let _ = std::fs::remove_file(finishing_path(&item.id));
+    // Prévenir le guichet : le fichier est supprimé dès que tous l'ont reçu (réessayé si le réseau échoue)
+    ack(&item.id);
     let _ = std::fs::remove_file(dir().join("miniatures").join(format!("{}.jpg", item.id)));
     Ok(())
 }

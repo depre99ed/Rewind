@@ -143,6 +143,9 @@ struct Detector {
     streak_last: f64,
     streak_len: u32,
     streak_idx: Option<usize>,
+    /// Fin de round en attente d'un one tap dont la balle n'est pas encore arrivée : (heure limite,
+    /// round gagné en vie : None = fin de match, pas de clutch)
+    closing: Option<(f64, Option<bool>)>,
 }
 
 impl Detector {
@@ -258,6 +261,7 @@ impl Cs2 {
         // et un message sans bloc « round » est ignoré (il faisait croire à un mode sans rounds).
         if !v["map"].is_object() {
             if v["player"]["activity"].as_str() == Some("menu") {
+                self.flush_closing(now);
                 self.judge_onetaps(now, true);
                 self.close_round(now);
                 self.sequence(now, true);
@@ -276,6 +280,7 @@ impl Cs2 {
         let map = s(&v["map"]["name"]);
         let mode = s(&v["map"]["mode"]);
         if map != self.det.map || mode != self.det.mode {
+            self.flush_closing(now);
             self.judge_onetaps(now, true);
             self.close_round(now);
             self.sequence(now, true);
@@ -325,10 +330,8 @@ impl Cs2 {
                 self.det.assists = i(&st["assists"]);
             }
             self.det.round_kills = i(&state["round_kills"]);
-            let shots_before = self.det.shots.iter().filter(|(t, _)| *t >= now - 0.15).count() as i64;
             self.track_weapons(&player["weapons"], now);
             let shots_now = self.det.shots.iter().filter(|(t, _)| *t >= now - 0.15).count() as i64;
-            let _ = shots_before;
             collateral = new_kills >= 2 && shots_now > 0 && shots_now < new_kills;
         }
 
@@ -405,13 +408,13 @@ impl Cs2 {
         if map_phase != self.det.map_phase {
             if self.det.map_phase == "warmup" {
                 // Fin de l'échauffement : on clôt la séquence en cours
+                self.flush_closing(now);
                 self.judge_onetaps(now, true);
                 self.sequence(now, true);
                 self.det.clear_moments();
             }
             if map_phase == "gameover" || map_phase == "intermission" {
-                self.judge_onetaps(now, true);
-                self.close_round(now);
+                self.end_round(now, None);
             }
             self.det.map_phase = map_phase;
         }
@@ -420,11 +423,9 @@ impl Cs2 {
                 self.det.round_start = now;
             }
             if round_phase == "over" || round_phase == "freezetime" {
-                self.judge_onetaps(now, true);
                 let won = s(&v["round"]["win_team"]);
                 let alive = i(&player["state"]["health"]) > 0;
-                self.mark_clutch(now, own && !won.is_empty() && won == self.det.team && alive);
-                self.close_round(now);
+                self.end_round(now, Some(own && !won.is_empty() && won == self.det.team && alive));
             }
             self.det.round_phase = round_phase;
         }
@@ -441,6 +442,33 @@ impl Cs2 {
 
         self.judge_onetaps(now, false);
         self.sequence(now, false);
+    }
+
+    /// Fin de round (ou de match). Si un headshot attend encore sa balle (CS2 a annoncé le kill avant la
+    /// baisse des munitions), la clôture attend au plus LATE_SHOT : sinon le one tap qui finit le round
+    /// était perdu (audit 0.4.12, reproduit). Toujours un seul clip pour le round.
+    fn end_round(&mut self, now: f64, won_alive: Option<bool>) {
+        self.flush_closing(now);
+        let late = self.det.pending.iter().filter(|p| !p.3).map(|p| p.1 + LATE_SHOT).fold(f64::MIN, f64::max);
+        if late > now {
+            self.det.closing = Some((late, won_alive));
+            return;
+        }
+        self.judge_onetaps(now, true);
+        if let Some(w) = won_alive {
+            self.mark_clutch(now, w);
+        }
+        self.close_round(now);
+    }
+
+    /// Termine une fin de round mise en attente (heure limite passée, ou autre fin forcée).
+    fn flush_closing(&mut self, now: f64) {
+        let Some((_, won_alive)) = self.det.closing.take() else { return };
+        self.judge_onetaps(now, true);
+        if let Some(w) = won_alive {
+            self.mark_clutch(now, w);
+        }
+        self.close_round(now);
     }
 
     /// Série de kills : N kills avec moins de X secondes entre chacun.
@@ -487,6 +515,9 @@ impl Cs2 {
     }
 
     pub fn tick_at(&mut self, now: f64) {
+        if self.det.closing.is_some_and(|(limit, _)| now >= limit) {
+            self.flush_closing(now);
+        }
         self.judge_onetaps(now, false);
         self.sequence(now, false);
         // Un round bloqué plus de 4 minutes (serveur perso sans fin de round) : on n'attend plus
@@ -1309,6 +1340,27 @@ mod tests {
                 assert!(clip.is_err(), "rafale de 3 balles : pas un one tap");
             }
         }
+    }
+
+    /// Le one tap qui FINIT le round : kill annoncé dans le message « over », balle 80 ms plus tard.
+    /// La clôture attend la balle : un seul clip, titré One Tap, avec un seul repère pour ce kill.
+    #[test]
+    fn one_tap_tardif_en_fin_de_round() {
+        let (mut cs, rx) = setup_defaut();
+        let t0 = 2000.0;
+        cs.handle_at(&payload(&P::default()), t0);
+        cs.handle_at(&payload(&P { kills: 1, hs: 1, round_kills: 1, ammo: 30, phase: "over", win: "T", ..Default::default() }), t0 + 1.0);
+        assert!(rx.try_recv().is_err(), "la clôture attend la balle");
+        cs.handle_at(&payload(&P { kills: 1, hs: 1, round_kills: 1, ammo: 29, phase: "over", win: "T", ..Default::default() }), t0 + 1.08);
+        let mut t = t0 + 1.1;
+        while t < t0 + 2.0 {
+            cs.tick_at(t);
+            t += 0.1;
+        }
+        let clip = rx.try_recv().expect("one tap de fin de round : un clip");
+        assert!(clip.title.contains("One Tap"), "{}", clip.title);
+        assert_eq!(clip.markers.iter().filter(|m| is_kill(&m.1)).count(), 1, "un seul repère pour ce kill : {:?}", clip.markers);
+        assert!(rx.try_recv().is_err(), "un seul clip");
     }
 
     /// CS2 normal (compétitif) avec les réglages par défaut : un one tap seul fait un clip,

@@ -358,9 +358,7 @@ pub struct Settings {
     pub share_auto_download: bool,
     /// Présence Discord : « Enregistre Counter-Strike 2 » sur le profil (comme Medal ou Spotify)
     pub discord_presence: bool,
-    // --- Stockage
-    /// Taille max de la bibliothèque en Go (0 = pas de limite)
-    pub max_library_gb: u32,
+    // (« max_library_gb » retiré en 0.4.13 : jamais appliqué ; un ancien fichier qui le contient se lit toujours)
     pub first_run_done: bool,
     /// Version des réglages (mise à niveau automatique des anciens fichiers)
     #[serde(default)]
@@ -436,7 +434,6 @@ impl Default for Settings {
             share_enabled: false,
             share_auto_download: true,
             discord_presence: true,
-            max_library_gb: 0,
             first_run_done: false,
             config_version: 7,
         }

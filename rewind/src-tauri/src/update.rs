@@ -96,18 +96,34 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
     log::info!("mise à jour vers {}", update.version);
     let mut received = 0usize;
     let handle = app.clone();
-    update
-        .download_and_install(
+    let bytes = update
+        .download(
             move |chunk, total| {
                 received += chunk;
                 if let Some(t) = total.filter(|t| *t > 0) {
                     let _ = handle.emit("edit-progress", serde_json::json!({ "op": "update", "value": received as f64 / t as f64 }));
                 }
             },
-            || log::info!("mise à jour téléchargée, installation"),
+            || log::info!("mise à jour téléchargée et vérifiée"),
         )
         .await
-        .map_err(|e| format!("Installation impossible : {e}"))?;
+        .map_err(|e| format!("Téléchargement impossible : {e}"))?;
+    // Revérifié juste avant d'installer (audit 0.4.12) : une session complète, un clip sur mesure ou un
+    // clip en cours d'enregistrement commencés pendant le téléchargement ne sont jamais coupés. On
+    // attend leur fin (30 min au plus).
+    let mut waited = 0u32;
+    while crate::recording_busy(app) {
+        if waited == 0 {
+            log::info!("mise à jour prête : attente de la fin de l'enregistrement en cours");
+        }
+        if waited >= 30 * 60 {
+            return Err("Un enregistrement est toujours en cours : réessaie la mise à jour à la fin.".into());
+        }
+        let _ = tauri::async_runtime::spawn_blocking(|| std::thread::sleep(std::time::Duration::from_secs(2))).await;
+        waited += 2;
+    }
+    log::info!("installation de la mise à jour");
+    update.install(bytes).map_err(|e| format!("Installation impossible : {e}"))?;
     app.restart();
 }
 

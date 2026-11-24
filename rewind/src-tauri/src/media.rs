@@ -1,6 +1,7 @@
 //! Infos sur les médias pour le Studio : pistes, miniatures défilantes (une image par tranche de
 //! temps, assemblées en une seule bande), forme d'onde du son. Tout est mis en cache sur le disque.
 
+use crate::util::OutputTimeout;
 use crate::{ffmpeg, util};
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -92,7 +93,7 @@ pub fn info(path: &Path) -> Result<MediaInfo> {
         ])
         .arg(path)
         .stdin(Stdio::null())
-        .output()
+        .output_timeout(std::time::Duration::from_secs(30))
         .context("ffprobe")?;
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
     let mut info = MediaInfo {
@@ -153,7 +154,7 @@ pub fn filmstrip(path: &Path) -> Result<Filmstrip> {
         if skip {
             cmd.args(["-skip_frame", "nokey"]);
         }
-        cmd.arg("-i").arg(path).args(["-an", "-vf", &vf, "-frames:v", "1", "-q:v", "5"]).arg(&tmp).stdin(Stdio::null()).output()
+        cmd.arg("-i").arg(path).args(["-an", "-vf", &vf, "-frames:v", "1", "-q:v", "5"]).arg(&tmp).stdin(Stdio::null()).output_timeout(std::time::Duration::from_secs(60))
     };
     // Images clés seules d'abord ; si le fichier en a trop peu, décodage complet
     let ok = run(true).map(|o| o.status.success()).unwrap_or(false) && tmp.is_file();
@@ -190,7 +191,7 @@ pub fn stems(path: &Path) -> Result<Vec<String>> {
                 } else {
                     cmd.args(["-c:a", "aac", "-b:a", "160k"]);
                 }
-                cmd.arg(&tmp).stdin(Stdio::null()).output()
+                cmd.arg(&tmp).stdin(Stdio::null()).output_timeout(std::time::Duration::from_secs(300))
             };
             // Copie directe ; si le codec ne rentre pas dans un .m4a, ré-encodage en AAC
             let ok = run(true).map(|o| o.status.success()).unwrap_or(false) && tmp.is_file();
@@ -222,20 +223,33 @@ pub fn waveform(path: &Path) -> Result<Waveform> {
         .stderr(Stdio::null())
         .spawn()
         .context("Forme d'onde")?;
-    let mut raw = Vec::new();
+    // Agrégé au fil de la lecture (audit 0.4.12) : avant, tout le son était gardé en mémoire avant le
+    // calcul (~58 Mo par heure de vidéo). Même résultat, octet pour octet.
+    let per = (8000.0 / WAVE_RATE) as usize;
+    let block = per * 2;
+    let to_byte = |peak: u16| ((peak as f64 / 32768.0).powf(0.6) * 255.0).round().min(255.0) as u8;
+    let mut peaks: Vec<u8> = Vec::new();
+    let mut pending: Vec<u8> = Vec::with_capacity(block + (1 << 16));
     if let Some(mut out) = child.stdout.take() {
-        let _ = out.read_to_end(&mut raw);
+        let mut buf = vec![0u8; 1 << 16];
+        loop {
+            let n = match out.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            pending.extend_from_slice(&buf[..n]);
+            let whole = pending.len() / block * block;
+            for chunk in pending[..whole].chunks(block) {
+                // Racine : les sons faibles restent visibles
+                peaks.push(to_byte(chunk.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs()).max().unwrap_or(0)));
+            }
+            pending.drain(..whole);
+        }
     }
     let _ = child.wait();
-    let per = (8000.0 / WAVE_RATE) as usize;
-    let peaks: Vec<u8> = raw
-        .chunks(per * 2)
-        .map(|chunk| {
-            let peak = chunk.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs()).max().unwrap_or(0);
-            // Racine : les sons faibles restent visibles
-            ((peak as f64 / 32768.0).powf(0.6) * 255.0).round().min(255.0) as u8
-        })
-        .collect();
+    if !pending.is_empty() {
+        peaks.push(to_byte(pending.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs()).max().unwrap_or(0)));
+    }
     let _ = std::fs::write(&cached, &peaks);
     prune(&dir, 600);
     Ok(Waveform { rate: WAVE_RATE, peaks })

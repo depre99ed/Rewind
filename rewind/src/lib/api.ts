@@ -39,7 +39,7 @@ export type Clip = {
 
 export type AudioSource = {
   id: string;
-  kind: "system" | "mic" | "app" | string;
+  kind: "system" | "mic" | "app" | "game" | string;
   device: string;
   app: string;
   label: string;

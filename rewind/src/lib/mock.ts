@@ -47,7 +47,8 @@ if (typeof window !== "undefined" && !inTauri) {
     capture_mode: "monitor", monitor: "", window_exe: "", buffer_seconds: 120, buffer_in_ram: false, clip_seconds: 30, clip_long_seconds: 120,
     fps: 60, resolution: 1080, bitrate_mbps: 20, encoder: "auto", show_cursor: true, eco_mode: false,
     audio_sources: [
-      { id: "system", kind: "system", device: "", app: "", label: "Son du PC", enabled: true, volume: 100 },
+      { id: "system", kind: "system", device: "", app: "", label: "Autres sons du PC", enabled: true, volume: 100 },
+      { id: "game", kind: "game", device: "", app: "", label: "Jeu", enabled: true, volume: 100 },
       { id: "mic", kind: "mic", device: "", app: "", label: "Micro", enabled: true, volume: 100 },
       { id: "discord", kind: "app", device: "", app: "Discord.exe", label: "Discord", enabled: true, volume: 100 },
     ],
@@ -129,7 +130,7 @@ if (typeof window !== "undefined" && !inTauri) {
             encoder: "h264_nvenc", width: 1920, height: 1080, fps: 60, buffer_mb: 290, error: "", app: "Counter-Strike 2",
             custom_since: 0, session_since: params.get("session") === "1" ? now - 754 : 0, voice: 2,
             audio: [
-              { label: "Son du PC", level: 0.25 + Math.abs(Math.sin(t)) * 0.4, active: true },
+              { label: "Autres sons du PC", level: 0.25 + Math.abs(Math.sin(t)) * 0.4, active: true },
               { label: "Micro", level: Math.abs(Math.sin(t * 1.7)) * 0.3, active: true },
               { label: "Discord", level: Math.abs(Math.sin(t * 0.6)) * 0.5, active: true },
             ],
@@ -221,7 +222,7 @@ if (typeof window !== "undefined" && !inTauri) {
           for (let t = 2; t < 30; t += 7) press(0x20, t, 0.25);
           return ev;
         }
-        case "media_info": return { duration: 34, width: 1920, height: 1080, fps: 50, tracks: ["Mixage", "Son du PC", "Micro", "Discord"] };
+        case "media_info": return { duration: 34, width: 1920, height: 1080, fps: 50, tracks: ["Mixage", "Autres sons du PC", "Jeu", "Micro", "Discord"] };
         case "media_filmstrip": throw "pas de vignettes en aperçu";
         case "media_stems": return [];
         case "bg_ready": return true;

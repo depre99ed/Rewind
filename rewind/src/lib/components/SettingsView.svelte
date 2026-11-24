@@ -391,6 +391,8 @@
                     <input class="name" value={src.label} onchange={(e) => patchSource(i, (a) => (a.label = e.currentTarget.value || a.label))} />
                     {#if src.kind === "app"}
                       <span class="faint">{t("Application")} · {src.app}{live && !live.active ? ` · ${t("pas lancée")}` : ""}</span>
+                    {:else if src.kind === "game"}
+                      <span class="faint">{t("Le son du jeu seul, sans la musique ni le navigateur")}{live && !live.active ? ` · ${t("aucun jeu lancé")}` : ""}</span>
                     {:else}
                       <select class="field mini" value={src.device} onchange={(e) => patchSource(i, (a) => (a.device = e.currentTarget.value))}>
                         <option value="">{t(src.kind === "mic" ? "Micro par défaut de Windows" : "Sortie par défaut de Windows")}</option>
@@ -413,6 +415,9 @@
               <button class="btn" onclick={addApp}><Plus size={15} />{t("Application")}</button>
               <button class="btn" onclick={() => addSource("mic")}><Plus size={15} />{t("Micro")}</button>
               <button class="btn" onclick={() => addSource("system")}><Plus size={15} />{t("Sortie§audio")}</button>
+              {#if !s.audio_sources.some((a) => a.kind === "game")}
+                <button class="btn" onclick={() => app.patch((x) => x.audio_sources.push({ id: "game", kind: "game", device: "", app: "", label: "Jeu", enabled: true, volume: 100 }))}><Plus size={15} />{t("Jeu")}</button>
+              {/if}
             </div>
             <div class="group">
               <div class="item">
@@ -429,6 +434,7 @@
               </div>
             </div>
             <p class="faint note">{t("Quand une application a sa propre piste (Discord par défaut), « Son du PC » l'exclut automatiquement : elle n'est jamais entendue deux fois.")}</p>
+            <p class="faint note">{t("Avec la piste « Jeu », la sortie du PC garde tout le reste (musique, navigateur…) : au montage, baisse-la pour ne garder que le jeu.")}</p>
           {:else if section === "overlay"}
             <h2>{t("Superposition")}</h2>
             <p class="lead muted">{t("Les touches du clavier et de la souris affichées sur tes clips, dans le lecteur, le Studio et les vidéos exportées.")}</p>

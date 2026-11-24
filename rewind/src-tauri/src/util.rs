@@ -190,6 +190,24 @@ pub fn game_active() -> bool {
     GAME_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Dernier jeu vu au premier plan (processus), gardé quand on passe sur le bureau : la piste « Jeu »
+/// continue de capter son son tant qu'il tourne (2026-11-24).
+static GAME_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn set_game_pid(pid: u32) {
+    GAME_PID.store(pid, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Processus du dernier jeu, s'il tourne encore (`procs` : liste des processus déjà lue).
+pub fn game_pid(procs: &[ProcessInfo]) -> Option<u32> {
+    let mut pid = GAME_PID.load(std::sync::atomic::Ordering::Relaxed);
+    // Essai de la piste « Jeu » sans jeu : REWIND_TEST_GAME_PID désigne le processus qui joue le rôle du jeu
+    if pid == 0 {
+        pid = std::env::var("REWIND_TEST_GAME_PID").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    }
+    (pid != 0 && procs.iter().any(|p| p.pid == pid)).then_some(pid)
+}
+
 thread_local! {
     static URGENT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }

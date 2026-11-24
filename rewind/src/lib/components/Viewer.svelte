@@ -156,8 +156,9 @@
   function onMeta() {
     if (!video) return;
     duration = video.duration;
-    const first = clip.markers.find((m) => m.kind !== "manual");
-    if (first && first.time > 3) video.currentTime = Math.max(0, first.time - 3);
+    // Toujours depuis le début (demande du 2026-11-24) : avant, la lecture sautait 3 s avant le premier
+    // kill et donnait l'impression d'un clip « déjà entamé ». Les repères restent cliquables sur la frise.
+    video.currentTime = 0;
     video.play().catch(() => {});
   }
   function toggle() { if (video) video.paused ? video.play() : video.pause(); }

@@ -101,6 +101,11 @@ fn main() {
         let out = args.get(3).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
         std::process::exit(rewind_lib::stress(minutes, out));
     }
+    if args.get(1).map(String::as_str) == Some("--audio-test") {
+        let secs = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
+        let out = args.get(3).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        std::process::exit(rewind_lib::audio_test(secs, out));
+    }
     if args.get(1).map(String::as_str) == Some("--replay-cs2") {
         let file = std::path::PathBuf::from(args.get(2).cloned().unwrap_or_default());
         std::process::exit(rewind_lib::replay_cs2(file));

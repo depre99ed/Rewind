@@ -117,9 +117,13 @@ impl Inputs {
     pub fn start(sources: &[AudioSource], muted: Arc<AtomicBool>) -> Result<Self> {
         let mut inputs = Self { pipes: Vec::new(), stop: Arc::new(AtomicBool::new(false)) };
         let stamp = (util::now() * 1000.0) as u64;
-        // « Son du PC » exclut l'application qui a déjà sa propre piste (ex. Discord),
-        // sinon elle serait entendue deux fois dans le mixage.
-        let exclude = sources.iter().find(|s| s.enabled && s.kind == "app").map(|s| s.app.clone());
+        // « Son du PC » exclut ce qui a déjà sa propre piste (Discord, le jeu…),
+        // sinon ce serait entendu deux fois dans le mixage.
+        let split = Split {
+            apps: sources.iter().filter(|s| s.enabled && s.kind == "app").map(|s| s.app.clone()).collect(),
+            game_track: sources.iter().any(|s| s.enabled && s.kind == "game"),
+            game_live: Arc::new(AtomicU32::new(0)),
+        };
         for (index, source) in sources.iter().filter(|s| s.enabled).take(8).enumerate() {
             let name = format!(r"\\.\pipe\rewind-audio-{stamp}-{index}");
             let path = util::wide(&name);
@@ -145,9 +149,9 @@ impl Inputs {
             let active = Arc::new(AtomicBool::new(false));
             let (worker_level, worker_active) = (Arc::clone(&level), Arc::clone(&active));
             let src = source.clone();
-            let excl = if source.kind == "system" && source.device.is_empty() { exclude.clone() } else { None };
+            let split = split.clone();
             thread::Builder::new().name(format!("audio {}", source.label)).spawn(move || {
-                if let Err(e) = pipe.run(&src, excl.as_deref(), &stop, &muted, &worker_level, &worker_active) {
+                if let Err(e) = pipe.run(&src, &split, &stop, &muted, &worker_level, &worker_active) {
                     log::warn!("audio {} : {e:#}", src.label);
                 }
             })?;
@@ -160,6 +164,25 @@ impl Inputs {
 impl Drop for Inputs {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Partage du son du PC entre les pistes (2026-11-24 : piste « Jeu » séparée de la musique, du navigateur…).
+#[derive(Clone)]
+struct Split {
+    /// Applications qui ont leur propre piste (ex. Discord.exe)
+    apps: Vec<String>,
+    /// Une piste « Jeu » est active
+    game_track: bool,
+    /// Jeu dont la piste « Jeu » reçoit vraiment le son (0 = aucun) : « Son du PC » ne l'enlève
+    /// qu'à cette condition, pour ne jamais perdre le son du jeu si sa capture échoue.
+    game_live: Arc<AtomicU32>,
+}
+
+impl Split {
+    /// Ancien fonctionnement de « Son du PC » : toute la sortie, sauf la première application à piste propre.
+    fn first_app(&self) -> Option<&str> {
+        self.apps.first().map(String::as_str)
     }
 }
 
@@ -177,7 +200,7 @@ impl PipeHandle {
     fn run(
         mut self,
         source: &AudioSource,
-        exclude: Option<&str>,
+        split: &Split,
         stop: &AtomicBool,
         muted: &AtomicBool,
         level: &AtomicU32,
@@ -204,24 +227,28 @@ impl PipeHandle {
         let mut output = unsafe { File::from_raw_handle(handle as _) };
         self.0 = 0;
         let _ = wasapi::initialize_mta().ok();
-        let mut stream: Option<Capture> = None;
+        let mut stream: Option<Stream> = None;
         let mut retry = Instant::now();
         let mut recheck = retry + Duration::from_secs(2);
         let mut deadline = Instant::now();
         let mut packet = vec![0u8; BYTES];
         let is_mic = source.kind == "mic";
+        let is_game = source.kind == "game";
+        // Piste « Jeu » : le son du jeu a-t-il vraiment été reçu depuis l'ouverture ?
+        let mut heard = false;
         let gain = source.volume as f32 / 100.0;
         while !stop.load(Ordering::Relaxed) {
             let now = Instant::now();
             if now >= recheck {
                 recheck = now + Duration::from_secs(2);
-                if stream.as_ref().is_some_and(|c| !c.still_valid(source, exclude)) {
+                if stream.as_mut().is_some_and(|c| !c.still_valid(source, split)) {
                     stream = None;
                 }
             }
             if stream.is_none() && now >= retry {
                 retry = now + Duration::from_secs(2);
-                stream = Capture::open(source, exclude).unwrap_or_else(|e| {
+                heard = false;
+                stream = Stream::open(source, split).unwrap_or_else(|e| {
                     log::debug!("source {} indisponible : {e:#}", source.label);
                     None
                 });
@@ -233,6 +260,16 @@ impl PipeHandle {
             {
                 stream = None;
                 packet.fill(0);
+            }
+            if is_game {
+                if !heard && stream.is_some() && packet.iter().any(|b| *b != 0) {
+                    heard = true;
+                }
+                let pid = match &stream {
+                    Some(Stream::One(c)) if heard => c.pid,
+                    _ => 0,
+                };
+                split.game_live.store(pid, Ordering::Relaxed);
             }
             let g = if is_mic && muted.load(Ordering::Relaxed) { 0.0 } else { gain };
             let mut peak = 0.0f32;
@@ -257,8 +294,191 @@ impl PipeHandle {
             }
             thread::sleep(deadline.saturating_duration_since(Instant::now()));
         }
+        if is_game {
+            split.game_live.store(0, Ordering::Relaxed);
+        }
         Ok(())
     }
+}
+
+/// Ce qu'une piste lit : une seule capture, ou (« Son du PC » quand le jeu a sa piste) la somme des
+/// applications qui font du son, sauf le jeu et les applications à piste propre. Windows ne sait
+/// exclure qu'UN processus par capture : impossible d'enlever à la fois le jeu et Discord autrement.
+enum Stream {
+    One(Capture),
+    Others(Others),
+}
+
+impl Stream {
+    fn open(source: &AudioSource, split: &Split) -> Result<Option<Self>> {
+        match source.kind.as_str() {
+            "game" => {
+                let procs = util::processes();
+                let Some(pid) = util::game_pid(&procs) else { return Ok(None) };
+                let c = Capture::loopback(pid, format!("g{pid}"))?;
+                log::info!("piste Jeu : {}#{pid}", procs.iter().find(|p| p.pid == pid).map_or("?", |p| p.exe.as_str()));
+                Ok(Some(Self::One(c)))
+            }
+            "system" if source.device.is_empty() && split.game_track => {
+                let game = split.game_live.load(Ordering::Relaxed);
+                if game != 0 {
+                    let mut o = Others { game, parts: Vec::new(), last: Vec::new(), scratch: vec![0u8; BYTES] };
+                    o.refresh(&split.apps);
+                    return Ok(Some(Self::Others(o)));
+                }
+                Ok(Capture::open(source, split.first_app())?.map(Self::One))
+            }
+            _ => Ok(Capture::open(source, if source.kind == "system" && source.device.is_empty() { split.first_app() } else { None })?.map(Self::One)),
+        }
+    }
+
+    fn still_valid(&mut self, source: &AudioSource, split: &Split) -> bool {
+        let game = split.game_live.load(Ordering::Relaxed);
+        match self {
+            Self::One(c) if source.kind == "game" => {
+                let procs = util::processes();
+                util::game_pid(&procs) == Some(c.pid)
+            }
+            // Le jeu vient d'avoir sa piste : on passe à « tout sauf le jeu »
+            Self::One(_) if source.kind == "system" && source.device.is_empty() && split.game_track && game != 0 => false,
+            Self::One(c) => c.still_valid(source, if source.kind == "system" && source.device.is_empty() { split.first_app() } else { None }),
+            Self::Others(o) => {
+                if game == 0 || game != o.game {
+                    return false;
+                }
+                o.refresh(&split.apps);
+                true
+            }
+        }
+    }
+
+    fn read(&mut self, out: &mut [u8]) -> Result<()> {
+        match self {
+            Self::One(c) => c.read(out),
+            Self::Others(o) => o.read(out),
+        }
+    }
+}
+
+/// Somme des applications qui font du son, sauf le jeu et les applications à piste propre.
+struct Others {
+    game: u32,
+    parts: Vec<Capture>,
+    /// Dernière liste d'applications captées (journal quand elle change)
+    last: Vec<u32>,
+    scratch: Vec<u8>,
+}
+
+impl Others {
+    /// Met à jour la liste des applications captées (toutes les 2 s) sans couper les autres.
+    fn refresh(&mut self, apps: &[String]) {
+        let procs = util::processes();
+        let mut excluded = vec![self.game];
+        for a in apps {
+            if let Some(pid) = root_of(&procs, a) {
+                excluded.push(pid);
+            }
+        }
+        let sessions = session_pids();
+        let want = pick_others(&procs, &sessions, &excluded);
+        if want != self.last {
+            let name = |pid: &u32| procs.iter().find(|p| p.pid == *pid).map_or_else(|| pid.to_string(), |p| format!("{}#{pid}", p.exe));
+            log::info!(
+                "son du PC sans le jeu ({}) : {} (sessions : {})",
+                name(&self.game),
+                want.iter().map(name).collect::<Vec<_>>().join(", "),
+                sessions.iter().map(name).collect::<Vec<_>>().join(", ")
+            );
+            self.last = want.clone();
+        }
+        self.parts.retain(|c| want.contains(&c.pid));
+        for pid in want {
+            if self.parts.len() >= 24 {
+                break;
+            }
+            if self.parts.iter().any(|c| c.pid == pid) {
+                continue;
+            }
+            match Capture::loopback(pid, pid.to_string()) {
+                Ok(c) => self.parts.push(c),
+                Err(e) => log::debug!("son de l'application {pid} indisponible : {e:#}"),
+            }
+        }
+    }
+
+    fn read(&mut self, out: &mut [u8]) -> Result<()> {
+        let mut i = 0;
+        while i < self.parts.len() {
+            self.scratch.fill(0);
+            if self.parts[i].read(&mut self.scratch).is_err() {
+                self.parts.swap_remove(i);
+                continue;
+            }
+            for (o, s) in out.chunks_exact_mut(4).zip(self.scratch.chunks_exact(4)) {
+                let v = f32::from_le_bytes([o[0], o[1], o[2], o[3]]) + f32::from_le_bytes([s[0], s[1], s[2], s[3]]);
+                o.copy_from_slice(&v.to_le_bytes());
+            }
+            i += 1;
+        }
+        Ok(())
+    }
+}
+
+/// Processus qui ont une session son sur la sortie par défaut (Chrome, Spotify, Discord, le jeu…).
+fn session_pids() -> Vec<u32> {
+    let run = || -> Result<Vec<u32>> {
+        let device = DeviceEnumerator::new()?.get_default_device(Direction::Render)?;
+        let list = device.get_iaudiosessionmanager()?.get_audiosessionenumerator()?;
+        let mut pids = Vec::new();
+        for i in 0..list.get_count()? {
+            if let Ok(pid) = list.get_session(i).and_then(|s| s.get_process_id())
+                && pid != 0
+                && !pids.contains(&pid)
+            {
+                pids.push(pid);
+            }
+        }
+        Ok(pids)
+    };
+    run().unwrap_or_default()
+}
+
+/// Premier processus de l'arbre d'une application (comme `util::root_process`, sur une liste déjà lue).
+fn root_of(procs: &[util::ProcessInfo], exe: &str) -> Option<u32> {
+    let exe = exe.to_ascii_lowercase();
+    let exe = if exe.ends_with(".exe") { exe } else { format!("{exe}.exe") };
+    let matching: Vec<&util::ProcessInfo> = procs.iter().filter(|p| p.exe.to_ascii_lowercase() == exe).collect();
+    matching.iter().find(|p| !matching.iter().any(|q| q.pid == p.parent)).or(matching.first()).map(|p| p.pid)
+}
+
+/// Parents d'un processus (au plus 64, sans boucle).
+fn ancestors(procs: &[util::ProcessInfo], pid: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut cur = pid;
+    while out.len() < 64 {
+        let Some(p) = procs.iter().find(|p| p.pid == cur) else { break };
+        if p.parent == 0 || p.parent == cur || out.contains(&p.parent) || p.parent == pid {
+            break;
+        }
+        out.push(p.parent);
+        cur = p.parent;
+    }
+    out
+}
+
+/// Applications à capter pour « tout sauf le jeu et les pistes propres » : chaque processus qui a une
+/// session son, sauf ceux dans l'arbre d'un exclu, et sauf ceux dont l'arbre CONTIENT un exclu
+/// (Steam a une session et lance le jeu : capter son arbre doublerait le jeu). Un processus dont un
+/// parent est déjà capté est couvert par l'arbre de ce parent.
+fn pick_others(procs: &[util::ProcessInfo], sessions: &[u32], excluded: &[u32]) -> Vec<u32> {
+    let candidates: Vec<u32> = sessions
+        .iter()
+        .copied()
+        .filter(|s| procs.iter().any(|p| p.pid == *s))
+        .filter(|s| !excluded.contains(s) && !ancestors(procs, *s).iter().any(|a| excluded.contains(a)))
+        .filter(|s| !excluded.iter().any(|e| ancestors(procs, *e).contains(s)))
+        .collect();
+    candidates.iter().copied().filter(|c| !ancestors(procs, *c).iter().any(|a| candidates.contains(a))).collect()
 }
 
 struct Capture {
@@ -266,20 +486,36 @@ struct Capture {
     packets: AudioCaptureClient,
     queue: VecDeque<u8>,
     key: String,
+    /// Processus capté (capture d'application), 0 pour un périphérique
+    pid: u32,
 }
 
 impl Capture {
-    fn open(source: &AudioSource, exclude: Option<&str>) -> Result<Option<Self>> {
+    /// Son d'un processus et de ses enfants seulement.
+    fn loopback(pid: u32, key: String) -> Result<Self> {
+        let client = AudioClient::new_application_loopback_client(pid, true)?;
+        Self::start(client, key, pid)
+    }
+
+    fn start(mut client: AudioClient, key: String, pid: u32) -> Result<Self> {
         let format = WaveFormat::new(32, 32, SampleType::Float, RATE as usize, 2, None);
+        let mode = StreamMode::PollingShared { autoconvert: true, buffer_duration_hns: 1_000_000 };
+        client.initialize_client(&format, Direction::Capture, mode, None)?;
+        let packets = client.get_audiocaptureclient()?;
+        client.start_stream()?;
+        Ok(Self { client, packets, queue: VecDeque::with_capacity(BYTES * 8), key, pid })
+    }
+
+    fn open(source: &AudioSource, exclude: Option<&str>) -> Result<Option<Self>> {
         let excluded = exclude.and_then(util::root_process);
-        let (mut client, key) = match source.kind.as_str() {
+        let (client, key, pid) = match source.kind.as_str() {
             "system" if excluded.is_some() => {
                 let pid = excluded.unwrap_or_default();
-                (AudioClient::new_application_loopback_client(pid, false)?, format!("x{pid}"))
+                (AudioClient::new_application_loopback_client(pid, false)?, format!("x{pid}"), 0)
             }
             "app" => {
                 let Some(pid) = util::root_process(&source.app) else { return Ok(None) };
-                (AudioClient::new_application_loopback_client(pid, true)?, pid.to_string())
+                (AudioClient::new_application_loopback_client(pid, true)?, pid.to_string(), pid)
             }
             kind => {
                 let direction = if kind == "mic" { Direction::Capture } else { Direction::Render };
@@ -289,14 +525,10 @@ impl Capture {
                 } else {
                     enumerator.get_device(&source.device)?
                 };
-                (device.get_iaudioclient()?, device.get_id()?)
+                (device.get_iaudioclient()?, device.get_id()?, 0)
             }
         };
-        let mode = StreamMode::PollingShared { autoconvert: true, buffer_duration_hns: 1_000_000 };
-        client.initialize_client(&format, Direction::Capture, mode, None)?;
-        let packets = client.get_audiocaptureclient()?;
-        client.start_stream()?;
-        Ok(Some(Self { client, packets, queue: VecDeque::with_capacity(BYTES * 8), key }))
+        Ok(Some(Self::start(client, key, pid)?))
     }
 
     fn still_valid(&self, source: &AudioSource, exclude: Option<&str>) -> bool {
@@ -343,5 +575,41 @@ impl Capture {
 impl Drop for Capture {
     fn drop(&mut self) {
         let _ = self.client.stop_stream();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(pid: u32, parent: u32, exe: &str) -> util::ProcessInfo {
+        util::ProcessInfo { pid, parent, exe: exe.into() }
+    }
+
+    /// « Son du PC » quand le jeu a sa piste : jamais le jeu ni Discord, jamais deux fois la même appli.
+    #[test]
+    fn autres_sons_sans_le_jeu_ni_discord() {
+        let procs = vec![
+            p(4, 1, "explorer.exe"),
+            p(10, 4, "steam.exe"),
+            p(11, 10, "steamwebhelper.exe"),
+            p(20, 10, "cs2.exe"),
+            p(30, 4, "chrome.exe"),
+            p(31, 30, "chrome.exe"),
+            p(40, 4, "Discord.exe"),
+            p(41, 40, "Discord.exe"),
+            p(50, 4, "Spotify.exe"),
+        ];
+        let discord = root_of(&procs, "discord").unwrap();
+        assert_eq!(discord, 40);
+        // sessions : Steam lui-même, son navigateur, le jeu, Chrome (parent ET enfant), Discord, Spotify
+        let got = pick_others(&procs, &[10, 11, 20, 30, 31, 41, 50], &[20, discord]);
+        // Steam a lancé le jeu : son arbre est écarté (le jeu serait doublé), mais son navigateur reste
+        assert!(!got.contains(&10) && !got.contains(&20), "{got:?}");
+        assert!(got.contains(&11), "{got:?}");
+        // Chrome une seule fois (l'arbre du parent couvre l'enfant)
+        assert!(got.contains(&30) && !got.contains(&31), "{got:?}");
+        assert!(!got.contains(&41), "Discord a sa piste : {got:?}");
+        assert!(got.contains(&50), "{got:?}");
     }
 }

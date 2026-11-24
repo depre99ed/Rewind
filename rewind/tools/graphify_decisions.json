@@ -1,0 +1,144 @@
+{
+  "_lisez_moi": "Décisions prises à la relecture du graphe graphify (appliquées par tools/graphify_affiner.py à chaque reconstruction). Liens : « retirer » (faux), « preciser » (gardé, requalifié), « ajouter » (lien vrai que l'analyse ne voit pas). Nœuds : une note qui explique un élément isolé ou étrange.",
+  "liens": [
+    {
+      "source": "partage_readme_sharing_mailbox_service",
+      "target": "readme_sharing",
+      "action": "preciser",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.65,
+      "note": "Deux façons distinctes de partager un clip : partage entre amis via le guichet Cloudflare (amis.rs, partage/) et envoi par webhook Discord (share.rs). Même but, mécanismes séparés.",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "tools_notes_0_4_6_amd_encoder_fallback",
+      "target": "tools_notes_0_3_6_single_instance",
+      "action": "retirer",
+      "raison": "Aucun rapport : repli de l'encodeur AMD (recorder.rs) et instance unique de l'appli sont deux correctifs indépendants.",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "tools_notes_0_3_7_voice_command_in_process",
+      "target": "tools_notes_0_3_6_shortcut_reopen_fix",
+      "action": "retirer",
+      "raison": "Aucun rapport : la commande vocale dans le processus (voice.rs / speech.rs) ne touche pas la réouverture par le raccourci.",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "pkg_rewind",
+      "target": "src_tauri_src_lib",
+      "action": "ajouter",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src-tauri/Cargo.toml",
+      "note": "Cargo.toml : [lib] rewind_lib, racine src/lib.rs (chemin par défaut de Cargo)",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "pkg_rewind",
+      "target": "src_tauri_src_main",
+      "action": "ajouter",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src-tauri/Cargo.toml",
+      "note": "Cargo.toml : binaire rewind, racine src/main.rs (chemin par défaut de Cargo)",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "tools_notes_0_3_0_keys_overlay",
+      "target": "readme_keys_test",
+      "action": "preciser",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "note": "Le mode de test « rewind --keys » vérifie les crochets clavier/souris (inputs.rs) qui alimentent l'incrustation des touches.",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "tools_notes_0_3_0_voice_command_mic",
+      "target": "readme_voice_test",
+      "action": "preciser",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "note": "Le mode de test « rewind --voice » vérifie la commande vocale (voice.rs, speech.rs) avec le micro choisi.",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "tools_notes_0_3_4_welcome_window",
+      "target": "tools_notes_0_3_1_settings_reorganized",
+      "action": "retirer",
+      "raison": "Aucun lien écrit : la fenêtre d'accueil (Welcome.svelte) et la réorganisation des réglages (SettingsView.svelte) sont des écrans distincts.",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "tools_notes_0_3_3_run_as_administrator",
+      "target": "tools_notes_0_2_6_autostart_targets_installed",
+      "action": "preciser",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "note": "Même mécanisme : la tâche planifiée Windows de admin.rs (schtasks) sert au lancement administrateur et au démarrage avec Windows.",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "tools_notes_0_3_0_playback_pause_on_game",
+      "target": "tools_notes_0_2_4_in_use_update_window",
+      "action": "preciser",
+      "relation": "semantically_similar_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.75,
+      "note": "Même principe : Rewind détecte que le joueur est occupé / en jeu (évènement game-front, user_busy dans lib.rs) pour ne pas le déranger.",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "tools_notes_0_4_8_trim_button",
+      "target": "tools_notes_0_4_7_missing_drive_metadata_kept",
+      "action": "retirer",
+      "raison": "Aucun rapport : le bouton Raccourcir (Viewer.svelte) ne touche pas la conservation des collections quand un disque manque (library.rs).",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "tools_notes_0_4_9_studio_trim_no_rescale",
+      "target": "tools_notes_0_3_7_timeline_follows_playhead",
+      "action": "preciser",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "note": "Même composant : la frise du Studio (Timeline.svelte), défilement et échelle.",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "tools_notes_0_4_8_cs2_kill_feed",
+      "target": "tools_notes_0_3_6_cs2_log_cleanup",
+      "action": "retirer",
+      "raison": "Aucun rapport : la détection du kill feed (killfeed.rs, image) et le ménage du journal CS2 (cs2.rs) sont indépendants.",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "source": "tools_notes_0_4_3_game_launch_banner_redesign",
+      "target": "tools_notes_0_4_1_hotkeys_separate_keys",
+      "action": "preciser",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.85,
+      "note": "La note 0.4.3 dit explicitement « même style » : touches affichées séparément (keys.ts).",
+      "decide_le": "2026-11-24"
+    }
+  ],
+  "noeuds": [
+    {
+      "id": "src_tauri_studio",
+      "note": "Fichier VIDE (0 octet) et inutilisé : reste du 2026-11-15. Le vrai module est src-tauri/src/studio.rs (mod studio dans lib.rs). Peut être supprimé.",
+      "decide_le": "2026-11-24"
+    },
+    {
+      "id": "tools_capture_ecran",
+      "note": "Outil lancé à la main (capture d'écran de diagnostic) : aucun autre fichier ne l'appelle, d'où l'absence de liens.",
+      "decide_le": "2026-11-24"
+    }
+  ]
+}

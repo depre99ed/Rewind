@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 #[serde(default)]
 pub struct AudioSource {
     pub id: String,
-    /// "system" (tout le PC), "mic" (micro), "app" (une application précise)
+    /// "system" (tout le PC), "mic" (micro), "app" (une application précise),
+    /// "game" (le jeu seul : « Son du PC » contient alors tout le reste, musique, navigateur…)
     pub kind: String,
     /// Identifiant du périphérique (vide = celui par défaut de Windows)
     pub device: String,
@@ -28,10 +29,17 @@ impl Default for AudioSource {
             kind: "system".into(),
             device: String::new(),
             app: String::new(),
-            label: "Son du PC".into(),
+            label: "Autres sons du PC".into(),
             enabled: true,
             volume: 100,
         }
+    }
+}
+
+impl AudioSource {
+    /// Piste « Jeu » : le son du jeu seul, séparé de la musique et du navigateur (2026-11-24)
+    pub fn game() -> Self {
+        Self { id: "game".into(), kind: "game".into(), label: "Jeu".into(), ..Default::default() }
     }
 }
 
@@ -383,6 +391,7 @@ impl Default for Settings {
             eco_mode: false,
             audio_sources: vec![
                 AudioSource::default(),
+                AudioSource::game(),
                 AudioSource {
                     id: "mic".into(),
                     kind: "mic".into(),
@@ -429,7 +438,7 @@ impl Default for Settings {
             discord_presence: true,
             max_library_gb: 0,
             first_run_done: false,
-            config_version: 6,
+            config_version: 7,
         }
     }
 }
@@ -563,6 +572,20 @@ impl Settings {
             self.cs2.hvh = Cs2Rules::default();
             self.config_version = 6;
         }
+        if self.config_version < 7 {
+            // v7 : piste « Jeu » séparée (demande du 2026-11-24 : garder le son du jeu sans la musique)
+            if !self.audio_sources.iter().any(|a| a.kind == "game") {
+                let at = self.audio_sources.iter().position(|a| a.kind == "system").map_or(0, |i| i + 1);
+                self.audio_sources.insert(at, AudioSource::game());
+            }
+            // Avec la piste « Jeu », la sortie du PC garde tout le reste (musique, navigateur…)
+            for a in &mut self.audio_sources {
+                if a.kind == "system" && a.label == "Son du PC" {
+                    a.label = "Autres sons du PC".into();
+                }
+            }
+            self.config_version = 7;
+        }
         if self.cs2.profile != "hvh" {
             self.cs2.profile = "legit".into();
         }
@@ -625,7 +648,7 @@ mod tests {
     fn reglages_absents_valeurs_par_defaut() {
         let dir = temp("absents");
         let s = Settings::load_from(&dir.join("settings.json"));
-        assert_eq!(s.config_version, 6);
+        assert_eq!(s.config_version, 7);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -652,10 +675,29 @@ mod tests {
         s.cs2.min_round_kills = 2;
         s.cs2.hvh.min_round_kills = 5;
         s.sanitize();
-        assert_eq!(s.config_version, 6);
+        assert_eq!(s.config_version, 7);
         assert_eq!(s.cs2.min_round_kills, 2, "les réglages legit restent");
         assert_eq!(s.cs2.hvh.min_round_kills, 3, "HvH part des valeurs conseillées");
         assert_eq!(s.cs2.profile, "legit");
+    }
+
+    #[test]
+    fn migration_v7_ajoute_la_piste_jeu() {
+        let mut s = Settings::default();
+        s.audio_sources.retain(|a| a.kind != "game");
+        s.audio_sources[0].label = "Son du PC".into();
+        s.audio_sources[1].volume = 80; // micro réglé par l'utilisateur
+        s.config_version = 6;
+        s.sanitize();
+        assert_eq!(s.config_version, 7);
+        let kinds: Vec<&str> = s.audio_sources.iter().map(|a| a.kind.as_str()).collect();
+        assert_eq!(kinds, ["system", "game", "mic", "app"]);
+        assert_eq!(s.audio_sources[0].label, "Autres sons du PC");
+        assert_eq!(s.audio_sources[2].volume, 80, "les autres sources ne bougent pas");
+        // Piste « Jeu » retirée par l'utilisateur : elle ne revient pas
+        s.audio_sources.retain(|a| a.kind != "game");
+        s.sanitize();
+        assert!(!s.audio_sources.iter().any(|a| a.kind == "game"));
     }
 
     #[test]

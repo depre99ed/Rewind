@@ -2887,6 +2887,47 @@ pub fn stress(minutes: u64, out: PathBuf) -> i32 {
     if ko == 0 { 0 } else { 1 }
 }
 
+/// Test du son sans interface : `rewind.exe --audio-test <secondes> <dossier>`. Enregistre chaque source
+/// (réglages de REWIND_DATA_DIR) dans son propre .wav, comme le moteur les reçoit. Ne gêne pas un Rewind ouvert.
+pub fn audio_test(secs: u64, out: PathBuf) -> i32 {
+    init_logging();
+    let _ = std::fs::create_dir_all(&out);
+    let s = Settings::load();
+    let Ok(tools) = ffmpeg::tools() else {
+        println!("FFmpeg introuvable");
+        return 1;
+    };
+    let inputs = match audio::Inputs::start(&s.audio_sources, Arc::new(std::sync::atomic::AtomicBool::new(false))) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("sources : {e:#}");
+            return 1;
+        }
+    };
+    let mut children = Vec::new();
+    for (i, p) in inputs.pipes.iter().enumerate() {
+        let file = out.join(format!("{i}-{}.wav", p.label.replace(' ', "_")));
+        let child = std::process::Command::new(&tools.ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", &p.name])
+            .arg(&file)
+            .stdin(std::process::Stdio::piped())
+            .spawn();
+        match child {
+            Ok(c) => children.push(c),
+            Err(e) => println!("ffmpeg {} : {e}", p.label),
+        }
+    }
+    std::thread::sleep(Duration::from_secs(secs));
+    for p in &inputs.pipes {
+        println!("{} : active={} niveau={:.3}", p.label, p.active.load(std::sync::atomic::Ordering::Relaxed), f32::from_bits(p.level.load(std::sync::atomic::Ordering::Relaxed)));
+    }
+    drop(inputs);
+    for mut c in children {
+        let _ = c.wait();
+    }
+    0
+}
+
 /// Rejoue une partie CS2 enregistrée (journal .jsonl) : `rewind.exe --replay-cs2 <fichier>`.
 /// Affiche les clips que Rewind aurait créés, avec leurs heures.
 pub fn replay_cs2(file: PathBuf) -> i32 {
@@ -3161,6 +3202,8 @@ pub fn run() {
                     // Présence Discord : dernier jeu vu au premier plan
                     if game && let Some(f) = fg.as_ref() {
                         discord::set_game(&f.exe, f.pid);
+                        // Piste son « Jeu » : ce processus seul
+                        util::set_game_pid(f.pid);
                     }
                     // Retour au jeu : l'interface met en pause le clip qu'on regardait
                     if game && !was_game {

@@ -97,6 +97,9 @@ fn onetap_window(class: &str, snipers: bool) -> Option<(f64, f64)> {
     }
 }
 
+/// Retard maximal de la balle sur l'annonce du kill (messages de CS2 dans le désordre)
+const LATE_SHOT: f64 = 0.3;
+
 fn weapon_class(name: &str, kind: &str) -> String {
     if name == "weapon_deagle" || name == "weapon_revolver" {
         name.to_string()
@@ -128,8 +131,9 @@ struct Detector {
     drawing_type: String,
     drawing_since: f64,
     round_moments: Vec<Moment>,
-    /// one-taps en attente de jugement : index dans round_moments, heure du tir, classe
-    pending: Vec<(usize, f64, String)>,
+    /// one-taps en attente de jugement : index dans round_moments, heure du tir (ou du kill si le tir
+    /// n'est pas encore vu), classe, tir trouvé
+    pending: Vec<(usize, f64, String, bool)>,
     /// mode « instantané » : clip en cours d'accumulation
     open_clip: Option<(f64, f64, Vec<Moment>)>,
     round_start: f64,
@@ -377,8 +381,13 @@ impl Cs2 {
                 let idx = self.det.round_moments.len();
                 if m.kind == "headshot" {
                     let class = weapon_class(&weapon, &wtype);
-                    if let Some(shot) = self.attributed_shot(now, &class) {
-                        self.det.pending.push((idx, shot, class));
+                    if onetap_window(&class, !self.settings.onetap_ignore_snipers).is_some() {
+                        match self.attributed_shot(now, &class) {
+                            Some(shot) => self.det.pending.push((idx, shot, class, true)),
+                            // Balle pas encore vue : CS2 peut annoncer le kill AVANT la baisse des munitions
+                            // (latence des serveurs officiels). Avant, ce one tap était perdu (2026-11-24).
+                            None => self.det.pending.push((idx, now, class, false)),
+                        }
                     }
                 }
                 let _ = self.events.send(Cs2Event::Moment(m.clone()));
@@ -545,10 +554,27 @@ impl Cs2 {
         let snipers = !self.settings.onetap_ignore_snipers;
         let mut keep = Vec::new();
         let pending = std::mem::take(&mut self.det.pending);
-        for (idx, shot, class) in pending {
+        for (idx, mut shot, class, found) in pending {
             let Some((before, after)) = onetap_window(&class, snipers) else { continue };
+            if !found {
+                // Tir arrivé après l'annonce du kill : le plus proche dans [kill − 0,4 s ; kill + LATE]
+                let kill = shot;
+                if !force && now < kill + LATE_SHOT {
+                    keep.push((idx, kill, class, false));
+                    continue;
+                }
+                let near = self
+                    .det
+                    .shots
+                    .iter()
+                    .filter(|(t, c)| c == &class && *t >= kill - 0.4 && *t <= kill + LATE_SHOT)
+                    .map(|(t, _)| *t)
+                    .min_by(|a, b| (a - kill).abs().total_cmp(&(b - kill).abs()));
+                let Some(t) = near else { continue };
+                shot = t;
+            }
             if !force && now < shot + after {
-                keep.push((idx, shot, class));
+                keep.push((idx, shot, class, true));
                 continue;
             }
             let others = self
@@ -632,7 +658,7 @@ impl Cs2 {
         let max_len = self.settings.max_sequence.max(10.0);
         if !self.round_based() {
             // Nouveaux moments, sans dépasser un headshot dont le one-tap n'est pas encore jugé
-            let limit = self.det.pending.iter().map(|(i, _, _)| *i).min().unwrap_or(usize::MAX).min(self.det.round_moments.len());
+            let limit = self.det.pending.iter().map(|(i, _, _, _)| *i).min().unwrap_or(usize::MAX).min(self.det.round_moments.len());
             let from = self.det.seen.min(limit);
             let fresh: Vec<Moment> = self.det.round_moments[from..limit].to_vec();
             self.det.seen = limit;
@@ -1255,6 +1281,34 @@ mod tests {
         println!("titre : {}", clip.title);
         assert!(clip.title.starts_with("3K"), "{}", clip.title);
         assert!(rx.try_recv().is_err());
+    }
+
+    /// Serveurs officiels : CS2 annonce parfois le kill AVANT la baisse des munitions. Le one tap doit
+    /// quand même être reconnu (et une rafale arrivée en retard ne doit pas l'être).
+    #[test]
+    fn one_tap_quand_la_balle_arrive_apres_le_kill() {
+        for (late_ammo, expect) in [(29, true), (27, false)] {
+            let (mut cs, rx) = setup_defaut();
+            let t0 = 1000.0;
+            cs.handle_at(&payload(&P::default()), t0);
+            // kill en headshot annoncé, munitions encore à 30
+            cs.handle_at(&payload(&P { kills: 1, hs: 1, round_kills: 1, ammo: 30, ..Default::default() }), t0 + 1.0);
+            // la balle (ou la rafale) arrive 80 ms plus tard
+            cs.handle_at(&payload(&P { kills: 1, hs: 1, round_kills: 1, ammo: late_ammo, ..Default::default() }), t0 + 1.08);
+            let mut t = t0 + 1.1;
+            while t < t0 + 3.0 {
+                cs.tick_at(t);
+                t += 0.1;
+            }
+            cs.handle_at(&payload(&P { kills: 1, hs: 1, round_kills: 1, ammo: late_ammo, phase: "over", win: "T", ..Default::default() }), t0 + 3.0);
+            let clip = rx.try_recv();
+            if expect {
+                let clip = clip.expect("one tap tardif : un clip");
+                assert!(clip.title.contains("One Tap"), "{}", clip.title);
+            } else {
+                assert!(clip.is_err(), "rafale de 3 balles : pas un one tap");
+            }
+        }
     }
 
     /// CS2 normal (compétitif) avec les réglages par défaut : un one tap seul fait un clip,

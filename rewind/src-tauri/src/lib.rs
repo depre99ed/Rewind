@@ -1883,7 +1883,7 @@ fn show_update_window(app: &AppHandle) -> bool {
         .maximizable(false)
         .minimizable(false)
         .decorations(false)
-        .shadow(true)
+        .shadow(util::windows_build() >= 22000) // liseré blanc sous Windows 10
         .center()
         .background_color(tauri::window::Color(10, 10, 11, 255))
         .focused(true)
@@ -1933,6 +1933,11 @@ fn show_main(app: &AppHandle) {
             .and_then(|b| b.build().map_err(|e| log::error!("fenêtre principale impossible à recréer : {e}")).ok()),
     };
     if let Some(w) = window {
+        // Windows 10 : une fenêtre sans bordure AVEC ombre reçoit un liseré blanc de 1 px (doc Tauri) ; ombre
+        // seulement sous Windows 11, où elle donne les coins arrondis (audit Windows 10 du 2026-11-25)
+        if util::windows_build() < 22000 {
+            let _ = w.set_shadow(false);
+        }
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();

@@ -8,7 +8,8 @@ type Item = Layer | AudioItem;
 
 /** Où un élément est accroché : sur un morceau (au temps source `src`), ou après la fin de la piste principale. */
 export type Anchor =
-  | { kind: "piece"; piece: string; path: string; index: number; src: number; local: number; next: string | null }
+  /** `srcEnd` : temps source de la fin de l'élément s'il finit dans le même morceau (sinon Infinity) */
+  | { kind: "piece"; piece: string; path: string; index: number; src: number; srcEnd: number; local: number; next: string | null }
   | { kind: "end"; delta: number };
 
 /** Les éléments qui suivent l'image (la musique reste fixe). */
@@ -38,7 +39,8 @@ export function anchorItems(p: Project): Map<string, Anchor> {
       }
       const pc = p.pieces[k];
       const local = it.at - lay.offsets[k];
-      out.set(it.uid, { kind: "piece", piece: pc.uid, path: pc.path, index: k, src: srcAt(pc, local), local, next: p.pieces[k + 1]?.uid ?? null });
+      const inside = local + it.dur <= lay.lens[k] + 1e-6;
+      out.set(it.uid, { kind: "piece", piece: pc.uid, path: pc.path, index: k, src: srcAt(pc, local), srcEnd: inside ? srcAt(pc, local + it.dur) : Infinity, local, next: p.pieces[k + 1]?.uid ?? null });
     }
   }
   return out;
@@ -54,47 +56,55 @@ export function timingKey(pieces: Piece[]): string {
  * morceau du même fichier qui contient ce moment (le plus proche de l'ancienne place) ; s'il a été supprimé,
  * l'élément ne bouge pas (la vidéo sous lui a disparu : c'est à l'utilisateur de décider).
  */
-function newStart(a: Anchor, p: Project, lay: ReturnType<typeof layout>, oldAt: number): number {
-  if (a.kind === "end") return Math.max(0, lay.total + a.delta);
+function newStart(a: Anchor, p: Project, lay: ReturnType<typeof layout>, oldAt: number, known?: Set<string>): { at: number; cut: boolean } {
+  const keep = (at: number) => ({ at, cut: false });
+  if (a.kind === "end") return keep(Math.max(0, lay.total + a.delta));
   const at = (i: number, local: number) => lay.offsets[i] + Math.max(0, Math.min(local, lay.lens[i]));
   const same = p.pieces.findIndex((x) => x.uid === a.piece);
   if (same >= 0) {
     const pc = p.pieces[same];
-    if (pc.kind === "freeze") return at(same, Math.min(a.local, outLen(pc)));
+    if (pc.kind === "freeze") return keep(at(same, Math.min(a.local, outLen(pc))));
     const l = localAt(pc, a.src);
-    if (l !== null) return at(same, l);
+    if (l !== null) return keep(at(same, l));
   }
   // Coupé, rogné ou dupliqué : le morceau du même fichier qui montre encore ce moment
   let best = -1;
   p.pieces.forEach((pc, i) => {
     if (pc.kind !== "clip" || pc.path !== a.path || a.src < pc.start - 1e-6 || a.src > pc.end + 1e-6) return;
+    // Morceau d'origine toujours là (simple rognage) : seulement un morceau NÉ d'une coupe, jamais une copie
+    // qui existait déjà (sinon les effets d'un passage coupé sautaient sur le morceau dupliqué).
+    if (same >= 0 && known?.has(pc.uid)) return;
     if (best < 0 || Math.abs(i - a.index) < Math.abs(best - a.index)) best = i;
   });
-  if (best >= 0) return at(best, localAt(p.pieces[best], a.src) ?? 0);
-  // Moment rogné : l'élément se pose au bord du morceau qui reste
+  if (best >= 0) return keep(at(best, localAt(p.pieces[best], a.src) ?? 0));
+  // Moment rogné : l'élément se pose au bord du morceau qui reste… sauf s'il était ENTIÈREMENT dans le passage
+  // retiré (2026-11-25 : les flashs, zooms et sons d'un kill coupé s'empilaient au bord du morceau).
   if (same >= 0) {
     const pc = p.pieces[same];
-    return at(same, a.src < pc.start ? 0 : outLen(pc));
+    const cut = a.src < pc.start ? a.srcEnd <= pc.start + 1e-6 : a.srcEnd !== Infinity;
+    return { at: at(same, a.src < pc.start ? 0 : outLen(pc)), cut };
   }
-  return oldAt;
+  return keep(oldAt);
 }
 
-/** Recale les éléments accrochés ; renvoie le nombre d'éléments déplacés. */
-export function reanchor(p: Project, anchors: Map<string, Anchor>): number {
+/**
+ * Recale les éléments accrochés ; renvoie les éléments dont tout le passage a été coupé (ils sont posés au bord ;
+ * c'est à l'appelant de les retirer à la fin du geste : pendant le geste, rallonger le morceau les fait revenir).
+ */
+export function reanchor(p: Project, anchors: Map<string, Anchor>, known?: Set<string>): string[] {
   const lay = layout(p.pieces);
-  let moved = 0;
+  const cut: string[] = [];
   for (const tr of p.tracks) {
     for (const it of tr.items as Item[]) {
       const a = anchors.get(it.uid);
       if (!a) continue;
-      const at = Math.round(newStart(a, p, lay, it.at) * 1000) / 1000;
-      if (Math.abs(at - it.at) > 1e-3) {
-        it.at = at;
-        moved++;
-      }
+      const n = newStart(a, p, lay, it.at, known);
+      const at = Math.round(n.at * 1000) / 1000;
+      if (Math.abs(at - it.at) > 1e-3) it.at = at;
+      if (n.cut) cut.push(it.uid);
     }
   }
-  return moved;
+  return cut;
 }
 
 /**

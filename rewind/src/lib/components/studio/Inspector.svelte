@@ -3,13 +3,15 @@
   import {
     Diamond, Trash2, Snowflake, AlignLeft, AlignCenter, AlignRight, Monitor, Smartphone, Square, Keyboard, MousePointerClick,
     ArrowLeftToLine, ArrowRightToLine, ArrowLeft, ArrowRight, CopyPlus, Volume2, VolumeX, Gauge, Palette, ZoomIn, Scissors,
-    Crosshair, Blend, Type, Sparkles, Move, SunMoon, Droplets, Film, AudioLines, Clock3, LayoutTemplate, Wand2, Loader2,
+    Crosshair, Blend, Type, Sparkles, Move, SunMoon, Droplets, Film, AudioLines, Clock3, LayoutTemplate, Wand2, Loader2, X,
   } from "@lucide/svelte";
   import { studio, media, TRANSITIONS, SPEEDS, fmtTime } from "$lib/studio/store.svelte";
   import { KIND_LABEL } from "$lib/api";
   import { momentTone } from "$lib/moments";
   import MomentIcon from "../MomentIcon.svelte";
   import Slider from "./Slider.svelte";
+  /** Fermer le panneau (Studio : il ne s'affiche que quand quelque chose est choisi) */
+  let { onclose }: { onclose?: () => void } = $props();
   import SpeedCurve from "./SpeedCurve.svelte";
   import { kfValue, outLen, localAt, fxInfo, isFilterFx, isPunch, isFullBlur, hasCurve, NO_ANIM, type MediaAnim, type MediaIn, type MediaOut, type MediaLoop, type Color, type Fit, type Format, type TextAnimIn, type TextAnimOut } from "$lib/studio/model";
   import { FONTS, fontOf } from "$lib/studio/fonts";
@@ -63,11 +65,10 @@
 
   /** Rogne le morceau choisi à la tête de lecture (début ou fin). */
   function trimHere(side: "start" | "end") {
-    if (!piece || pIndex < 0 || piece.kind === "freeze") return;
-    const src = studio.srcTime(pIndex, studio.t);
-    if (side === "start" && piece.end - src >= 0.2) studio.updatePiece(piece.uid, { start: src });
-    else if (side === "end" && src - piece.start >= 0.2) studio.updatePiece(piece.uid, { end: src });
-    else studio.say("Place la tête de lecture dans le morceau");
+    if (!piece || pIndex < 0) return;
+    // La tête doit être sur CE morceau (avant : le temps d'un autre morceau était appliqué à celui-ci)
+    if (studio.indexAt(studio.t) !== pIndex) return studio.say("Place la tête de lecture dans le morceau");
+    studio.trimToPlayhead(side);
   }
 
   // Historique : une seule entrée par geste (au début du glissement d'un curseur)
@@ -136,6 +137,7 @@
 </script>
 
 <aside class="insp">
+  {#if onclose}<button class="close" onclick={onclose} title={t("Fermer le panneau (Échap)")} aria-label={t("Fermer le panneau (Échap)")}><X size={15} /></button>{/if}
   {#if junction !== null && P.pieces[junction - 1]}
     {@const prev = P.pieces[junction - 1]}
     <div class="title"><Blend size={15} /><h3>{t("Transition")}</h3></div>
@@ -480,7 +482,7 @@
     </section>
     <section class="help">
       <header><Keyboard size={14} /><h4>{t("Raccourcis")}</h4></header>
-      <p class="note mono">{t("Espace lecture · S couper · Suppr supprimer · Ctrl+Z annuler · Ctrl+D dupliquer · ← → image par image · Ctrl+molette zoom")}</p>
+      <p class="note mono">{t("Espace lecture · S couper · Q/W retirer avant/après la tête · Suppr supprimer · Ctrl+Z annuler · Ctrl+D dupliquer · ← → image par image · Ctrl+molette zoom")}</p>
     </section>
     {#if P.pieces.length || P.tracks.length}
       <div class="acts"><button class="btn small ghost danger" onclick={() => studio.clear()}><Trash2 size={14} />{t("Vider le montage")}</button></div>
@@ -489,7 +491,11 @@
 </aside>
 
 <style>
-  .insp { display: flex; flex-direction: column; gap: 4px; padding: 14px 14px 18px; border-left: 1px solid var(--line); overflow-y: auto; min-height: 0; background: var(--bg-2); }
+  .insp { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 14px 14px 18px; border-left: 1px solid var(--line); overflow-y: auto; min-height: 0; background: var(--bg-2); }
+  /* Fermer le panneau : la place revient à l'aperçu */
+  .close { position: absolute; top: 10px; right: 10px; z-index: 2; width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; color: var(--text-3); transition: color var(--dur) var(--ease), background var(--dur) var(--ease); }
+  .close:hover { color: var(--text); background: var(--panel-3); }
+  .title { padding-right: 30px; }
   /* Dans une colonne qui défile, rien ne doit rétrécir (le titre, coupé, tombait à 0 px de haut) */
   .insp > :global(*) { flex-shrink: 0; }
   .title { display: flex; align-items: center; gap: 8px; color: var(--text-3); padding-bottom: 8px; }

@@ -158,7 +158,20 @@ export type ProjectMeta = { id: string; name: string; updated: number; duration:
 const LEGACY_KEY = "rewind.studio.v2";
 const LAST_KEY = "rewind.studio.last";
 const FOLLOW_KEY = "rewind.studio.follow";
-type Gesture = { anchors: Map<string, Anchor>; pieces: Map<string, Piece>; key: string; at: number };
+/**
+ * Geste en cours (glisser, curseur) : accroches prises au début, réutilisées tant qu'il dure.
+ * `held` : geste tenu à la souris (rognage…) : il ne s'arrête qu'au lâcher (`endGesture`), même après une pause.
+ * `stash` : éléments dont tout le passage a été coupé pendant ce geste (retirés ; ils reviennent si on rallonge).
+ */
+type Gesture = {
+  anchors: Map<string, Anchor>;
+  pieces: Map<string, Piece>;
+  key: string;
+  at: number;
+  held: boolean;
+  stash: { track: string; index: number; item: Layer | AudioItem }[];
+  emptied: Set<string>;
+};
 function loadFollow(): boolean {
   try { return localStorage.getItem(FOLLOW_KEY) !== "0"; } catch { return true; }
 }
@@ -236,7 +249,7 @@ class StudioStore {
 
   // ----- historique -----
   snapshot() {
-    this.gesture = null;
+    this.endGesture();
     this.history.push(JSON.stringify(this.project));
     if (this.history.length > 150) this.history.shift();
     this.future = [];
@@ -277,19 +290,41 @@ class StudioStore {
     if (record) this.snapshot();
     // Accroche des éléments à l'image AVANT le changement (au début du geste s'il y en a un en cours)
     const now = Date.now();
-    if (!this.gesture || now - this.gesture.at > 2000) {
-      this.gesture = {
-        anchors: this.follow ? anchorItems(this.project) : new Map(),
-        pieces: new Map(this.project.pieces.map((x) => [x.uid, { ...x, ramp: x.ramp ? { ...x.ramp } : null, killRamps: (x.killRamps ?? []).map((r) => ({ ...r })), curve: (x.curve ?? []).map((k) => ({ ...k })), zoom: [...x.zoom] }])),
-        key: timingKey(this.project.pieces),
-        at: now,
-      };
+    if (!this.gesture || (!this.gesture.held && now - this.gesture.at > 2000)) {
+      this.endGesture();
+      this.gesture = this.newGesture(false);
     }
     this.gesture.at = now;
     f(this.project);
     if (timingKey(this.project.pieces) !== this.gesture.key) this.followImage(this.gesture);
     this.project = { ...this.project, updated: Date.now() / 1000 };
-    if (record) this.gesture = null;
+    if (record) this.endGesture();
+    this.changed();
+  }
+  private newGesture(held: boolean): Gesture {
+    return {
+      anchors: this.follow ? anchorItems(this.project) : new Map(),
+      pieces: new Map(this.project.pieces.map((x) => [x.uid, { ...x, ramp: x.ramp ? { ...x.ramp } : null, killRamps: (x.killRamps ?? []).map((r) => ({ ...r })), curve: (x.curve ?? []).map((k) => ({ ...k })), zoom: [...x.zoom] }])),
+      key: timingKey(this.project.pieces),
+      at: Date.now(),
+      held,
+      stash: [],
+      emptied: new Set(),
+    };
+  }
+  /** Début d'un geste tenu à la souris (rognage, glisser) : une seule entrée d'historique jusqu'au lâcher. */
+  beginGesture() {
+    this.snapshot();
+    this.gesture = this.newGesture(true);
+  }
+  /** Fin du geste : les pistes vidées par un passage coupé disparaissent. */
+  endGesture() {
+    const g = this.gesture;
+    this.gesture = null;
+    if (!g?.emptied.size) return;
+    const gone = this.project.tracks.filter((tr) => g.emptied.has(tr.id) && !tr.items.length);
+    if (!gone.length) return;
+    this.project = { ...this.project, tracks: this.project.tracks.filter((tr) => !gone.includes(tr)) };
     this.changed();
   }
   /** La vidéo a changé de durée : zooms des morceaux et éléments liés restent sur la même image. */
@@ -300,7 +335,31 @@ class StudioStore {
       const timing = b && (b.speed !== x.speed || b.start !== x.start || JSON.stringify(b.ramp) !== JSON.stringify(x.ramp) || JSON.stringify(b.killRamps) !== JSON.stringify(x.killRamps) || JSON.stringify(b.curve ?? []) !== JSON.stringify(x.curve ?? []));
       return timing ? { ...x, zoom: remapZoom(b, { ...x, zoom: b.zoom }) } : x;
     });
-    if (this.follow) reanchor(pr, g.anchors);
+    if (!this.follow) return;
+    // Éléments retirés plus tôt dans ce geste : remis à leur place, puis recalés comme les autres
+    for (const st of [...g.stash].sort((a, b) => a.index - b.index)) {
+      const tr = pr.tracks.find((x) => x.id === st.track);
+      if (tr) (tr.items as (Layer | AudioItem)[]).splice(Math.min(st.index, tr.items.length), 0, st.item);
+    }
+    const had = g.stash.length > 0;
+    g.stash = [];
+    const cut = new Set(reanchor(pr, g.anchors, new Set(g.pieces.keys())));
+    if (!cut.size) {
+      if (had) this.hint = ""; // rallongé : plus rien de retiré
+      return;
+    }
+    // Tout leur passage a été coupé (flash, zoom, son d'un kill retiré…) : ils partent avec lui au lieu de
+    // s'empiler au bord du morceau. Ctrl+Z les rend (le geste entier est une seule action).
+    for (const tr of pr.tracks) {
+      const items = tr.items as (Layer | AudioItem)[];
+      for (let i = items.length - 1; i >= 0; i--) {
+        if (!cut.has(items[i].uid)) continue;
+        g.stash.push({ track: tr.id, index: i, item: items[i] });
+        items.splice(i, 1);
+      }
+      if (!items.length) g.emptied.add(tr.id);
+    }
+    this.say(t(cut.size > 1 ? "{n} éléments du passage coupé retirés · Ctrl+Z pour annuler" : "{n} élément du passage coupé retiré · Ctrl+Z pour annuler", { n: cut.size }));
   }
   setFollow(on: boolean) {
     this.follow = on;
@@ -570,6 +629,62 @@ class StudioStore {
     });
     this.select({ type: "piece", id: frozen.uid });
     this.say("Arrêt sur image ajouté");
+  }
+
+  /**
+   * Garde le morceau sous la tête de lecture à partir d'elle (« start ») ou jusqu'à elle (« end ») :
+   * la façon la plus simple de raccourcir (touches Q et W). La tête reste sur l'image de la coupe.
+   */
+  trimToPlayhead(side: "start" | "end") {
+    const i = this.indexAt(this.t);
+    const p = this.project.pieces[i];
+    if (!p) return this.say("Place la tête de lecture sur un morceau");
+    if (p.kind === "freeze") {
+      const local = this.t - this.lay.offsets[i];
+      const hold = side === "start" ? p.hold - local : local;
+      if (hold < 0.1) return this.say("Trop près du bord pour couper");
+      this.updatePiece(p.uid, { hold });
+    } else {
+      const src = this.srcTime(i, this.t);
+      if ((side === "start" ? p.end - src : src - p.start) < 0.2) return this.say("Trop près du bord pour couper");
+      this.updatePiece(p.uid, side === "start" ? { start: src } : { end: src });
+    }
+    // Image de la coupe : début du morceau (avant retiré) ou sa dernière image (après retiré)
+    this.seek(side === "start" ? this.lay.offsets[i] : this.lay.offsets[i] + this.lay.lens[i] - 0.001);
+    this.select({ type: "piece", id: p.uid });
+    this.say(side === "start" ? "Début du morceau coupé à la tête de lecture" : "Fin du morceau coupée à la tête de lecture");
+  }
+
+  /** Morceaux qui ont des kills (bouton « Garder les kills ») */
+  killPieces(): number {
+    return this.project.pieces.filter((p) => p.kind === "clip" && killTimes(p, media.feed[p.path]).length > 0).length;
+  }
+  /**
+   * « Garder les kills » (2026-11-25) : chaque clip ne garde que le passage de ses kills, de 2,5 s avant le premier
+   * à 2 s après le dernier (mêmes marges que « Raccourcir » dans les Clips). Les clips sans kill ne bougent pas.
+   * Une seule action pour Ctrl+Z ; les textes et effets liés à l'image suivent (ceux d'un passage retiré partent).
+   */
+  trimAroundKills(): number {
+    const plan = new Map<string, { start: number; end: number }>();
+    for (const p of this.project.pieces) {
+      if (p.kind !== "clip") continue;
+      const kills = killTimes(p, media.feed[p.path]);
+      if (!kills.length) continue;
+      const start = Math.round(Math.max(0, kills[0] - 2.5) * 1000) / 1000;
+      const end = Math.round(Math.min(p.srcDur, kills[kills.length - 1] + 2) * 1000) / 1000;
+      if (end - start < 0.5 || (Math.abs(start - p.start) < 0.05 && Math.abs(end - p.end) < 0.05)) continue;
+      plan.set(p.uid, { start, end });
+    }
+    if (!plan.size) {
+      this.say(this.killPieces() ? "Les clips sont déjà serrés autour de leurs kills" : "Aucun kill trouvé dans ces clips");
+      return 0;
+    }
+    const before = this.total;
+    this.edit((pr) => (pr.pieces = pr.pieces.map((x) => (plan.has(x.uid) ? { ...x, ...plan.get(x.uid)! } : x))));
+    this.seek(0);
+    const saved = Math.max(0, before - this.total);
+    this.say(t(plan.size > 1 ? "{n} clips raccourcis autour de leurs kills · {s} retirées · Ctrl+Z pour annuler" : "{n} clip raccourci autour de ses kills · {s} retirées · Ctrl+Z pour annuler", { n: plan.size, s: fmtTime(saved) }));
+    return plan.size;
   }
 
   // ----- couper / supprimer / dupliquer (élément choisi, sinon morceau sous la tête) -----

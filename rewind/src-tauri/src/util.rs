@@ -584,6 +584,25 @@ pub struct Monitor {
     pub refresh: u32,
 }
 
+/// Windows donne la fréquence de l'écran arrondie vers le bas (59,94 Hz → 59 ; 143,98 → 143 ; 164,8 → 164) :
+/// on la ramène à la fréquence nominale, sinon aucune cadence ne la divise et l'image devient irrégulière
+/// (audit Windows 10 / AMD du 2026-11-25).
+pub fn normalize_refresh(hz: u32) -> u32 {
+    const NOMINAL: [u32; 18] = [24, 30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 170, 175, 180, 200, 240, 360];
+    if NOMINAL.contains(&(hz + 1)) { hz + 1 } else { hz }
+}
+
+/// Numéro de build de Windows (19045 = Windows 10 22H2, 22000 et plus = Windows 11), 0 si illisible.
+pub fn windows_build() -> u32 {
+    static BUILD: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BUILD.get_or_init(|| {
+        reg_values(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+            .get("CurrentBuildNumber")
+            .and_then(|b| b.trim().parse().ok())
+            .unwrap_or(0)
+    })
+}
+
 pub fn monitors() -> Vec<Monitor> {
     unsafe extern "system" fn callback(
         monitor: HMONITOR,
@@ -600,7 +619,7 @@ pub fn monitors() -> Vec<Monitor> {
                 let mut mode: DEVMODEW = std::mem::zeroed();
                 mode.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
                 let refresh = if EnumDisplaySettingsW(info.szDevice.as_ptr(), ENUM_CURRENT_SETTINGS, &mut mode) != 0 {
-                    mode.dmDisplayFrequency
+                    normalize_refresh(mode.dmDisplayFrequency)
                 } else {
                     0
                 };

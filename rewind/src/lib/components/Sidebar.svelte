@@ -20,6 +20,9 @@
     all: app.ownClips.filter((c) => c.kind !== "screenshot").length,
   });
   const last = $derived([...app.ownClips].sort((a, b) => b.created - a.created)[0] ?? null);
+  /** Dans le Studio, la colonne se réduit à ses icônes : ~170 px de plus pour l'aperçu et la frise (2026-11-25) */
+  const compact = $derived(app.view === "studio" && !app.openClip);
+  const tip = (label: string) => (compact ? label : undefined);
 
   async function clip(long = false) {
     if (!s) return;
@@ -104,23 +107,23 @@
 
 <svelte:window onkeydown={onKey} onmousedown={onDown} />
 
-<aside>
+<aside class:compact>
   <nav style="--i:{navIndex}">
-    <button class:on={app.view === "library"} onclick={() => { app.openClip = null; app.view = "library"; }}>
+    <button class:on={app.view === "library"} onclick={() => { app.openClip = null; app.view = "library"; }} title={tip(t("Clips"))}>
       <Clapperboard size={17} strokeWidth={1.75} /> <span>{t("Clips")}</span> <em>{counts.all}</em>
     </button>
-    <button class:on={app.view === "studio"} onclick={() => { app.openClip = null; app.view = "studio"; }}>
+    <button class:on={app.view === "studio"} onclick={() => { app.openClip = null; app.view = "studio"; }} title={tip("Studio")}>
       <Film size={17} strokeWidth={1.75} /> <span>Studio</span>
     </button>
-    <button class:on={app.view === "friends"} onclick={() => { app.openClip = null; app.view = "friends"; }}>
+    <button class:on={app.view === "friends"} onclick={() => { app.openClip = null; app.view = "friends"; }} title={tip(t("Amis"))}>
       <Users size={17} strokeWidth={1.75} /> <span>{t("Amis")}</span>
       {#if friends.badge}<em class="new" title={t("Demandes et clips reçus")}>{friends.badge}</em>{/if}
     </button>
-    <button class:on={app.view === "cs2"} onclick={() => (app.view = "cs2")}>
+    <button class:on={app.view === "cs2"} onclick={() => (app.view = "cs2")} title={tip("Counter-Strike 2")}>
       <Crosshair size={17} strokeWidth={1.75} /> <span>Counter-Strike 2</span>
       {#if app.cs2Map}<b class="live" title={t("Partie en cours")}></b>{/if}
     </button>
-    <button class:on={app.view === "settings"} onclick={() => (app.view = "settings")}>
+    <button class:on={app.view === "settings"} onclick={() => (app.view = "settings")} title={tip(t("Réglages"))}>
       <Settings2 size={17} strokeWidth={1.75} /> <span>{t("Réglages")}</span>
     </button>
     <!-- Lentille de verre posée AU-DESSUS de l'onglet actif : elle courbe vraiment l'icône et le texte sur ses bords -->
@@ -131,19 +134,19 @@
     {#if s}
       <!-- Clip sur mesure / session en cours : toujours visibles, avec de quoi les finir -->
       {#if st?.custom_since}
-        <button class="hold" onclick={() => api.holdAction("custom")}>
+        <button class="hold" onclick={() => api.holdAction("custom")} title={tip(`${t("Sur mesure")} · ${t("Finir")}`)}>
           <i class="dot rec"></i><span>{t("Sur mesure")}</span><span class="mono">{elapsed(st.custom_since)}</span><b>{t("Finir")}</b>
         </button>
       {/if}
       {#if st?.session_since}
-        <button class="hold" onclick={() => api.holdAction("session")}>
+        <button class="hold" onclick={() => api.holdAction("session")} title={tip(`${t("Session")} · ${t("Finir")}`)}>
           <i class="dot rec"></i><span>{t("Session")}</span><span class="mono">{elapsed(st.session_since)}</span><b>{t("Finir")}</b>
         </button>
       {/if}
 
       {#if adminBlocked}
         <!-- Seul avertissement rouge de la colonne : les raccourcis ne marchent pas dans ce jeu -->
-        <button class="adminwarn" onclick={() => { app.settingsSection = "keys"; app.view = "settings"; }}>
+        <button class="adminwarn" onclick={() => { app.settingsSection = "keys"; app.view = "settings"; }} title={tip(t("Raccourcis bloqués en jeu"))}>
           <ShieldExclamationPoint size={15} strokeWidth={1.75} />
           <span><b>{t("Raccourcis bloqués en jeu")}</b><small>{t("Jeu en administrateur · Corriger")}</small></span>
         </button>
@@ -171,7 +174,7 @@
         </div>
       {/if}
 
-      <button use:glint class="big glass" class:busy={app.clipping} onclick={() => clip(false)} disabled={!st?.recording}>
+      <button use:glint class="big glass" class:busy={app.clipping} onclick={() => clip(false)} disabled={!st?.recording} title={tip(`${t("Clipper")} · ${t("{n} dernières secondes", { n: s.clip_seconds })}${s.hotkeys.clip ? ` (${keyParts(s.hotkeys.clip).join("+")})` : ""}`)}>
         <span class="ring" style="--p:{fill}"></span>
         <span class="txt">
           <span class="line">
@@ -244,7 +247,8 @@
 </aside>
 
 <style>
-  aside { width: 228px; flex: none; display: flex; flex-direction: column; justify-content: space-between; padding: 6px 10px 12px; background: var(--bg); }
+  aside { width: 228px; flex: none; display: flex; flex-direction: column; justify-content: space-between; padding: 6px 10px 12px; background: var(--bg); white-space: nowrap; transition: width 200ms var(--ease); }
+  @media (prefers-reduced-motion: reduce) { aside { transition: none; } }
 
   nav { position: relative; display: flex; flex-direction: column; gap: 2px; }
   nav button { position: relative; display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 11px; border-radius: 10px; color: var(--text-3); font-weight: 500; text-align: left; transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
@@ -343,4 +347,22 @@
   .bar { height: 2px; border-radius: 2px; background: var(--panel-3); overflow: hidden; }
   .bar i { display: block; height: 100%; width: 100%; background: var(--text-2); transform-origin: left; transition: transform 120ms linear; }
   .tech { position: relative; z-index: 2; font-size: 10px; color: var(--text-3); text-align: center; padding: 6px 0 2px; }
+
+  /* Studio : colonne réduite aux icônes (les libellés passent en infobulle) */
+  aside.compact { width: 64px; }
+  .compact nav button { justify-content: center; gap: 0; padding: 0; }
+  .compact nav button span, .compact nav button em:not(.new) { display: none; }
+  .compact nav button em.new { position: absolute; top: 1px; right: 3px; min-width: 15px; height: 15px; padding: 0 4px; font-size: 9.5px; }
+  .compact nav button .live { position: absolute; top: 8px; right: 9px; }
+  .compact .medal, .compact .last { display: none; }
+  .compact .adminwarn { justify-content: center; padding: 9px 0; }
+  .compact .adminwarn span { display: none; }
+  .compact .hold { justify-content: center; padding: 0; }
+  .compact .hold span, .compact .hold b { display: none; }
+  .compact .big { justify-content: center; padding: 10px 0; }
+  .compact .big .txt { display: none; }
+  .compact .status { flex-direction: column; height: auto; gap: 8px; padding: 0; }
+  .compact .state { justify-content: center; }
+  .compact .state > :not(.dot) { display: none; }
+  .compact .menu { right: auto; width: 252px; }
 </style>

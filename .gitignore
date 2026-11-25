@@ -4,6 +4,7 @@ rewind/.svelte-kit/
 rewind/src-tauri/target/
 rewind/src-tauri/gen/
 rewind/src-tauri/bin/*.exe
+rewind/src-tauri/vcrt/
 *.partial.mp4
 rewind/static/mock/
 

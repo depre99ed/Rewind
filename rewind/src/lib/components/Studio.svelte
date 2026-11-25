@@ -1,7 +1,7 @@
 <script lang="ts">
   // Studio v2 : disposition façon CapCut (médias à gauche, aperçu au centre, réglages à droite, pistes en bas).
   import { onMount, untrack } from "svelte";
-  import { Download, FolderOpen, Plus, Trash2, CloudCheck, ChevronDown, Film } from "@lucide/svelte";
+  import { Download, FolderOpen, Plus, Trash2, CloudCheck, ChevronDown, Film, SlidersHorizontal } from "@lucide/svelte";
   import { app } from "$lib/state.svelte";
   import { studio, fmtTime } from "$lib/studio/store.svelte";
   import { fileUrl, relativeDate } from "$lib/api";
@@ -21,6 +21,24 @@
   /** Miniatures de projet introuvables (clip déplacé ou supprimé) : icône à la place de l'image cassée */
   let badThumbs: Record<string, boolean> = $state({});
   const P = $derived(studio.project);
+  /**
+   * Panneau de droite contextuel (2026-11-25) : il ne prend de la place que quand quelque chose est choisi
+   * (morceau, texte, son, transition…) ou quand on ouvre les réglages du montage ; sinon l'aperçu s'agrandit.
+   */
+  let projectOpen = $state(false);
+  const panelOpen = $derived(!!studio.sel || studio.junction !== null || projectOpen);
+  const projectShown = $derived(projectOpen && !studio.sel && studio.junction === null);
+  function closePanel() {
+    studio.select(null);
+    studio.junction = null;
+    projectOpen = false;
+  }
+  function toggleProject() {
+    if (projectShown) return closePanel();
+    studio.select(null);
+    studio.junction = null;
+    projectOpen = true;
+  }
 
   onMount(() => {
     studio.init();
@@ -41,9 +59,9 @@
   function readTlh() {
     try {
       const v = Number(localStorage.getItem(TLH_KEY));
-      return v >= 180 && v <= 900 ? v : 270;
+      return v >= 180 && v <= 900 ? v : 300;
     } catch {
-      return 270;
+      return 300;
     }
   }
   let sizing: { y0: number; h0: number } | null = null;
@@ -87,6 +105,8 @@
     else if (ctrl && k === "d") { e.preventDefault(); studio.duplicate(); }
     else if (ctrl && k === "s") { e.preventDefault(); studio.saveNow(); }
     else if (!ctrl && k === "s") studio.split();
+    else if (!ctrl && k === "q") studio.trimToPlayhead("start");
+    else if (!ctrl && k === "w") studio.trimToPlayhead("end");
     else if (e.key === "Delete" || e.key === "Backspace") studio.removeSel();
     else if (e.key === "ArrowLeft") { e.preventDefault(); studio.playing = false; studio.seek(studio.t - (e.shiftKey ? 1 : 1 / 30)); }
     else if (e.key === "ArrowRight") { e.preventDefault(); studio.playing = false; studio.seek(studio.t + (e.shiftKey ? 1 : 1 / 30)); }
@@ -96,7 +116,7 @@
     else if (e.key === "End") studio.seek(studio.total);
     else if (e.key === "+" || e.key === "=") studio.zoom = Math.min(60, studio.zoom * 1.3);
     else if (e.key === "-") studio.zoom = Math.max(1, studio.zoom / 1.3);
-    else if (e.key === "Escape") { studio.junction = null; studio.select(null); projectsOpen = false; }
+    else if (e.key === "Escape") { closePanel(); projectsOpen = false; }
   }
   function outside(e: MouseEvent) {
     if (!projectsOpen) return;
@@ -116,6 +136,7 @@
       {#if studio.saved}<CloudCheck size={14} />{t("Enregistré")}{:else}{t("Enregistrement…")}{/if}
     </span>
     <span class="spacer"></span>
+    <button class="btn small ghost proj" class:on={projectShown} onclick={toggleProject} title={t("Format, fondu de fin, touches à l'écran")}><SlidersHorizontal size={15} />{t("Montage")}<span class="mono fmt">{P.format}</span></button>
     <span class="faint mono dur">{fmtTime(studio.total)}</span>
     <button class="btn primary exp" onclick={() => (exportOpen = true)} disabled={!P.pieces.length && !P.tracks.length}><Download size={16} />{t("Exporter")}</button>
 
@@ -139,14 +160,14 @@
     {/if}
   </header>
 
-  <div class="work">
+  <div class="work" class:full={!panelOpen}>
     <MediaPanel />
     <Preview />
-    <Inspector />
+    <div class="side" inert={!panelOpen}><Inspector onclose={closePanel} /></div>
   </div>
 
   <div class="bottom">
-    <div class="sizer" onpointerdown={sizeDown} onpointermove={sizeMove} onpointerup={sizeUp} onpointercancel={sizeUp} ondblclick={() => { tlh = 270; sizeUp(); }} role="separator" aria-orientation="horizontal" aria-label={t("Agrandir ou réduire la frise")} title={t("Agrandir ou réduire la frise")}></div>
+    <div class="sizer" onpointerdown={sizeDown} onpointermove={sizeMove} onpointerup={sizeUp} onpointercancel={sizeUp} ondblclick={() => { tlh = 300; sizeUp(); }} role="separator" aria-orientation="horizontal" aria-label={t("Agrandir ou réduire la frise")} title={t("Agrandir ou réduire la frise")}></div>
     <Timeline />
   </div>
 </section>
@@ -156,7 +177,7 @@
 {/if}
 
 <style>
-  .studio { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) var(--tlh, 270px); grid-template-columns: minmax(0, 1fr); background: var(--bg); }
+  .studio { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) var(--tlh, 300px); grid-template-columns: minmax(0, 1fr); background: var(--bg); }
   .studio > * { min-width: 0; }
   /* z-index : la liste des projets passe au-dessus des colonnes du Studio */
   .top { position: relative; z-index: 20; display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--bg-2); }
@@ -170,8 +191,16 @@
   .exp { height: 34px; padding: 0 16px; }
   /* isolation : les z-index internes (aperçu jusqu'à 90 : « clip introuvable », cadres, repères) restent
      dans leur zone et ne passent plus jamais au-dessus de la liste des projets (bug du 2026-11-15) */
-  .work { display: grid; grid-template-columns: 300px minmax(0, 1fr) 290px; min-height: 0; isolation: isolate; }
-  @media (max-width: 1280px) { .work { grid-template-columns: 270px minmax(0, 1fr) 260px; } }
+  .work { --insp: 290px; display: grid; grid-template-columns: 300px minmax(0, 1fr) var(--insp); min-height: 0; isolation: isolate; transition: grid-template-columns 200ms var(--ease); }
+  @media (max-width: 1280px) { .work { --insp: 260px; grid-template-columns: 270px minmax(0, 1fr) var(--insp); } }
+  /* Rien de choisi : la colonne de droite se replie, l'aperçu prend la place (glissement de 200 ms) */
+  .work.full { grid-template-columns: 300px minmax(0, 1fr) 0px; }
+  @media (max-width: 1280px) { .work.full { grid-template-columns: 270px minmax(0, 1fr) 0px; } }
+  @media (prefers-reduced-motion: reduce) { .work { transition: none; } }
+  /* Le panneau garde sa largeur pendant le glissement (pas de texte qui se replie) ; la colonne le découvre */
+  .side { min-width: 0; min-height: 0; overflow: hidden; display: flex; }
+  .side > :global(.insp) { width: var(--insp); flex: none; }
+  .fmt { margin-left: 2px; font-size: 11px; color: var(--text-3); }
   .bottom { position: relative; min-height: 0; isolation: isolate; }
   /* Poignée invisible sur la bordure du haut de la frise : un filet clair apparaît au survol */
   .sizer { position: absolute; left: 0; right: 0; top: -4px; height: 8px; z-index: 10; cursor: ns-resize; }

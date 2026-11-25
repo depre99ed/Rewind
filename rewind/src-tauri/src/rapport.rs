@@ -176,7 +176,9 @@ fn system_section(out: &mut String) {
     let build: u32 = get("CurrentBuildNumber").parse().unwrap_or(0);
     // Windows 11 annonce encore « Windows 10 » dans ProductName : le numéro de build tranche.
     let name = if build >= 22000 { get("ProductName").replace("Windows 10", "Windows 11") } else { get("ProductName") };
-    let _ = writeln!(out, "Windows : {} {} (build {}.{})", name, get("DisplayVersion"), get("CurrentBuildNumber"), cv.get("UBR").map(|u| u.trim_start_matches("0x")).map(|h| u32::from_str_radix(h, 16).unwrap_or(0)).unwrap_or(0));
+    // « DisplayVersion » (22H2…) n'existe qu'à partir de Windows 10 20H2 ; avant : « ReleaseId » (1909…)
+    let version = if get("DisplayVersion").is_empty() { get("ReleaseId") } else { get("DisplayVersion") };
+    let _ = writeln!(out, "Windows : {} {} (build {}.{})", name, version, get("CurrentBuildNumber"), cv.get("UBR").map(|u| u.trim_start_matches("0x")).map(|h| u32::from_str_radix(h, 16).unwrap_or(0)).unwrap_or(0));
     let cpu = util::reg_values(r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0");
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0);
     let _ = writeln!(out, "Processeur : {} ({} threads)", cpu.get("ProcessorNameString").map(|s| s.trim().to_string()).unwrap_or_default(), cores);

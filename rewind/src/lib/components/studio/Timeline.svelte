@@ -3,10 +3,11 @@
   import {
     Scissors, Trash2, CopyPlus, Undo2, Redo2, Magnet, Link2, ZoomIn, ZoomOut, Maximize2, Snowflake, Eye, EyeOff, Lock, LockOpen,
     ChevronUp, ChevronDown, Volume2, VolumeX, Type, Image as ImageIcon, Film, Music, Mic, Droplets, Video, Blend, AudioLines, Sparkles, FileX,
+    ArrowLeftToLine, ArrowRightToLine, Crosshair,
   } from "@lucide/svelte";
   import { untrack } from "svelte";
   import { studio, media, fmtTime } from "$lib/studio/store.svelte";
-  import { outLen, localAt, fxInfo, isFullBlur, isVariable, hasCurve, type Layer, type AudioItem, type Piece, type Track } from "$lib/studio/model";
+  import { outLen, localAt, srcAt, clampSpeed, fxInfo, isFullBlur, isVariable, hasCurve, type Layer, type AudioItem, type Piece, type Track } from "$lib/studio/model";
   import { momentTone } from "$lib/moments";
   import { fontOf } from "$lib/studio/fonts";
   import MomentIcon from "../MomentIcon.svelte";
@@ -16,9 +17,10 @@
 
   const HEAD = 176; // colonne des noms de pistes
   const PAD = 16;
-  const MAIN_H = 62;
-  const LAYER_H = 34;
-  const AUDIO_H = 40;
+  // Piste vidéo plus haute (2026-11-25) : vignettes lisibles (62 px de haut au lieu de 40)
+  const MAIN_H = 84;
+  const LAYER_H = 36;
+  const AUDIO_H = 44;
   const SNAP_PX = 8;
 
   let scroller: HTMLDivElement | undefined = $state();
@@ -50,6 +52,7 @@
   }
 
   const layerTracks = $derived(P.tracks.filter((tr) => tr.kind === "layer"));
+  const killPieces = $derived(studio.killPieces());
   const audioTracks = $derived(P.tracks.filter((tr) => tr.kind === "audio"));
 
   // Graduations
@@ -67,14 +70,18 @@
   function tiles(p: Piece, left: number, w: number) {
     const s = media.strips[p.path];
     const tileW = s ? s.frame_w * ((MAIN_H - 22) / s.frame_h) : ((MAIN_H - 22) * 16) / 9;
-    const n = Math.ceil(w / tileW);
-    const j0 = Math.max(0, Math.floor((scrollX - left) / tileW) - 1);
-    const j1 = Math.min(n, Math.ceil((scrollX + width - left) / tileW) + 1);
+    // Grille calée sur le clip source, pas sur le bord du morceau : quand on rogne le début, les vignettes restent
+    // en place sous la souris au lieu de glisser (2026-11-25).
+    const shift = p.kind === "freeze" ? 0 : ((p.start / clampSpeed(p.speed)) * pps) % tileW;
+    const n = Math.ceil((w + shift) / tileW);
+    const j0 = Math.max(0, Math.floor((scrollX - left + shift) / tileW) - 1);
+    const j1 = Math.min(n, Math.ceil((scrollX + width - left + shift) / tileW) + 1);
     const list: { left: number; pos: number }[] = [];
     for (let j = j0; j < j1; j++) {
-      const src = p.kind === "freeze" ? p.start : p.start + (((j + 0.5) * tileW) / w) * (p.end - p.start);
+      const x = j * tileW - shift;
+      const src = p.kind === "freeze" ? p.start : srcAt(p, Math.max(0, Math.min(w, x + tileW / 2)) / pps);
       const fi = s ? Math.min(s.frames - 1, Math.max(0, Math.floor(src / s.interval))) : 0;
-      list.push({ left: j * tileW, pos: -fi * tileW });
+      list.push({ left: x, pos: -fi * tileW });
     }
     return { tileW, list, s };
   }
@@ -115,8 +122,9 @@
   // ---------- aimantation ----------
   /** Instant où l'élément s'est calé (trait vertical affiché pendant le glissement). */
   let snapLine = $state<number | null>(null);
-  function snapPoints(exclude?: string, withHead = true): number[] {
-    const pts = withHead ? [studio.t, 0] : [0];
+  /** `head` : tête de lecture à viser (null : aucune). Pendant un rognage, c'est sa place au début du geste. */
+  function snapPoints(exclude?: string, head: number | null = studio.t): number[] {
+    const pts = head !== null ? [head, 0] : [0];
     L.offsets.forEach((o, i) => {
       pts.push(o, o + L.lens[i]);
       // Les kills aussi : un texte ou un son se cale pile sur le moment
@@ -128,39 +136,104 @@
     for (const tr of P.tracks) for (const it of tr.items as { uid: string; at: number; dur: number }[]) if (it.uid !== exclude) pts.push(it.at, it.at + it.dur);
     return pts;
   }
-  function snap(v: number, exclude?: string, withHead = true): number {
+  function snap(v: number, exclude?: string, head: number | null = studio.t): number {
+    return snapTo(v, snapPoints(exclude, head));
+  }
+  function snapTo(v: number, pts: number[]): number {
     if (!studio.snap) {
       snapLine = null;
       return v;
     }
     let best = v, d = SNAP_PX / pps, hit = false;
-    for (const p of snapPoints(exclude, withHead)) if (Math.abs(p - v) < d) { d = Math.abs(p - v); best = p; hit = true; }
+    for (const p of pts) if (Math.abs(p - v) < d) { d = Math.abs(p - v); best = p; hit = true; }
     snapLine = hit ? best : null;
     return best;
+  }
+  /**
+   * Points d'aimant pour la fin du morceau i pendant qu'on la rogne : seulement ce qui ne bouge pas avec le bord.
+   * (2026-11-25 : le bord s'aimantait à SA PROPRE place et au début du morceau suivant, qui le suivent : il collait
+   * et avançait par sauts de 8 px derrière la souris.)
+   */
+  function trimPoints(i: number, head: number): number[] {
+    const edge = L.offsets[i] + L.lens[i];
+    const pts = [head, 0, L.offsets[i]];
+    for (let k = 0; k < i; k++) pts.push(L.offsets[k], L.offsets[k] + L.lens[k]);
+    for (let k = 0; k <= i; k++) {
+      for (const m of studio.momentsOf(P.pieces[k])) {
+        const lt = localAt(P.pieces[k], m.time);
+        if (lt !== null) pts.push(L.offsets[k] + lt);
+      }
+    }
+    for (const tr of P.tracks) for (const it of tr.items as (Layer | AudioItem)[]) {
+      const moves = studio.follow && (tr.kind === "layer" || (it as AudioItem).kind !== "music");
+      if (!moves || it.at < edge - 1e-3) pts.push(it.at, it.at + it.dur);
+    }
+    return pts;
+  }
+  /** Fin (temps source) qui donne au morceau la durée `len` à l'écran : vitesse, ralentis et courbe compris. */
+  function solveEnd(p: Piece, len: number): number {
+    let lo = Math.min(p.srcDur, p.start + 0.2), hi = p.srcDur;
+    if (outLen({ ...p, end: hi }) <= len) return hi;
+    if (outLen({ ...p, end: lo }) >= len) return lo;
+    for (let n = 0; n < 40; n++) {
+      const m = (lo + hi) / 2;
+      if (outLen({ ...p, end: m }) < len) lo = m;
+      else hi = m;
+    }
+    return Math.round(((lo + hi) / 2) * 1000) / 1000;
+  }
+  /** Début (temps source) qui donne au morceau la durée `len` à l'écran. */
+  function solveStart(p: Piece, len: number): number {
+    let lo = 0, hi = Math.max(0, p.end - 0.2);
+    if (outLen({ ...p, start: lo }) <= len) return lo;
+    if (outLen({ ...p, start: hi }) >= len) return hi;
+    for (let n = 0; n < 40; n++) {
+      const m = (lo + hi) / 2;
+      if (outLen({ ...p, start: m }) > len) lo = m;
+      else hi = m;
+    }
+    return Math.round(((lo + hi) / 2) * 1000) / 1000;
   }
 
   // ---------- glisser ----------
   type Drag =
     | { kind: "scrub" }
     | { kind: "item"; id: string; track: string; tkind: "layer" | "audio"; video: boolean; x0: number; y0: number; at0: number; started: boolean }
-    | { kind: "trimItem"; id: string; side: "start" | "end"; x0: number; at0: number; dur0: number; src0: number; max: number }
-    | { kind: "trimPiece"; id: string; side: "start" | "end"; x0: number; v0: number; speed: number; freeze: boolean; len0: number }
+    | { kind: "trimItem"; id: string; side: "start" | "end"; x0: number; t0: number; at0: number; dur0: number; src0: number; max: number }
+    | { kind: "trimPiece"; id: string; side: "start" | "end"; x0: number; t0: number; freeze: boolean; len0: number; off0: number[]; total0: number }
     | { kind: "piece"; id: string; from: number; x0: number; y0: number; started: boolean; to: number };
   let drag = $state<Drag | null>(null);
   /**
-   * Rognage d'un morceau, comme dans Medal : pendant le geste, seul le bord tiré suit la souris ; le reste du
-   * montage reste affiché à sa place (décalé de `shift`), puis se recolle au lâcher.
+   * Rognage (revu le 2026-11-25) :
+   *  - FIN d'un morceau : en direct. Le bord reste sous la souris et ce qui suit recule avec lui ; rien ne saute au lâcher.
+   *  - DÉBUT d'un morceau : le bord tiré suit la souris, le reste du montage reste affiché à sa place (positions du
+   *    début du geste, `ghost`), puis se recolle au lâcher.
+   * Dans les deux cas, l'aperçu montre l'image du bord tiré (la tête de lecture le suit) : on voit où on coupe.
    */
-  let ghost = $state<{ i: number; side: "start" | "end"; shift: number } | null>(null);
-  /** Juste après un rognage : le recollage est animé (jamais pendant un glissement) */
+  let ghost = $state<{ i: number; len0: number; off0: number[]; total0: number } | null>(null);
+  /** Juste après un rognage du début : le recollage est animé (jamais pendant un glissement) */
   let settling = $state(false);
-  /** Décalage d'affichage du morceau k pendant un rognage */
-  const pieceShift = (k: number) => (ghost && (k > ghost.i || (k === ghost.i && ghost.side === "start")) ? ghost.shift : 0);
-  /** Décalage d'affichage d'un élément pendant un rognage (ceux qui suivent l'image, après le bord tiré) */
+  /** Décalage d'affichage du morceau k pendant le rognage d'un début (exact, transitions comprises) */
+  function pieceShift(k: number): number {
+    const g = ghost;
+    if (!g || k < g.i) return 0;
+    if (k === g.i) return g.len0 - (L.lens[k] ?? g.len0);
+    return (g.off0[k] ?? L.offsets[k]) - L.offsets[k];
+  }
+  /** Décalage d'affichage de ce qui se trouve à l'instant t du montage (éléments liés à l'image, tête de lecture) */
+  function shiftAt(t: number): number {
+    const g = ghost;
+    if (!g) return 0;
+    let k = -1;
+    for (let j = 0; j < L.offsets.length; j++) if (L.offsets[j] <= t + 1e-6) k = j;
+    if (k < 0) return 0;
+    if (t > L.offsets[k] + L.lens[k] + 1e-6) return g.total0 - L.total; // après la fin de la piste vidéo
+    return pieceShift(k);
+  }
+  /** Décalage d'affichage d'un élément : seuls ceux qui suivent l'image (la musique reste fixe) */
   function itemShift(it: { at: number; kind: string }, audio: boolean): number {
     if (!ghost || !studio.follow || (audio && it.kind === "music")) return 0;
-    const edge = ghost.side === "start" ? L.offsets[ghost.i] : L.offsets[ghost.i] + L.lens[ghost.i];
-    return it.at >= edge - 1e-3 ? ghost.shift : 0;
+    return shiftAt(it.at);
   }
   let tip = $state<{ x: number; text: string } | null>(null);
   /** Piste visée pendant un glissement : « layer:<id> », « audio:<id> », « main », « new-layer », « new-audio » */
@@ -180,7 +253,7 @@
     if (e.button !== 0) return;
     studio.playing = false;
     drag = { kind: "scrub" };
-    studio.seek(snap(tAt(e.clientX), undefined, false));
+    studio.seek(snap(tAt(e.clientX), undefined, null));
   }
   function itemDown(e: PointerEvent, it: Layer | AudioItem, tr: Track) {
     if (e.button !== 0) return;
@@ -190,15 +263,17 @@
     drag = { kind: "item", id: it.uid, track: tr.id, tkind: tr.kind, video: it.kind === "video", x0: e.clientX, y0: e.clientY, at0: it.at, started: false };
   }
   function trimDown(e: PointerEvent, it: Layer | AudioItem, side: "start" | "end", tr: Track) {
+    if (e.button !== 0) return;
     e.stopPropagation();
     keepTotal = total;
     if (tr.locked) return;
+    studio.playing = false;
     studio.select({ type: tr.kind === "audio" ? "audio" : "layer", id: it.uid });
-    studio.snapshot();
+    studio.beginGesture();
     const src0 = "srcStart" in it ? it.srcStart : 0;
     const speed = it.kind === "video" ? (it as any).speed : 1;
     const max = "srcDur" in it ? ((it as any).srcDur - src0) / speed : Infinity;
-    drag = { kind: "trimItem", id: it.uid, side, x0: e.clientX, at0: it.at, dur0: it.dur, src0, max };
+    drag = { kind: "trimItem", id: it.uid, side, x0: e.clientX, t0: studio.t, at0: it.at, dur0: it.dur, src0, max };
   }
   function pieceDown(e: PointerEvent, p: Piece, i: number) {
     if (e.button !== 0) return;
@@ -207,20 +282,22 @@
     drag = { kind: "piece", id: p.uid, from: i, x0: e.clientX, y0: e.clientY, started: false, to: i };
   }
   function pieceTrimDown(e: PointerEvent, p: Piece, side: "start" | "end") {
+    if (e.button !== 0) return;
     e.stopPropagation();
     keepTotal = total;
+    studio.playing = false;
     studio.select({ type: "piece", id: p.uid });
-    studio.snapshot();
-    drag = { kind: "trimPiece", id: p.uid, side, x0: e.clientX, v0: p.kind === "freeze" ? p.hold : side === "start" ? p.start : p.end, speed: p.speed, freeze: p.kind === "freeze", len0: outLen(p) };
+    studio.beginGesture();
+    drag = { kind: "trimPiece", id: p.uid, side, x0: e.clientX, t0: studio.t, freeze: p.kind === "freeze", len0: outLen(p), off0: [...L.offsets], total0: L.total };
   }
   function onMove(e: PointerEvent) {
     const d = drag;
     if (!d) return;
-    if (d.kind === "scrub") return studio.seek(snap(tAt(e.clientX), undefined, false));
+    if (d.kind === "scrub") return studio.seek(snap(tAt(e.clientX), undefined, null));
     const dt = (e.clientX - ("x0" in d ? d.x0 : 0)) / pps;
     if (d.kind === "item") {
       if (!d.started && Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0) < 4) return;
-      if (!d.started) { studio.snapshot(); d.started = true; }
+      if (!d.started) { studio.beginGesture(); d.started = true; }
       const it = findItem(d.id);
       if (!it) return;
       // Piste visée : celle sous le pointeur. Même type : l'élément y passe tout de suite ;
@@ -236,12 +313,13 @@
       const it = findItem(d.id);
       if (!it) return;
       if (d.side === "end") {
-        const end = snap(d.at0 + d.dur0 + dt, d.id);
+        const end = snap(d.at0 + d.dur0 + dt, d.id, d.t0);
         const dur = Math.max(0.1, Math.min(d.max, end - d.at0));
         patchItem(d.id, { dur });
+        studio.seek(d.at0 + dur - 0.001); // l'aperçu montre la dernière image gardée
         tip = { x: X(d.at0 + dur), text: fmtTime(dur, true) };
       } else {
-        let at = snap(d.at0 + dt, d.id);
+        let at = snap(d.at0 + dt, d.id, d.t0);
         at = Math.max(0, Math.min(d.at0 + d.dur0 - 0.1, at));
         const shift = at - d.at0;
         if ("srcStart" in it && d.src0 + shift < 0) at = d.at0 - d.src0;
@@ -249,6 +327,7 @@
         const patch: Record<string, unknown> = { at, dur: d.dur0 - s2 };
         if ("srcStart" in it) patch.srcStart = d.src0 + s2 * (it.kind === "video" ? (it as any).speed : 1);
         patchItem(d.id, patch);
+        studio.seek(at);
         tip = { x: X(at), text: fmtTime(d.dur0 - s2, true) };
       }
     } else if (d.kind === "trimPiece") {
@@ -256,32 +335,24 @@
       if (!p) return;
       const i = P.pieces.indexOf(p);
       const off = L.offsets[i] ?? 0;
-      if (d.freeze) {
-        let hold = Math.max(0.2, Math.min(10, d.v0 + (d.side === "end" ? dt : -dt)));
-        // Bord droit aimanté (tête de lecture, autres éléments, kills)
-        if (d.side === "end") hold = Math.max(0.2, Math.min(10, snap(off + hold, p.uid) - off));
-        studio.updatePiece(d.id, { hold }, false);
-        ghost = { i, side: d.side, shift: d.len0 - hold };
-        tip = { x: X(off + hold + (d.side === "start" ? d.len0 - hold : 0)), text: fmtTime(hold, true) };
-        return;
-      }
-      const src = dt * d.speed;
-      if (d.side === "start") {
-        const start = Math.max(0, Math.min(p.end - 0.2, d.v0 + src));
-        studio.updatePiece(d.id, { start }, false);
-        const len = outLen({ ...p, start });
-        ghost = { i, side: "start", shift: d.len0 - len };
-        tip = { x: X(off + d.len0 - len), text: fmtTime(len, true) };
-      } else {
-        let end = Math.min(p.srcDur, Math.max(p.start + 0.2, d.v0 + src));
-        if (!isVariable(p)) {
-          const edge = snap(off + (end - p.start) / d.speed, p.uid);
-          end = Math.min(p.srcDur, Math.max(p.start + 0.2, p.start + (edge - off) * d.speed));
-        }
-        studio.updatePiece(d.id, { end }, false);
-        const len = outLen({ ...p, end });
-        ghost = { i, side: "end", shift: d.len0 - len };
+      // Durée voulue à l'écran : le bord tiré reste sous la souris, même avec ralentis ou courbe de vitesse
+      // (avant, le geste était converti en secondes du clip à vitesse fixe : sur un mini-ralenti de kill, le bord
+      // partait 3 fois plus loin que la souris).
+      if (d.side === "end") {
+        const want = Math.max(0, snapTo(off + d.len0 + dt, trimPoints(i, d.t0)) - off);
+        if (d.freeze) studio.updatePiece(d.id, { hold: Math.max(0.2, Math.min(10, Math.round(want * 1000) / 1000)) }, false);
+        else studio.updatePiece(d.id, { end: solveEnd(p, want) }, false);
+        const len = studio.lay.lens[i] ?? want;
+        studio.seek(off + len - 0.001); // l'aperçu montre la dernière image gardée
         tip = { x: X(off + len), text: fmtTime(len, true) };
+      } else {
+        const want = Math.max(0, d.len0 - dt);
+        if (d.freeze) studio.updatePiece(d.id, { hold: Math.max(0.2, Math.min(10, Math.round(want * 1000) / 1000)) }, false);
+        else studio.updatePiece(d.id, { start: solveStart(p, want) }, false);
+        const len = studio.lay.lens[i] ?? want;
+        ghost = { i, len0: d.len0, off0: d.off0, total0: d.total0 };
+        studio.seek(off); // l'aperçu montre la première image gardée
+        tip = { x: X(off + d.len0 - len), text: fmtTime(len, true) };
       }
     } else if (d.kind === "piece") {
       if (!d.started && Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0) < 5) return;
@@ -300,6 +371,8 @@
       settling = true;
       setTimeout(() => (settling = false), 260);
     }
+    // Fin du geste tenu : une seule action pour Ctrl+Z
+    if (d?.kind === "trimPiece" || d?.kind === "trimItem" || (d?.kind === "item" && d.started)) studio.endGesture();
     ghost = null;
     tip = null;
     over = null;
@@ -417,7 +490,10 @@
     <button class="btn icon small ghost" onclick={() => studio.undo()} disabled={!studio.canUndo} title={t("Annuler (Ctrl+Z)")}><Undo2 size={16} /></button>
     <button class="btn icon small ghost" onclick={() => studio.redo()} disabled={!studio.canRedo} title={t("Rétablir (Ctrl+Y)")}><Redo2 size={16} /></button>
     <span class="sep"></span>
+    <button class="btn icon small ghost" onclick={() => studio.trimToPlayhead("start")} disabled={studio.indexAt(studio.t) < 0} title={t("Retirer le début du morceau, jusqu'à la tête de lecture (Q)")}><ArrowLeftToLine size={15} /></button>
     <button class="btn small ghost" onclick={() => studio.split()} title={t("Couper à la tête de lecture (S)")}><Scissors size={15} />{t("Couper")}</button>
+    <button class="btn icon small ghost" onclick={() => studio.trimToPlayhead("end")} disabled={studio.indexAt(studio.t) < 0} title={t("Retirer la fin du morceau, après la tête de lecture (W)")}><ArrowRightToLine size={15} /></button>
+    <button class="btn small ghost" onclick={() => studio.trimAroundKills()} disabled={!killPieces} title={t("Raccourcir chaque clip autour de ses kills : 2,5 s avant le premier, 2 s après le dernier")}><Crosshair size={15} />{t("Garder les kills")}</button>
     <button class="btn icon small ghost" onclick={() => studio.duplicate()} disabled={!studio.sel || studio.sel.type === "keys"} title={t("Dupliquer (Ctrl+D)")}><CopyPlus size={15} /></button>
     <button class="btn icon small ghost" onclick={() => studio.removeSel()} disabled={!studio.sel} title={t("Supprimer (Suppr)")}><Trash2 size={15} /></button>
     <button class="btn small ghost" onclick={() => studio.freezeFrame()} disabled={studio.indexAt(studio.t) < 0} title={t("Figer l'image à la tête de lecture pendant 2 s")}><Snowflake size={15} />{t("Figer")}</button>
@@ -560,7 +636,7 @@
       <!-- Aimant : trait à l'endroit où l'élément s'est calé -->
       {#if snapLine !== null && drag}<i class="snapline" style="left:{X(snapLine)}px"></i>{/if}
       <!-- Tête de lecture -->
-      <div class="playhead" style="left:{X(studio.t)}px"><i></i></div>
+      <div class="playhead" style="left:{X(studio.t + shiftAt(studio.t))}px"><i></i></div>
       {#if tip}<span class="tip mono" style="left:{tip.x}px">{tip.text}</span>{/if}
     </div>
   </div>
@@ -617,15 +693,21 @@
   .item.audio { padding: 0; }
   .awave { position: absolute; left: 0; top: 2px; height: calc(100% - 4px); opacity: 0.7; }
   .alabel { position: relative; display: flex; align-items: center; gap: 4px; padding: 0 8px; font-size: 11px; color: var(--text-2); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); overflow: hidden; text-overflow: ellipsis; }
-  .grip { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; z-index: 2; }
+  /* Poignées de rognage : zone de 10 px ; trait visible au survol, plein quand l'élément est choisi */
+  .grip { position: absolute; top: 0; bottom: 0; width: 10px; cursor: ew-resize; z-index: 2; }
+  .grip::after { content: ""; position: absolute; top: 0; bottom: 0; width: 6px; background: #fff; opacity: 0; transition: opacity var(--dur) var(--ease); }
   .grip.l { left: 0; }
+  .grip.l::after { left: 0; }
   .grip.r { right: 0; }
-  .item.sel .grip, .piece.sel .grip { background: rgba(255, 255, 255, 0.85); }
+  .grip.r::after { right: 0; }
+  .item:hover .grip::after, .piece:hover .grip::after { opacity: 0.35; }
+  .grip:hover::after { opacity: 0.7; }
+  .item.sel .grip::after, .piece.sel .grip::after { opacity: 0.85; }
   .kf { position: absolute; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px; transform: rotate(45deg); background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 2; }
   .piece { position: absolute; top: 3px; bottom: 3px; border-radius: 7px; overflow: hidden; background: #0d0e12; border: 1px solid var(--line-2); cursor: grab; }
   .piece.moving { opacity: 0.5; }
   .piece.freeze { background: color-mix(in srgb, #9ad 18%, #0d0e12); }
-  .strip { position: absolute; left: 0; right: 0; top: 0; height: 40px; overflow: hidden; }
+  .strip { position: absolute; left: 0; right: 0; top: 0; height: 62px; overflow: hidden; }
   .strip i { position: absolute; top: 0; height: 100%; background-repeat: no-repeat; background-color: #15171d; }
   .wave { position: absolute; left: 0; bottom: 1px; height: 18px; }
   .ptitle { position: absolute; left: 6px; top: 4px; display: flex; align-items: center; gap: 4px; max-width: calc(100% - 12px); padding: 1px 6px; border-radius: 5px; background: rgba(0, 0, 0, 0.72); font-size: 11px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -638,10 +720,10 @@
   .piece.missing { border-color: color-mix(in srgb, var(--rec) 60%, transparent); background: repeating-linear-gradient(45deg, #1a0d0d 0 8px, #120909 8px 16px); }
   .lost { position: absolute; left: 8px; bottom: 6px; z-index: 3; display: flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 500; color: #fff; background: color-mix(in srgb, var(--rec) 80%, #000); }
   /* Repères de kills : picto dans une pastille sombre (lisible sur n'importe quelle image) + trait à l'instant exact */
-  .mk { position: absolute; top: 22px; z-index: 2; translate: -50% 0; width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; color: #f2f3f5; background: rgba(8, 9, 12, 0.88); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16), 0 2px 6px rgba(0, 0, 0, 0.6); pointer-events: none; }
+  .mk { position: absolute; top: 34px; z-index: 2; translate: -50% 0; width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; color: #f2f3f5; background: rgba(8, 9, 12, 0.88); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16), 0 2px 6px rgba(0, 0, 0, 0.6); pointer-events: none; }
   .mk::after { content: ""; position: absolute; left: 50%; top: 100%; width: 1px; height: 12px; margin-left: -0.5px; background: rgba(255, 255, 255, 0.55); }
   /* Recalé sur le kill feed : trait plein jusqu'en bas du morceau (moment exact) */
-  .mk.precise::after { height: 26px; background: rgba(255, 255, 255, 0.85); }
+  .mk.precise::after { height: 30px; background: rgba(255, 255, 255, 0.85); }
   .mk.gold { color: #ffd25a; }
   .mk.green { color: #3ddc97; }
   .mk.dim { color: #9aa3b5; }
@@ -651,7 +733,8 @@
   .magnet.on { color: var(--hi-ink); background: var(--hi); }
   .snapline { position: absolute; top: 24px; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--accent); z-index: 7; pointer-events: none; }
   .item.fx { --tc: #b9bec9; background: color-mix(in srgb, var(--tc) 10%, var(--panel-2)); background-image: radial-gradient(color-mix(in srgb, var(--tc) 30%, transparent) 1px, transparent 1.2px); background-size: 7px 7px; }
-  .junction { position: absolute; top: 50%; z-index: 4; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 6px; display: grid; place-items: center; background: var(--panel-3); border: 1px solid var(--line-2); color: var(--text-3); }
+  /* En bas de la jonction : au milieu, il recouvrait les poignées de rognage des deux morceaux */
+  .junction { position: absolute; bottom: 4px; z-index: 4; width: 18px; height: 18px; margin: 0 0 0 -9px; border-radius: 6px; display: grid; place-items: center; background: var(--panel-3); border: 1px solid var(--line-2); color: var(--text-3); }
   .junction.has { color: var(--text); background: var(--panel-2); }
   .junction.on { outline: 2px solid #fff; color: var(--text); }
   .dropline { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--hi); z-index: 5; }

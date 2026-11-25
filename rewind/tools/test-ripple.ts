@@ -138,5 +138,57 @@ const at = (p: Project, uid: string) => p.tracks.flatMap((t) => t.items as { uid
   eq("zoom punch : aperçu = export au pic", punchAt(p, 3 + 0.4 * 0.18), 1.15, 0.001);
   eq("zoom punch : retour à 1 à la fin", zoom[zoom.length - 1].z, 1, 0.001);
 }
+// 9) Fin de A rognée à 3 s (2026-11-25) : un effet entièrement dans le passage retiré part avec lui ; un texte qui
+//    commence dans le passage retiré mais continue sur B est posé au bord ; ce qui précède ne bouge pas
+{
+  const p = project();
+  const fx = { ...newFx("flash", 5, 0.3), uid: "F" }; // flash à 5 s dans A : entièrement retiré
+  const long = { ...newText(9), uid: "L", dur: 3 }; // 9 → 12 s : déborde sur B
+  p.tracks[0].items.push(fx, long);
+  const a = anchorItems(p);
+  p.pieces[0] = { ...p.pieces[0], end: 3 };
+  const cut = reanchor(p, a);
+  eq("fin rognée : le flash du passage coupé est signalé", cut.includes("F") ? 1 : 0, 1);
+  eq("fin rognée : texte qui déborde sur B gardé", cut.includes("L") ? 1 : 0, 0);
+  eq("fin rognée : texte qui déborde posé au bord", at(p, "L"), 3);
+  eq("fin rognée : texte sur B recule de 7 s", at(p, "T"), 5);
+  eq("fin rognée : le texte E (4 → 7 s, dans le passage retiré) part aussi", cut.includes("E") ? 1 : 0, 1);
+  eq("fin rognée : rien d'autre de signalé", cut.length, 2);
+}
+// 10) Début de A rogné à 5 s : le texte à 4 s (2 s de long, finit à 6 s) est posé au début, pas retiré ;
+//     un effet de 1 à 1,5 s est retiré
+{
+  const p = project();
+  const fx = { ...newFx("flash", 1, 0.5), uid: "F", dur: 0.5 };
+  p.tracks[0].items.push(fx);
+  (p.tracks[0].items[1] as { dur: number }).dur = 2; // texte E : 4 → 6 s
+  const a = anchorItems(p);
+  p.pieces[0] = { ...p.pieces[0], start: 5 };
+  const cut = reanchor(p, a);
+  eq("début rogné : effet du passage coupé signalé", cut.includes("F") ? 1 : 0, 1);
+  eq("début rogné : texte à cheval gardé", cut.includes("E") ? 1 : 0, 0);
+  eq("début rogné : texte à cheval posé au début", at(p, "E"), 0);
+}
+// 11) Morceau A dupliqué (copie D à la fin) : rogner la fin de A retire l'effet du passage coupé au lieu de le
+//     faire sauter sur la copie ; une vraie coupe (A2 nouveau) le garde sur A2
+{
+  const p = project();
+  p.pieces.push({ ...p.pieces[0], uid: "D" });
+  const fx = { ...newFx("flash", 8, 0.3), uid: "F" };
+  p.tracks[0].items.push(fx);
+  const known = new Set(p.pieces.map((x) => x.uid));
+  const a = anchorItems(p);
+  p.pieces[0] = { ...p.pieces[0], end: 5 };
+  const cut = reanchor(p, a, known);
+  eq("copie : effet du passage coupé retiré (pas déplacé sur la copie)", cut.includes("F") ? 1 : 0, 1);
+  const q = project();
+  q.tracks[0].items.push({ ...newFx("flash", 8, 0.3), uid: "F" });
+  const known2 = new Set(q.pieces.map((x) => x.uid));
+  const b = anchorItems(q);
+  q.pieces.splice(0, 1, { ...q.pieces[0], end: 6 }, { ...q.pieces[0], uid: "A2", start: 6 });
+  const cut2 = reanchor(q, b, known2);
+  eq("vraie coupe : effet gardé sur le nouveau morceau", cut2.includes("F") ? 0 : 1, 1);
+  eq("vraie coupe : effet à la même image", at(q, "F"), 8);
+}
 console.log(fails ? `\n${fails} échec(s)` : "\nTout est bon.");
 process.exit(fails ? 1 : 0);

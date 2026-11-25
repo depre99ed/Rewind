@@ -159,6 +159,43 @@ impl Drop for Capture {
 /// Cadence de sortie : un diviseur exact de la fréquence de l'écran, le plus proche du choix.
 /// Ex. écran 100 Hz + 60 demandés → 50 i/s (une image sur deux, parfaitement régulier) ;
 /// 144 Hz → 72 ; 60 Hz → 60. Capturer 60 sur un écran 100 Hz donnait des images irrégulières.
+/// Clé du repli d'encodage : l'encodeur et les cartes graphiques avec leur version de pilote (une mise à jour du
+/// pilote fait retenter le mode sans copie).
+fn fallback_key(encoder: &str) -> String {
+    let mut gpus: Vec<String> = (0..8)
+        .filter_map(|i| {
+            let v = util::reg_values(&format!(r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{{4d36e968-e325-11ce-bfc1-08002be10318}}\{i:04}"));
+            v.get("DriverDesc").map(|d| format!("{d} {}", v.get("DriverVersion").cloned().unwrap_or_default()))
+        })
+        .collect();
+    gpus.sort();
+    format!("{encoder}|{}", gpus.join("|"))
+}
+
+fn fallback_file() -> PathBuf {
+    util::data_dir().join("encodeur-repli.json")
+}
+
+/// Niveau de repli mémorisé pour cette clé (0 s'il n'y en a pas, s'il a plus de 30 jours, ou pour une autre clé).
+fn load_fallback(key: &str) -> u8 {
+    let Ok(text) = fs::read_to_string(fallback_file()) else { return 0 };
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    let fresh = v["since"].as_f64().is_some_and(|t| util::now() - t < 30.0 * 86_400.0);
+    if v["key"].as_str() == Some(key) && fresh { v["level"].as_u64().unwrap_or(0).min(1) as u8 } else { 0 }
+}
+
+fn save_fallback(key: &str, level: u8) {
+    // Déjà mémorisé (et encore valable) : on garde la date d'origine, pour retenter le mode sans copie au bout
+    // de 30 jours même si la copie marche à chaque lancement
+    if key.is_empty() || load_fallback(key) == level {
+        return;
+    }
+    let v = serde_json::json!({ "key": key, "level": level, "since": util::now() });
+    if fs::write(fallback_file(), v.to_string()).is_ok() {
+        log::info!("mode « copie des images » mémorisé pour {}", key.split('|').next().unwrap_or(""));
+    }
+}
+
 pub fn pick_fps(wanted: u32, refresh: u32) -> u32 {
     if !(24..=360).contains(&refresh) {
         return wanted;
@@ -178,6 +215,11 @@ pub fn pick_fps(wanted: u32, refresh: u32) -> u32 {
             best = f;
             best_diff = diff;
         }
+    }
+    // Aucun diviseur proche (fréquence « bizarre » comme 143 ou 119 Hz) : la cadence demandée plutôt que
+    // d'enregistrer 2,4 fois plus d'images que voulu (audit 2026-11-25)
+    if best > wanted + wanted / 3 {
+        return wanted;
     }
     best
 }
@@ -241,6 +283,8 @@ pub struct Recorder {
     /// 2 = processeur. Monte quand l'encodeur plante deux fois avant la 1re image (AMD RX 7600,
     /// 2026-11-18 : AMF « SubmitInput() failed with error 18 » sur les textures de la capture).
     fallback: u8,
+    /// Encodeur + carte graphique + pilote pour lesquels `fallback` a été chargé (vide : à relire)
+    fallback_key: String,
     early_crashes: u32,
     /// Dernier grand ménage (mémoire RAM non listée, dossiers de session) : toutes les 5 s suffisent
     last_sweep: Instant,
@@ -306,6 +350,7 @@ impl Recorder {
             sessions: VecDeque::new(),
             hold_from: None,
             fallback: 0,
+            fallback_key: String::new(),
             early_crashes: 0,
             last_sweep: Instant::now(),
             lock_wait: 0.0,
@@ -417,6 +462,7 @@ impl Recorder {
             self.stop_capture();
             self.failures = 0;
             self.fallback = 0;
+            self.fallback_key.clear();
             self.early_crashes = 0;
             self.next_retry = Instant::now();
         }
@@ -499,7 +545,9 @@ impl Recorder {
                 );
                 log::warn!("{}", self.error);
                 crashed = true;
-                early = !c.got_video && c.encoder != "libx264";
+                // Seul le FFmpeg de l'IMAGE juge l'encodeur : une panne du son ne doit pas le déclasser (audit
+                // Windows 10 / AMD du 2026-11-25)
+                early = which == "image" && !c.got_video && c.encoder != "libx264";
             }
         }
         if crashed {
@@ -552,6 +600,9 @@ impl Recorder {
             }
             if self.segments.len() > before {
                 c.last_video = Instant::now();
+                if !c.got_video && self.fallback == 1 {
+                    save_fallback(&self.fallback_key, 1);
+                }
                 c.got_video = true;
                 self.early_crashes = 0;
                 self.error.clear();
@@ -734,7 +785,20 @@ impl Recorder {
         let tools = ffmpeg::tools()?;
         let s = self.settings.clone();
         let (mut fps, mut res, mut bitrate) = s.effective_video();
-        let encoder = if self.fallback >= 2 { "libx264".to_string() } else { ffmpeg::pick_encoder(&s.encoder) };
+        // Repli mémorisé : un encodeur qui a déjà refusé les images de la capture sur ce PC (même carte, même
+        // pilote) repart directement en « copie des images ». Avant, il plantait deux fois à chaque lancement et à
+        // chaque réglage changé : trou au début du tampon et cadre de capture qui clignote (Windows 10 + AMD d'un
+        // ami, 2026-11-25). Le processeur (niveau 2) n'est jamais mémorisé : la carte est retentée au lancement.
+        let wanted_encoder = ffmpeg::pick_encoder(&s.encoder);
+        let key = fallback_key(&wanted_encoder);
+        if self.fallback_key != key {
+            self.fallback = load_fallback(&key);
+            if self.fallback > 0 {
+                log::info!("{wanted_encoder} : copie des images reprise directement (mémorisée sur ce PC pour ce pilote)");
+            }
+            self.fallback_key = key;
+        }
+        let encoder = if self.fallback >= 2 { "libx264".to_string() } else { wanted_encoder };
         if encoder == "libx264" && s.encoder != "libx264" {
             // Pas d'encodeur matériel : on protège le processeur (petit PC)
             fps = fps.min(30);
@@ -1592,6 +1656,14 @@ mod tests {
         assert_eq!(pick_fps(60, 60), 60);
         assert_eq!(pick_fps(60, 0), 60);
         assert_eq!(pick_fps(30, 165), 33);
+        // Fréquences lues arrondies vers le bas (143,98 Hz → 143) : jamais 143 i/s pour 60 demandées
+        assert_eq!(pick_fps(60, 143), 60);
+        assert_eq!(pick_fps(60, 119), 60);
+        assert_eq!(pick_fps(60, 239), 60);
+        assert_eq!(util::normalize_refresh(143), 144);
+        assert_eq!(util::normalize_refresh(59), 60);
+        assert_eq!(util::normalize_refresh(164), 165);
+        assert_eq!(util::normalize_refresh(100), 100);
     }
 
     #[test]

@@ -100,6 +100,8 @@ export type Settings = {
   theme: "dark" | "light" | string;
   accent: string;
   animations: boolean;
+  /** Animation d'ouverture (l'icône en caractères lumineux, à la première ouverture de la fenêtre) */
+  intro: boolean;
   density: "comfortable" | "compact" | string;
   webhooks: { name: string; url: string }[];
   discord_max_mb: number;
@@ -264,6 +266,10 @@ export const api = {
   /** Rapport de diagnostic complet ; `copy` = dans le presse-papiers, `save` = dans un fichier (affiché dans l'Explorateur). */
   diagnosticReport: (copy: boolean, save: boolean) => invoke<DiagnosticOut>("diagnostic_report", { copy, save }),
   quit: () => invoke<void>("quit_app"),
+  /** Animation d'ouverture : vrai une seule fois par lancement de Rewind (la fenêtre est recréée à chaque ouverture). */
+  introClaim: () => invoke<boolean>("intro_claim"),
+  /** Animation d'ouverture : petit « tick » de la lettre n° i de « rewind » (volume des sons de Rewind). */
+  introKey: (i: number) => invoke<void>("intro_key", { i }),
   // Partage entre amis
   discordContext: (view: string) => invoke<void>("discord_context", { view }),
   friendsView: () => invoke<FriendsView>("friends_view"),

@@ -1,0 +1,9 @@
+Sons de l'animation d'ouverture (intro-tick-1/2/3.pcm : PCM 16 bits, mono, 48 kHz)
+
+Source : « Interface Sounds » 1.0 de Kenney (www.kenney.nl), fichiers tick_001, tick_002 et tick_004,
+convertis depuis l'OGG d'origine sans autre modification.
+https://kenney.nl/assets/interface-sounds
+
+Licence : Creative Commons Zero (CC0 1.0), domaine public.
+http://creativecommons.org/publicdomain/zero/1.0/
+Libre d'usage personnel, éducatif et commercial ; créditer Kenney n'est pas obligatoire. Merci Kenney.

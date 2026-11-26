@@ -1393,6 +1393,85 @@ fn discord_context(view: String) {
     amis::set_focus(view == "friends");
 }
 
+/// Animation d'ouverture : jouée une seule fois par lancement de Rewind. La page ne peut pas s'en
+/// souvenir seule, car la fenêtre principale est détruite quand on la ferme puis recréée.
+static INTRO_CLAIMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command(async)]
+fn intro_claim() -> bool {
+    !INTRO_CLAIMED.swap(true, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Animation d'ouverture : « rewind » se tape avec de petits ticks (Kenney « Interface Sounds », CC0,
+/// voir sons/LICENCE.txt). PCM 16 bits mono 48 kHz, intégré au programme.
+const INTRO_TICKS: [&[u8]; 3] = [
+    include_bytes!("../sons/intro-tick-1.pcm"),
+    include_bytes!("../sons/intro-tick-2.pcm"),
+    include_bytes!("../sons/intro-tick-3.pcm"),
+];
+
+/// Fichier WAV d'un tick au volume des sons de Rewind (créé une fois, comme les sons de clip).
+fn intro_tick_file(i: usize, volume: u32) -> PathBuf {
+    let k = i % INTRO_TICKS.len();
+    let path = util::data_dir().join(format!("son-intro-{k}-{volume}.wav"));
+    if !path.is_file() {
+        let _ = std::fs::write(&path, intro_tick_wav(k, volume));
+    }
+    path
+}
+
+fn intro_tick_wav(k: usize, volume: u32) -> Vec<u8> {
+    let amp = volume.min(100) as f64 / 100.0 * 0.7;
+    let pcm = INTRO_TICKS[k % INTRO_TICKS.len()];
+    let samples: Vec<i16> = pcm.chunks_exact(2).map(|b| (i16::from_le_bytes([b[0], b[1]]) as f64 * amp) as i16).collect();
+    let rate = 48_000u32;
+    let data_len = (samples.len() * 2) as u32;
+    let mut wav: Vec<u8> = Vec::with_capacity(44 + data_len as usize);
+    wav.extend(b"RIFF");
+    wav.extend((36 + data_len).to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend(1u16.to_le_bytes());
+    wav.extend(1u16.to_le_bytes());
+    wav.extend(rate.to_le_bytes());
+    wav.extend((rate * 2).to_le_bytes());
+    wav.extend(2u16.to_le_bytes());
+    wav.extend(16u16.to_le_bytes());
+    wav.extend(b"data");
+    wav.extend(data_len.to_le_bytes());
+    for s in samples {
+        wav.extend(s.to_le_bytes());
+    }
+    wav
+}
+
+#[cfg(test)]
+mod intro_tests {
+    #[test]
+    fn ticks_de_l_intro_valides() {
+        for k in 0..super::INTRO_TICKS.len() {
+            let wav = super::intro_tick_wav(k, 60);
+            assert_eq!(&wav[0..4], b"RIFF");
+            assert_eq!(&wav[8..16], b"WAVEfmt ");
+            let data_len = u32::from_le_bytes(wav[40..44].try_into().unwrap()) as usize;
+            assert_eq!(wav.len(), 44 + data_len);
+            assert!(data_len > 1000, "tick {k} trop court");
+        }
+        // Volume 0 : silence complet
+        assert!(super::intro_tick_wav(0, 0)[44..].iter().all(|b| *b == 0));
+    }
+}
+
+/// Animation d'ouverture : joue le tick de la lettre n° `i` (rien si le volume des sons est à 0).
+#[tauri::command(async)]
+fn intro_key(state: State<AppState>, i: u32) {
+    let volume = state.settings.lock().sound_volume;
+    if volume == 0 {
+        return;
+    }
+    play_file(&intro_tick_file(i as usize, volume));
+}
+
 #[tauri::command(async)]
 fn friends_view() -> amis::View {
     amis::snapshot()
@@ -3457,6 +3536,8 @@ pub fn run() {
             share_discord,
             friends_view,
             discord_context,
+            intro_claim,
+            intro_key,
             friends_enable,
             friends_disable,
             friends_rename,

@@ -20,6 +20,8 @@ class AppState {
   settingsSection = $state("video");
   /** Fenêtre d'accueil affichée (premier démarrage ou « Revoir l'accueil ») */
   showWelcome = $state(false);
+  /** Animation d'ouverture affichée (première ouverture après le lancement, ou « Revoir » dans Apparence) */
+  showIntro = $state(false);
   /** Jeux lancés en administrateur (relu toutes les 5 s par la barre de gauche) */
   adminInput = $state<import("./api").AdminInput | null>(null);
   openClip = $state<Clip | null>(null);

@@ -347,6 +347,8 @@ pub struct Settings {
     pub theme: String,
     pub accent: String,
     pub animations: bool,
+    /// Animation d'ouverture : l'icône en caractères lumineux, à la première ouverture de la fenêtre
+    pub intro: bool,
     pub density: String,
     // --- Partage
     pub webhooks: Vec<Webhook>,
@@ -428,6 +430,7 @@ impl Default for Settings {
             theme: "dark".into(),
             accent: "#c8f031".into(),
             animations: true,
+            intro: true,
             density: "comfortable".into(),
             webhooks: Vec::new(),
             discord_max_mb: 20,

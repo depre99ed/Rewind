@@ -608,6 +608,13 @@
                 <div class="lbl"><strong>{t("Animations")}</strong><span>{t("Transitions et aperçus animés.")}</span></div>
                 <span class="switch"><input type="checkbox" checked={s.animations} onchange={(e) => app.patch((x) => (x.animations = e.currentTarget.checked))} /><span></span></span>
               </div>
+              <div class="item">
+                <div class="lbl"><strong>{t("Animation d'ouverture")}</strong><span>{t("L'icône Rewind en caractères lumineux, à la première ouverture de la fenêtre après le lancement (environ 8 s, un clic pour passer). Coupée aussi quand les animations sont désactivées.")}</span></div>
+                <div class="pair">
+                  <button class="btn small ghost" onclick={() => (app.showIntro = true)}>{t("Revoir")}</button>
+                  <span class="switch"><input type="checkbox" checked={s.intro} onchange={(e) => app.patch((x) => (x.intro = e.currentTarget.checked))} /><span></span></span>
+                </div>
+              </div>
             </div>
             <h3>{t("Langue")}</h3>
             <div class="group">
@@ -715,6 +722,7 @@
   .item { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 62px; padding: 10px 0; }
   .item + .item { border-top: 1px solid var(--line); }
   .lbl { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .pair { display: flex; align-items: center; gap: 14px; flex: none; }
   .lbl span { font-size: 12.5px; color: var(--text-3); }
   .lbl strong { font-weight: 550; }
   .lbl span.warn { color: var(--rec); }

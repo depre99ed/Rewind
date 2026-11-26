@@ -83,7 +83,7 @@ if (import.meta.env.DEV && typeof window !== "undefined" && !inTauri) {
         ),
       },
     },
-    theme: "dark", accent: "#c8f031", animations: true, density: "comfortable", webhooks: [], discord_max_mb: 20, share_enabled: true, share_auto_download: true, discord_presence: true, first_run_done: true, clip_sound: "shutter", clip_sound_name: "", welcome_done: !new URLSearchParams(location.search).has("welcome"), medal_prompt_dismissed: false,
+    theme: "dark", accent: "#c8f031", animations: true, intro: true, density: "comfortable", webhooks: [], discord_max_mb: 20, share_enabled: true, share_auto_download: true, discord_presence: true, first_run_done: true, clip_sound: "shutter", clip_sound_name: "", welcome_done: !new URLSearchParams(location.search).has("welcome"), medal_prompt_dismissed: false,
   };
   const params = new URLSearchParams(location.search);
   if (params.get("theme") === "light") settings.theme = "light";
@@ -191,6 +191,7 @@ if (import.meta.env.DEV && typeof window !== "undefined" && !inTauri) {
         }
         case "engine_log": return "";
         case "hotkeys_pause": return null;
+        case "intro_claim": return params.has("intro");
         case "key_labels": return params.get("azerty") ? { "87": "Z", "65": "Q", "81": "A" } : {};
         case "voice_last": return { at: Date.now() / 1000 - 2, confidence: 0.91, accepted: true };
         // Studio v2 : projets gardés en mémoire pendant l'aperçu

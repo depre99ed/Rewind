@@ -18,7 +18,7 @@ const SYNONYMS: Record<string, string> = {
   notif: "son sound bruit notification bandeau banner",
   overlay: "touches keys clavier keyboard affichage",
   share: "discord webhook partage share envoyer send",
-  look: "thème theme couleur color colour accent sombre dark clair light animation langue language",
+  look: "thème theme couleur color colour accent sombre dark clair light animation langue language ouverture opening intro lancement launch logo icône icon",
   general: "démarrage startup windows mise à jour update version accueil welcome",
   diag: "rapport report journal log bug problème problem",
 };

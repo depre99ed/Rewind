@@ -15,6 +15,7 @@
   import SettingsView from "$lib/components/SettingsView.svelte";
   import Toasts from "$lib/components/Toasts.svelte";
   import Welcome from "$lib/components/Welcome.svelte";
+  import Intro from "$lib/components/Intro.svelte";
 
   let ready = $state(false);
   // Présence Discord : la page affichée (« Monte une vidéo dans le Studio »…)
@@ -36,6 +37,12 @@
       if (ids) await app.openStudio(ids.split(",").map((i) => app.clips.find((c) => c.id === "m" + i)!).filter(Boolean));
       const open = q.get("open");
       if (open) app.openClip = app.clips.find((c) => c.id === "m" + open) ?? null;
+    }
+    // Animation d'ouverture : seulement la première fois que la fenêtre s'ouvre après le lancement de
+    // Rewind (Rust s'en souvient : la fenêtre est recréée à chaque ouverture). Coupée avec les animations.
+    const s = app.settings;
+    if (s && s.intro !== false && s.animations && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      app.showIntro = await api.introClaim().catch(() => false);
     }
     ready = true;
     // Premier démarrage : la fenêtre d'accueil (import Medal, dossier, raccourcis, qualité, options)
@@ -78,6 +85,9 @@
   {/if}
   {#if ready && app.showWelcome && app.settings}
     <Welcome onclose={() => (app.showWelcome = false)} />
+  {/if}
+  {#if app.showIntro}
+    <Intro ondone={() => (app.showIntro = false)} />
   {/if}
   <Toasts />
 </div>

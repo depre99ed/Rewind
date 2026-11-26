@@ -15,6 +15,7 @@ Guide pour compiler, tester et comprendre le code. Pour la présentation de l'ap
 | Mises à jour | `src-tauri/src/update.rs` | Recherche et installation signées depuis GitHub Releases |
 | Veille | `src-tauri/src/watchdog.rs` | Détecte une fenêtre figée, écrit une ligne de journal et une image mémoire `gel-*.dmp` |
 | Interface | `src/lib/components/` | Svelte 5. Verre liquide dans `src/lib/glass.ts`, jetons de style dans `src/lib/styles.css` |
+| Animation d'ouverture | `src/lib/intro/ascii-intro.ts`, `src/lib/components/Intro.svelte` | L'icône en caractères lumineux (WebGL 2), une fois par lancement (commande `intro_claim`), désactivable dans Réglages › Apparence |
 
 Deux règles à connaître :
 
@@ -68,6 +69,9 @@ Tests de bout en bout. **Toujours** mettre `REWIND_DATA_DIR` vers un dossier de 
 | `rewind --check-update <rapport.json> [--download]` | Contrôle le canal GitHub réel, télécharge et vérifie la signature sans rien installer |
 
 Traductions : `node tools/check-i18n.mjs` vérifie que chaque phrase de l'interface a sa version anglaise.
+
+Animation d'ouverture : avec `npm run dev` lancé, `node tools/intro-frames.mjs intro.mp4` la filme image par image
+(`--at 0.5,2.0` pour quelques images seulement, `--dpr 1.5` pour un écran à 150 %).
 
 Gel de la fenêtre : si Rewind écrit « interface bloquée » dans son journal, il a aussi enregistré une image mémoire
 `gel-*.dmp` dans `%LOCALAPPDATA%\com.rewind.app\`. Elle se lit avec WinDbg : `cdb -z gel.dmp -c "~*k 25; q"`.

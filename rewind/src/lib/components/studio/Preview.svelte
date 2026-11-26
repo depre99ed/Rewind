@@ -135,13 +135,16 @@
       el.muted = true;
       return;
     }
-    el.muted = false;
     const stems = stemsOf(p);
     if (!stems?.length) {
-      mixer.set(el, p.volume * fade);
+      // Clip coupé (0 %) : lecteur muet, en plus du volume à 0 (rien ne passe, même pendant une transition)
+      const v = p.volume * fade;
+      el.muted = p.volume <= 0.001;
+      mixer.set(el, v);
       return;
     }
     // Pistes séparées : la vidéo se tait, chaque piste joue avec son volume
+    el.muted = true;
     mixer.set(el, 0);
     const target = studio.srcTime(idx, t);
     const rate = speedAt(p, target);
@@ -159,7 +162,9 @@
         a.src = url;
       }
       if (Math.abs(a.playbackRate - rate) > 0.01) a.playbackRate = rate;
-      mixer.set(a, p.volume * (p.trackVolumes[j] ?? 1) * fade);
+      const tv = p.volume * (p.trackVolumes[j] ?? 1);
+      a.muted = tv <= 0.001;
+      mixer.set(a, tv * fade);
       if (a.readyState < 1) return;
       const drift = Math.abs(a.currentTime - target);
       if (play) {

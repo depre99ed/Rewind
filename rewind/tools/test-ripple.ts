@@ -1,6 +1,7 @@
 // Test du suivi de l'image (ripple.ts) : `npm run test:ripple`
 import { newProject, normalizePiece, newText, newAudio, newFx, layout, localAt, outLen, speedAt, srcAt, mediaMotion, mergePunches, punchAt, type Project } from "../src/lib/studio/model";
 import { anchorItems, reanchor, remapZoom } from "../src/lib/studio/ripple";
+import { killPassages } from "../src/lib/studio/killfx";
 
 let fails = 0;
 const eq = (name: string, got: number, want: number, tol = 0.01) => {
@@ -189,6 +190,29 @@ const at = (p: Project, uid: string) => p.tracks.flatMap((t) => t.items as { uid
   const cut2 = reanchor(q, b, known2);
   eq("vraie coupe : effet gardé sur le nouveau morceau", cut2.includes("F") ? 0 : 1, 1);
   eq("vraie coupe : effet à la même image", at(q, "F"), 8);
+}
+// 12) « Garder les kills » : passages autour des kills, blancs entre deux kills retirés ; un élément dans un blanc
+//     part, un élément dans un passage gardé suit son image sur le nouveau morceau
+{
+  const o = { before: 2.5, after: 2, cutGaps: true, gap: 6 };
+  const parts = killPassages([1, 8.5], 0, 10, o);
+  eq("kills : deux passages", parts.length, 2, 0);
+  eq("kills : 1er passage fin", parts[0].end, 3);
+  eq("kills : 2e passage début", parts[1].start, 6);
+  eq("kills : 3 s entre deux kills, rien ne change", killPassages([3, 6], 0, 20, o).length, 1, 0);
+  eq("kills : écart sous le minimum choisi (8 s), pas de coupe", killPassages([1, 8.5], 0, 10, { ...o, gap: 8 }).length, 1, 0);
+  eq("kills : blancs non coupés si l'option est décochée", killPassages([1, 18], 0, 20, { ...o, cutGaps: false }).length, 1, 0);
+  eq("kills : marges choisies (1 s avant)", killPassages([5], 0, 10, { ...o, before: 1 })[0].start, 4);
+  eq("kills : bornés au morceau", killPassages([0.5], 0.2, 10, o)[0].start, 0.2);
+  const p = project();
+  p.tracks[0].items.push({ ...newFx("flash", 8, 0.3), uid: "F" });
+  const known = new Set(p.pieces.map((x) => x.uid));
+  const a = anchorItems(p);
+  p.pieces.splice(0, 1, ...parts.map((r, j) => ({ ...p.pieces[0], uid: j ? "A2" : "A", start: r.start, end: r.end })));
+  const cut = reanchor(p, a, known);
+  eq("kills : texte dans le blanc retiré", cut.includes("E") ? 1 : 0, 1);
+  eq("kills : effet suit son image (3 s + 2 s)", at(p, "F"), 5);
+  eq("kills : texte du clip B recalé (7 s + 2 s)", at(p, "T"), 9);
 }
 console.log(fails ? `\n${fails} échec(s)` : "\nTout est bon.");
 process.exit(fails ? 1 : 0);

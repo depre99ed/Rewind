@@ -8,7 +8,7 @@ import {
   localAt, normalizePiece, outLen, projectTotal, srcAt, uid,
 } from "./model";
 import { anchorItems, reanchor, remapZoom, timingKey, type Anchor } from "./ripple";
-import { killTimes, momentsOf, type KillFx, type Moment } from "./killfx";
+import { KEEP_KILLS_DEFAULT, killPassages, killTimes, momentsOf, type KeepKills, type KillFx, type Moment } from "./killfx";
 
 export const TRANSITIONS: { id: Transition; label: string; hint: string }[] = [
   { id: "none", label: "Aucune", hint: "Coupe sèche" },
@@ -659,32 +659,53 @@ class StudioStore {
   killPieces(): number {
     return this.project.pieces.filter((p) => p.kind === "clip" && killTimes(p, media.feed[p.path]).length > 0).length;
   }
-  /**
-   * « Garder les kills » (2026-11-25) : chaque clip ne garde que le passage de ses kills, de 2,5 s avant le premier
-   * à 2 s après le dernier (mêmes marges que « Raccourcir » dans les Clips). Les clips sans kill ne bougent pas.
-   * Une seule action pour Ctrl+Z ; les textes et effets liés à l'image suivent (ceux d'un passage retiré partent).
-   */
-  trimAroundKills(): number {
-    const plan = new Map<string, { start: number; end: number }>();
+  /** Réglages de « Garder les kills » (gardés d'une fois sur l'autre) */
+  keepKills = $state<KeepKills>(loadKeepKills());
+  setKeepKills(patch: Partial<KeepKills>) {
+    this.keepKills = { ...this.keepKills, ...patch };
+    try { localStorage.setItem(KEEP_KILLS_KEY, JSON.stringify(this.keepKills)); } catch {}
+  }
+  /** Ce que « Garder les kills » ferait avec ces réglages : passages par morceau, blancs coupés, secondes retirées. */
+  keepKillsPlan(o: KeepKills = this.keepKills) {
+    const plan = new Map<string, { start: number; end: number }[]>();
+    let gaps = 0;
     for (const p of this.project.pieces) {
       if (p.kind !== "clip") continue;
       const kills = killTimes(p, media.feed[p.path]);
       if (!kills.length) continue;
-      const start = Math.round(Math.max(0, kills[0] - 2.5) * 1000) / 1000;
-      const end = Math.round(Math.min(p.srcDur, kills[kills.length - 1] + 2) * 1000) / 1000;
-      if (end - start < 0.5 || (Math.abs(start - p.start) < 0.05 && Math.abs(end - p.end) < 0.05)) continue;
-      plan.set(p.uid, { start, end });
+      const parts = killPassages(kills, p.start, p.end, o);
+      if (!parts.length) continue;
+      if (parts.length === 1 && Math.abs(parts[0].start - p.start) < 0.05 && Math.abs(parts[0].end - p.end) < 0.05) continue;
+      plan.set(p.uid, parts);
+      gaps += parts.length - 1;
     }
+    const pieces = this.project.pieces.flatMap((x) => (plan.has(x.uid) ? slicePiece(x, plan.get(x.uid)!, o) : [x]));
+    const after = layout(pieces).total;
+    return { plan, gaps, pieces, before: this.lay.total, after };
+  }
+  /**
+   * « Garder les kills » (2026-11-26, réglable à la demande de l'utilisateur) : chaque clip ne garde que ses kills,
+   * avec les marges choisies avant / après ; les blancs ENTRE deux kills ne sont retirés que si l'option est
+   * cochée et que les kills sont séparés d'au moins le blanc minimum choisi (3 s d'écart : rien ne change).
+   * Transition choisie à ces coupes. Une seule action pour Ctrl+Z ; textes et effets liés à l'image suivent.
+   */
+  trimAroundKills(o: KeepKills = this.keepKills): number {
+    const { plan, gaps } = this.keepKillsPlan(o);
     if (!plan.size) {
       this.say(this.killPieces() ? "Les clips sont déjà serrés autour de leurs kills" : "Aucun kill trouvé dans ces clips");
       return 0;
     }
     const before = this.total;
-    this.edit((pr) => (pr.pieces = pr.pieces.map((x) => (plan.has(x.uid) ? { ...x, ...plan.get(x.uid)! } : x))));
+    this.edit((pr) => (pr.pieces = pr.pieces.flatMap((x) => (plan.has(x.uid) ? slicePiece(x, plan.get(x.uid)!, o) : [x]))));
     this.seek(0);
     const saved = Math.max(0, before - this.total);
-    this.say(t(plan.size > 1 ? "{n} clips raccourcis autour de leurs kills · {s} retirées · Ctrl+Z pour annuler" : "{n} clip raccourci autour de ses kills · {s} retirées · Ctrl+Z pour annuler", { n: plan.size, s: fmtTime(saved) }));
-    return plan.size;
+    const n = plan.size;
+    this.say(
+      gaps
+        ? t(n > 1 ? "{n} clips resserrés sur leurs kills · {g} · {s} en moins · Ctrl+Z pour annuler" : "{n} clip resserré sur ses kills · {g} · {s} en moins · Ctrl+Z pour annuler", { n, g: t(gaps > 1 ? "{n} blancs retirés" : "{n} blanc retiré", { n: gaps }), s: fmtTime(saved) })
+        : t(n > 1 ? "{n} clips raccourcis autour de leurs kills · {s} retirées · Ctrl+Z pour annuler" : "{n} clip raccourci autour de ses kills · {s} retirées · Ctrl+Z pour annuler", { n, s: fmtTime(saved) }),
+    );
+    return n;
   }
 
   // ----- couper / supprimer / dupliquer (élément choisi, sinon morceau sous la tête) -----
@@ -1172,11 +1193,43 @@ function playerName(): string {
 }
 
 /** Rampe gardée si elle tombe dans [a, b] après une coupe. */
+const KEEP_KILLS_KEY = "rewind.studio.keepKills";
+function loadKeepKills(): KeepKills {
+  try {
+    const v = JSON.parse(localStorage.getItem(KEEP_KILLS_KEY) ?? "null");
+    if (v && typeof v === "object") return { ...KEEP_KILLS_DEFAULT, ...v };
+  } catch {}
+  return { ...KEEP_KILLS_DEFAULT };
+}
+
 function rampIn(p: Piece, a: number, b: number) {
   return p.ramp && p.ramp.at > a && p.ramp.at < b ? p.ramp : null;
 }
 function killRampsIn(p: Piece, a: number, b: number) {
   return (p.killRamps ?? []).filter((r) => r.at > a && r.at < b);
+}
+
+/**
+ * Un morceau découpé en passages (temps source) : le premier garde l'identité du morceau (les éléments accrochés
+ * à l'image le retrouvent), seul le dernier garde la transition vers le morceau suivant ; entre les passages,
+ * la transition choisie dans les réglages (coupe sèche par défaut). Zoom recalé sur le début de chaque passage, comme split().
+ */
+function slicePiece(p: Piece, parts: { start: number; end: number }[], o: Pick<KeepKills, "transition" | "transitionDur">): Piece[] {
+  return parts.map((r, j) => {
+    const la = localAt(p, r.start) ?? 0;
+    const lb = localAt(p, r.end) ?? outLen(p);
+    return {
+      ...p,
+      uid: j === 0 ? p.uid : uid(),
+      start: r.start,
+      end: r.end,
+      transition: j === parts.length - 1 ? p.transition : o.transition,
+      transitionDur: j === parts.length - 1 ? p.transitionDur : o.transitionDur,
+      ramp: rampIn(p, r.start, r.end),
+      killRamps: killRampsIn(p, r.start, r.end),
+      zoom: p.zoom.filter((k) => k.t >= la - 1e-6 && k.t <= lb + 1e-6).map((k) => ({ ...k, t: k.t - la })),
+    };
+  });
 }
 
 function kfAt(kf: Kf[], prop: string, t: number, fallback: number) {

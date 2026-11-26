@@ -50,17 +50,22 @@ class Mixer {
   /** Volume d'un lecteur (1 = 100 %, jusqu'à 400 %). Sans WebAudio : volume du lecteur, limité à 100 %. */
   set(el: HTMLMediaElement, v: number) {
     const vol = Math.max(0, Math.min(4, Number.isFinite(v) ? v : 0));
-    const g = this.gain(el);
+    const g = this.gain(el, vol);
     if (g) {
       if (el.volume !== 1) el.volume = 1;
-      if (Math.abs(g.gain.value - vol) > 0.002) g.gain.setTargetAtTime(vol, g.context.currentTime, 0.015);
+      if (Math.abs(g.gain.value - vol) <= 0.002) return;
+      // Silence : tout de suite (une rampe laissait passer le son d'un clip coupé au début d'une transition)
+      if (vol <= 0.001) {
+        g.gain.cancelScheduledValues(g.context.currentTime);
+        g.gain.setValueAtTime(0, g.context.currentTime);
+      } else g.gain.setTargetAtTime(vol, g.context.currentTime, 0.015);
     } else {
       const c = Math.min(1, vol);
       if (Math.abs(el.volume - c) > 0.002) el.volume = c;
     }
   }
 
-  private gain(el: HTMLMediaElement): GainNode | null {
+  private gain(el: HTMLMediaElement, initial: number): GainNode | null {
     const g = this.gains.get(el);
     if (g) return g;
     // Seulement un lecteur chargé en mode CORS (sinon WebAudio rendrait du silence)
@@ -68,6 +73,8 @@ class Mixer {
     try {
       const src = this.ctx.createMediaElementSource(el);
       const node = this.ctx.createGain();
+      // Branché au bon volume d'emblée (un gain neuf vaut 1 : 100 % le temps de la rampe, audible)
+      node.gain.value = initial;
       src.connect(node).connect(this.out);
       this.gains.set(el, node);
       this.routed++;
@@ -105,3 +112,5 @@ export class Ducker {
     this.env = 0;
   }
 }
+
+if (import.meta.env.DEV && typeof window !== "undefined") (window as any).__mixer = mixer;

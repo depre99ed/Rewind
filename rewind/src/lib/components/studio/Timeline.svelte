@@ -6,7 +6,9 @@
     ArrowLeftToLine, ArrowRightToLine, Crosshair,
   } from "@lucide/svelte";
   import { untrack } from "svelte";
-  import { studio, media, fmtTime } from "$lib/studio/store.svelte";
+  import { studio, media, fmtTime, TRANSITIONS } from "$lib/studio/store.svelte";
+  import { KEEP_KILLS_DEFAULT } from "$lib/studio/killfx";
+  import Slider from "./Slider.svelte";
   import { outLen, localAt, srcAt, clampSpeed, fxInfo, isFullBlur, isVariable, hasCurve, type Layer, type AudioItem, type Piece, type Track } from "$lib/studio/model";
   import { momentTone } from "$lib/moments";
   import { fontOf } from "$lib/studio/fonts";
@@ -53,6 +55,20 @@
 
   const layerTracks = $derived(P.tracks.filter((tr) => tr.kind === "layer"));
   const killPieces = $derived(studio.killPieces());
+  // Réglages de « Garder les kills » : panneau ouvert sur le bouton, résultat calculé en direct
+  let kkOpen = $state(false);
+  let kkEl: HTMLElement | undefined = $state();
+  const kk = $derived(studio.keepKills);
+  const kkPlan = $derived(kkOpen ? studio.keepKillsPlan(kk) : { plan: new Map(), gaps: 0, before: 0, after: 0 });
+  const sec = (v: number) => `${v.toFixed(1)} s`;
+  $effect(() => {
+    if (!kkOpen) return;
+    const down = (e: PointerEvent) => { if (kkEl && !kkEl.contains(e.target as Node)) kkOpen = false; };
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); kkOpen = false; } };
+    window.addEventListener("pointerdown", down, true);
+    window.addEventListener("keydown", key, true);
+    return () => { window.removeEventListener("pointerdown", down, true); window.removeEventListener("keydown", key, true); };
+  });
   const audioTracks = $derived(P.tracks.filter((tr) => tr.kind === "audio"));
 
   // Graduations
@@ -493,7 +509,44 @@
     <button class="btn icon small ghost" onclick={() => studio.trimToPlayhead("start")} disabled={studio.indexAt(studio.t) < 0} title={t("Retirer le début du morceau, jusqu'à la tête de lecture (Q)")}><ArrowLeftToLine size={15} /></button>
     <button class="btn small ghost" onclick={() => studio.split()} title={t("Couper à la tête de lecture (S)")}><Scissors size={15} />{t("Couper")}</button>
     <button class="btn icon small ghost" onclick={() => studio.trimToPlayhead("end")} disabled={studio.indexAt(studio.t) < 0} title={t("Retirer la fin du morceau, après la tête de lecture (W)")}><ArrowRightToLine size={15} /></button>
-    <button class="btn small ghost" onclick={() => studio.trimAroundKills()} disabled={!killPieces} title={t("Raccourcir chaque clip autour de ses kills : 2,5 s avant le premier, 2 s après le dernier")}><Crosshair size={15} />{t("Garder les kills")}</button>
+    <span class="kkwrap" bind:this={kkEl}>
+      <button class="btn small ghost" class:on={kkOpen} onclick={() => (kkOpen = !kkOpen)} disabled={!killPieces} aria-expanded={kkOpen} title={t("Ne garder que les kills : marges, blancs entre les kills et transitions réglables")}><Crosshair size={15} />{t("Garder les kills")}<ChevronDown size={13} /></button>
+      {#if kkOpen}
+        <div class="kkpop" role="dialog" aria-label={t("Garder les kills")}>
+          <div class="kkcol">
+            <span class="kkh">{t("Autour de chaque kill")}</span>
+            <Slider label={t("Avant")} value={kk.before} min={0.5} max={8} step={0.5} def={KEEP_KILLS_DEFAULT.before} format={sec} oninput={(v) => studio.setKeepKills({ before: v })} />
+            <Slider label={t("Après")} value={kk.after} min={0.5} max={8} step={0.5} def={KEEP_KILLS_DEFAULT.after} format={sec} oninput={(v) => studio.setKeepKills({ after: v })} />
+            <label class="kkrow"><span>{t("Couper les blancs entre deux kills")}</span><span class="switch"><input type="checkbox" checked={kk.cutGaps} onchange={(e) => studio.setKeepKills({ cutGaps: e.currentTarget.checked })} /><span></span></span></label>
+            {#if kk.cutGaps}
+              <Slider label={t("Écart mini")} value={kk.gap} min={3} max={30} step={1} def={KEEP_KILLS_DEFAULT.gap} format={sec} oninput={(v) => studio.setKeepKills({ gap: v })} />
+              <p class="kknote faint">{t("Coupe seulement entre deux kills séparés de plus de {s} ; plus proches, ils restent ensemble.", { s: sec(kk.gap) })}</p>
+            {:else}
+              <p class="kknote faint">{t("Seuls le début et la fin de chaque clip sont raccourcis.")}</p>
+            {/if}
+          </div>
+          <div class="kkcol" class:off={!kk.cutGaps}>
+            <span class="kkh">{t("Transition aux coupes")}</span>
+            <div class="kkchips">{#each TRANSITIONS as tr}<button class="kkchip" class:on={kk.transition === tr.id} disabled={!kk.cutGaps} onclick={() => studio.setKeepKills({ transition: tr.id })} title={t(tr.hint)}>{t(tr.label)}</button>{/each}</div>
+            {#if kk.transition !== "none"}
+              <Slider label={t("Durée")} value={kk.transitionDur} min={0.1} max={1} step={0.1} def={KEEP_KILLS_DEFAULT.transitionDur} format={sec} oninput={(v) => studio.setKeepKills({ transitionDur: v })} />
+            {/if}
+          </div>
+          <div class="kkfoot">
+            <p class="kksum">
+              {#if kkPlan.plan.size}
+                <span class="mono">{fmtTime(kkPlan.before)} → {fmtTime(kkPlan.after)}</span>
+                <span class="faint">{kkPlan.gaps ? t(kkPlan.gaps > 1 ? "{n} blancs retirés" : "{n} blanc retiré", { n: kkPlan.gaps }) : t("aucun blanc entre les kills")}</span>
+              {:else}
+                <span class="faint">{t("Rien à retirer avec ces réglages")}</span>
+              {/if}
+            </p>
+            <button class="btn small ghost" onclick={() => studio.setKeepKills({ ...KEEP_KILLS_DEFAULT })}>{t("Réglages par défaut")}</button>
+            <button class="btn small primary" disabled={!kkPlan.plan.size} onclick={() => { studio.trimAroundKills(); kkOpen = false; }}>{t("Appliquer")}</button>
+          </div>
+        </div>
+      {/if}
+    </span>
     <button class="btn icon small ghost" onclick={() => studio.duplicate()} disabled={!studio.sel || studio.sel.type === "keys"} title={t("Dupliquer (Ctrl+D)")}><CopyPlus size={15} /></button>
     <button class="btn icon small ghost" onclick={() => studio.removeSel()} disabled={!studio.sel} title={t("Supprimer (Suppr)")}><Trash2 size={15} /></button>
     <button class="btn small ghost" onclick={() => studio.freezeFrame()} disabled={studio.indexAt(studio.t) < 0} title={t("Figer l'image à la tête de lecture pendant 2 s")}><Snowflake size={15} />{t("Figer")}</button>
@@ -648,6 +701,22 @@
   .sep { width: 1px; height: 18px; background: var(--line); margin: 0 6px; }
   .hint { flex: 1; text-align: center; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .zoom { width: 90px; }
+  .kkwrap { position: relative; display: inline-flex; }
+  .kkwrap > .btn.on { background: color-mix(in srgb, var(--text) 9%, transparent); }
+  .kkpop { position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 50; width: 560px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; padding: 14px 16px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line-2); box-shadow: var(--shadow); animation: kkin 180ms var(--ease); }
+  @keyframes kkin { from { opacity: 0; transform: translateY(4px); } }
+  @media (prefers-reduced-motion: reduce) { .kkpop { animation: none; } }
+  .kkcol { display: flex; flex-direction: column; gap: 6px; min-width: 0; transition: opacity var(--dur) var(--ease); }
+  .kkcol.off { opacity: 0.45; }
+  .kkh { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+  .kkrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 30px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+  .kkchips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .kkchip { height: 26px; padding: 0 9px; border-radius: 7px; font-size: 12px; color: var(--text-2); background: var(--panel); border: 1px solid var(--line); transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+  .kkchip:hover:not(:disabled) { color: var(--text); border-color: var(--line-2); }
+  .kkchip.on, .kkchip.on:hover { color: var(--hi-ink); background: var(--hi); border-color: var(--hi); }
+  .kknote { margin: 0; font-size: 11.5px; line-height: 1.4; }
+  .kkfoot { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .kksum { flex: 1; margin: 0; display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
   .scroll { position: relative; flex: 1; min-height: 0; overflow: auto; }
   .content { position: relative; min-height: 100%; }
   .ruler { position: sticky; top: 0; z-index: 6; height: 24px; background: var(--bg-2); border-bottom: 1px solid var(--line); cursor: pointer; }

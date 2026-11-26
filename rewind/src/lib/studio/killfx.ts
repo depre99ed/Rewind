@@ -6,7 +6,7 @@
 //    kill feed (+0,1 à 0,2 s, à l'image près). Mesuré sur 12 clips : 35 kills sur 35, aucun en trop.
 //  - clip sans repères (anciens clips, clips Medal) : la détection du kill feed seule.
 import type { Marker } from "../api";
-import type { Piece } from "./model";
+import type { Piece, Transition } from "./model";
 
 /** Repères du jeu qui sont des kills du joueur (pas sa mort, ni une aide, ni une série) */
 export const KILL_KINDS = new Set(["kill", "headshot", "onetap", "knife", "zeus", "collateral"]);
@@ -48,6 +48,35 @@ export function killTimes(p: Piece, feed: number[] | undefined): number[] {
   for (const t of times.sort((a, b) => a - b)) {
     if (t < p.start || t > p.end) continue;
     if (!out.length || t - out[out.length - 1] > 0.05) out.push(t);
+  }
+  return out;
+}
+
+/**
+ * Réglages de « Garder les kills » (choisis au moment de l'appliquer, gardés d'une fois sur l'autre) :
+ * marges avant / après chaque kill, coupe des blancs entre deux kills (seulement s'ils sont séparés d'au moins
+ * `gap` secondes) et transition posée à ces coupes.
+ */
+export type KeepKills = { before: number; after: number; cutGaps: boolean; gap: number; transition: Transition; transitionDur: number };
+export const KEEP_KILLS_DEFAULT: KeepKills = { before: 2.5, after: 2, cutGaps: true, gap: 8, transition: "none", transitionDur: 0.3 };
+
+/**
+ * Passages à garder autour des kills (2026-11-26) : de `before` avant le premier kill à `after` après le dernier.
+ * Entre deux kills séparés d'au moins `gap` secondes (si `cutGaps`), le blanc est retiré (chaque kill garde ses
+ * marges) ; plus proches, rien ne change. Un blanc de moins d'une seconde n'est pas coupé.
+ * Bornés à [start, end] : on ne fait que retirer, jamais rallonger.
+ */
+export function killPassages(kills: number[], start: number, end: number, o: Pick<KeepKills, "before" | "after" | "cutGaps" | "gap"> = KEEP_KILLS_DEFAULT): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  const r = (v: number) => Math.round(v * 1000) / 1000;
+  let prev = -Infinity;
+  for (const k of [...kills].sort((a, b) => a - b)) {
+    const a = r(Math.max(start, k - o.before));
+    const b = r(Math.min(end, k + o.after));
+    const last = out[out.length - 1];
+    if (last && (!o.cutGaps || k - prev < o.gap || a - last.end < 1)) last.end = Math.max(last.end, b);
+    else if (b - a >= 0.05) out.push({ start: a, end: b });
+    prev = k;
   }
   return out;
 }

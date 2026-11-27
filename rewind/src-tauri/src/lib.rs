@@ -1402,18 +1402,22 @@ fn intro_claim() -> bool {
     !INTRO_CLAIMED.swap(true, std::sync::atomic::Ordering::SeqCst)
 }
 
-/// Animation d'ouverture : « rewind » se tape avec de petits ticks (Kenney « Interface Sounds », CC0,
-/// voir sons/LICENCE.txt). PCM 16 bits mono 48 kHz, intégré au programme.
-const INTRO_TICKS: [&[u8]; 3] = [
-    include_bytes!("../sons/intro-tick-1.pcm"),
-    include_bytes!("../sons/intro-tick-2.pcm"),
-    include_bytes!("../sons/intro-tick-3.pcm"),
+/// Animation d'ouverture : un petit tick par lettre de « rewind » (Kenney « Interface Sounds », CC0,
+/// voir sons/LICENCE.txt). PCM 16 bits mono 48 kHz.
+/// Secours seulement : l'interface les joue elle-même (static/intro), pile sur la lettre.
+const INTRO_TICKS: [&[u8]; 6] = [
+    include_bytes!("../sons/intro-key-1.pcm"),
+    include_bytes!("../sons/intro-key-2.pcm"),
+    include_bytes!("../sons/intro-key-3.pcm"),
+    include_bytes!("../sons/intro-key-4.pcm"),
+    include_bytes!("../sons/intro-key-5.pcm"),
+    include_bytes!("../sons/intro-key-6.pcm"),
 ];
 
 /// Fichier WAV d'un tick au volume des sons de Rewind (créé une fois, comme les sons de clip).
 fn intro_tick_file(i: usize, volume: u32) -> PathBuf {
     let k = i % INTRO_TICKS.len();
-    let path = util::data_dir().join(format!("son-intro-{k}-{volume}.wav"));
+    let path = util::data_dir().join(format!("son-intro2-{k}-{volume}.wav"));
     if !path.is_file() {
         let _ = std::fs::write(&path, intro_tick_wav(k, volume));
     }

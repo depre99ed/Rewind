@@ -1,7 +1,9 @@
-Sons de l'animation d'ouverture (intro-tick-1/2/3.pcm : PCM 16 bits, mono, 48 kHz)
+Sons de l'animation d'ouverture (un par lettre de « rewind »)
+- src-tauri/sons/intro-key-1..6.pcm (PCM 16 bits, mono, 48 kHz ; secours joué par Rust)
+- static/intro/intro-key-1..6.wav (les mêmes, en WAV, joués par l'interface)
 
-Source : « Interface Sounds » 1.0 de Kenney (www.kenney.nl), fichiers tick_001, tick_002 et tick_004,
-convertis depuis l'OGG d'origine sans autre modification.
+Source : « Interface Sounds » 1.0 de Kenney (www.kenney.nl), fichiers tick_001, tick_002 et tick_004
+(dans cet ordre, deux fois), convertis depuis l'OGG d'origine, silence de début retiré.
 https://kenney.nl/assets/interface-sounds
 
 Licence : Creative Commons Zero (CC0 1.0), domaine public.

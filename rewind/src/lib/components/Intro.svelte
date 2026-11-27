@@ -7,11 +7,41 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { AsciiIntro, TL, TYPE_TIMES, glitchAt, introLayout } from "$lib/intro/ascii-intro";
   import { api, logFront } from "$lib/api";
+  import { app } from "$lib/state.svelte";
 
   let { ondone }: { ondone: () => void } = $props();
 
+  // Son de frappe joué par l'interface elle-même, au moment exact où la lettre s'affiche (la lecture par
+  // Windows avait un retard audible). Si le navigateur refuse le son sans clic, Rust prend le relais.
+  let audio: AudioContext | null = null;
+  let keys: AudioBuffer[] = [];
+  async function prepareSound() {
+    try {
+      audio = new AudioContext({ latencyHint: "interactive" });
+      keys = await Promise.all(
+        [1, 2, 3, 4, 5, 6].map(async (n) => audio!.decodeAudioData(await (await fetch(`/intro/intro-key-${n}.wav`)).arrayBuffer())),
+      );
+      if (audio.state !== "running") await audio.resume().catch(() => {});
+    } catch {
+      keys = [];
+    }
+  }
+  function playKey(i: number) {
+    const volume = (app.settings?.sound_volume ?? 60) / 100;
+    if (volume <= 0) return;
+    if (audio && audio.state === "running" && keys[i]) {
+      const src = audio.createBufferSource();
+      const gain = audio.createGain();
+      gain.gain.value = volume * 0.7; // même force que la lecture par Rust
+      src.buffer = keys[i];
+      src.connect(gain).connect(audio.destination);
+      src.start();
+    } else {
+      api.introKey(i).catch(() => {});
+    }
+  }
+
   const WORD = "rewind";
-  const NOISE = "#%&@$*+=-:.";
   const GLITCH = "#%&@$*/\\|<>[]{}!?=+~^";
   const mock = typeof window !== "undefined" && !!(window as any).__REWIND_MOCK__;
 
@@ -24,6 +54,25 @@
   let letters = $state(WORD.split("").map((ch) => ({ ch, lime: false })));
   let cursor = $state(false);
   let shake = $state(0);
+  let fly = $state(0);
+  let wordEl: HTMLElement | undefined = $state();
+  // Logo et mot de la barre du haut (là où l'intro se range à la fin)
+  let barLogo = $state({ x: 24, y: 21 });
+  let barWord = $state({ x: 62, y: 21, w: 50 });
+  function measureBar() {
+    const logo = document.querySelector("header .brand svg")?.getBoundingClientRect();
+    const word = document.querySelector("header .brand .word")?.getBoundingClientRect();
+    if (logo && logo.width) barLogo = { x: logo.left + logo.width / 2, y: logo.top + logo.height / 2 };
+    if (word && word.width) barWord = { x: word.left + word.width / 2, y: word.top + word.height / 2, w: word.width };
+    if (engine) engine.dest = barLogo;
+  }
+  let wordBase: { cx: number; cy: number; w: number } | null = null;
+  const flyStyle = $derived.by(() => {
+    if (!fly || !wordBase) return `translateX(${shake}px)`;
+    const sc = 1 + (barWord.w / Math.max(1, wordBase.w) - 1) * fly;
+    return `translate(${(barWord.x - wordBase.cx) * fly}px, ${(barWord.y - wordBase.cy) * fly}px) scale(${sc})`;
+  });
+  const flyOpacity = $derived(1 - Math.max(0, (fly - 0.65) / 0.35));
   let leaving = $state(false);
   let sound = true;
   let ticked = 0;
@@ -39,6 +88,8 @@
     clearTimeout(watchdog);
     engine?.destroy();
     engine = null;
+    audio?.close().catch(() => {});
+    audio = null;
     ondone();
   }
 
@@ -60,21 +111,25 @@
     const r = clamp((t - TL.reveal) / TL.revealDur, 0, 1);
     backdrop = 1 - r * r * (3 - 2 * r);
     typed = TYPE_TIMES.filter((x) => t >= x).length;
-    // Un petit « tick » par lettre (joué par Rust : pas de blocage du son au lancement)
-    while (sound && ticked < typed) api.introKey(ticked++).catch(() => {});
+    // Un son par lettre, à l'image près
+    while (sound && ticked < typed) playKey(ticked++);
     const g = glitchAt(t);
     const k = Math.floor(t * 26);
     letters = WORD.split("").map((ch, i) => {
-      // Au départ en poussière, chaque lettre se brouille puis s'efface, de gauche à droite (comme le vent)
-      const ts = TL.dissolve + 0.02 + i * 0.045;
-      if (t >= ts + 0.16) return { ch: " ", lime: false };
-      if (t >= ts) return { ch: NOISE[(Math.floor(t * 40) + i * 3) % NOISE.length], lime: false };
       // Bug : les lettres sont remplacées par des caractères au hasard, en blanc ou en vert
       if (g > 0 && rnd(k * 7 + i) < 0.55 * g) return { ch: GLITCH[Math.floor(rnd(k * 13 + i * 5) * GLITCH.length)], lime: rnd(k * 3 + i) < 0.4 };
       return { ch, lime: false };
     });
     // Le mot entier saute de côté par moments pendant le bug
     shake = g > 0.2 && rnd(k * 1.9) < 0.35 ? Math.round((rnd(k * 2.3) - 0.5) * 16 * g) : 0;
+    // Fin : le mot file rejoindre « rewind » dans la barre du haut, pendant que l'icône rejoint le logo
+    if (t >= TL.glitch && !wordBase && wordEl) {
+      measureBar();
+      const r = wordEl.getBoundingClientRect();
+      wordBase = { cx: r.left + r.width / 2 - shake, cy: r.top + r.height / 2, w: r.width };
+    }
+    const f = clamp((t - TL.dissolve - 0.05) / 0.75, 0, 1);
+    fly = f * f * (3 - 2 * f);
     const typingEnd = TYPE_TIMES[TYPE_TIMES.length - 1];
     const blinkOn = Math.floor((t - typingEnd) / 0.42) % 2 === 1;
     cursor = t >= TL.typeStart - 0.3 && t < TL.dissolve && (t < typingEnd + 0.1 ? true : g > 0 ? rnd(k * 5.3) < 0.5 : blinkOn);
@@ -123,6 +178,7 @@
           logFront("warn", "animation d'ouverture passée : WebGL 2 indisponible");
           return finish();
         }
+        measureBar();
         if (freeze) {
           sound = false;
           // Captures de vérification (aperçu navigateur seulement) : une image précise à l'instant t
@@ -136,8 +192,11 @@
           return;
         }
         await waitShown(() => alive);
+        // Sons prêts avant le départ (une fois la fenêtre à l'écran)
+        await Promise.race([prepareSound(), new Promise((r) => setTimeout(r, 600))]);
         // Laisse d'abord l'appli se dessiner dessous (fond noir), pour que l'intro parte sans à-coup
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        measureBar();
         if (!alive || !engine) return;
         watchdog = setTimeout(finish, (TL.end + 1.5) * 1000);
         engine.start();
@@ -170,7 +229,7 @@
   <div class="black" style:opacity={backdrop}></div>
   <canvas bind:this={canvas}></canvas>
   <div class="line" style:top="{lay.wordY}px" style:font-size="{lay.wordSize}px">
-    <span class="word" style:transform="translateX({shake}px)">
+    <span class="word" bind:this={wordEl} style:transform={flyStyle} style:opacity={flyOpacity}>
       {#each letters as l, i}<span class="l" class:on={i < typed} class:lime={l.lime}>{l.ch}</span>{/each}
       <i class="cursor" class:on={cursor} style:left="calc({typed} * (1ch + 0.32em))"></i>
     </span>

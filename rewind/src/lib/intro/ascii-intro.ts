@@ -273,6 +273,7 @@ uniform float uSweep;
 uniform float uFlash;
 uniform float uRewind;
 uniform float uDissolve;
+uniform vec2 uTarget;     // logo de la barre du haut, en unités du modèle (repère caméra)
 
 out vec4 vCol;
 
@@ -292,16 +293,20 @@ vec3 posAt(float t, vec3 hw, out float tau, out float sd) {
   vec3 dir = normalize(vec3(hw.xy * 1.15, hw.z * 0.4) + r * vec3(1.1, 0.8, 1.3) + vec3(0.0, 0.0, 0.0001));
   float far = mix(0.7, 2.9, pow(aSeed.z, 0.7)) * (aMat > 4.5 ? 1.3 : 1.0);
   vec3 p = hw + rotZ(dir * far * e, (aSeed.w - 0.5) * 2.4 * e);
-  // Le vent emporte l'icône vers la gauche, en commençant par le bord gauche ; vitesses très inégales et
-  // remous qui grandissent : la forme s'émiette en filets au lieu de glisser d'un bloc
-  float td = uDissolve + clamp((hw.x + 1.0) * 0.5, 0.0, 1.0) * 0.55 + aSeed.x * 0.22;
+  // Fin : l'icône se défait et sa poussière file en courbe vers le petit logo de la barre du haut
+  // (aspirée de plus en plus vite), en commençant par le côté le plus proche du logo
+  vec3 tgt = vec3(uTarget + (aSeed.zw - 0.5) * 0.06, -0.3);
+  float dist = length(tgt.xy - hw.xy);
+  float td = uDissolve + clamp(dist / 4.0, 0.0, 1.0) * 0.25 + aSeed.x * 0.12;
   sd = t - td;
   if (sd > 0.0) {
-    float acc = mix(1.2, 9.0, aSeed.y * aSeed.y);
-    vec3 wind = vec3(-1.0, (aSeed.z - 0.45) * 0.9, (aSeed.w - 0.5) * 1.2);
-    p += wind * (0.25 * sd + 0.5 * acc * sd * sd);
-    float sw = sd * sd * 2.2;
-    p += vec3(sin(sd * 4.0 + aSeed.w * 6.283 + hw.y * 3.0), cos(sd * 3.1 + aSeed.x * 6.283 + hw.x * 2.0), sin(sd * 2.3 + aSeed.z * 6.283)) * sw * vec3(0.35, 0.6, 0.5);
+    float k = clamp(sd / mix(0.45, 0.65, aSeed.y), 0.0, 1.0);
+    float e2 = k * k * (3.0 - 2.0 * k);
+    vec3 d = tgt - p;
+    vec2 perp = normalize(vec2(-d.y, d.x) + 0.0001) * (aSeed.w - 0.5) * 0.8;
+    vec3 mid = mix(p, tgt, 0.45) + vec3(perp, (aSeed.z - 0.5) * 0.4);
+    vec3 a1 = mix(p, mid, e2), a2 = mix(mid, tgt, e2);
+    p = mix(a1, a2, e2);
   }
   p.z = min(p.z, 4.5);
   return p;
@@ -341,11 +346,12 @@ void main() {
   if (aMat > 4.5) b *= smoothstep(0.0, 0.3, tau);      // la poussière décorative se fond dans l'icône
   float kind = (moving > 0.6 && b < 0.5) ? 0.33 : 1.0; // 1 = caractère selon la lumière, 0,33 = poussière
   if (sd > 0.0) {
-    // La surface se consume : la plupart des grains s'éteignent vite après un petit éclat, un sur quatre
-    // reste allumé et s'envole en poussière
-    bool ember = sparse > 0.5 || fract(aSeed.z * 5.31 + aSeed.x * 2.17) < 0.12;
-    float life = ember ? mix(0.55, 1.1, aSeed.z) : mix(0.12, 0.3, aSeed.z);
-    b *= (1.0 + 0.9 * exp(-sd * 14.0)) * (1.0 - smoothstep(0.0, life, sd));
+    // La surface se défait : un grain sur trois file jusqu'au logo (et s'y éteint en arrivant), les
+    // autres s'éteignent vite après un petit éclat
+    bool traveler = sparse > 0.5 || fract(aSeed.z * 5.31 + aSeed.x * 2.17) < 0.25;
+    float k = clamp(sd / mix(0.45, 0.65, aSeed.y), 0.0, 1.0);
+    b *= 1.0 + 0.9 * exp(-sd * 14.0);
+    b *= traveler ? (1.0 - smoothstep(0.9, 1.0, k)) : (1.0 - smoothstep(0.0, mix(0.15, 0.3, aSeed.z), sd));
     if (sd > 0.05 && b < 0.55) kind = 0.33;
   }
   // Faces tournées vers l'arrière : masquées quand l'icône est formée. La face noire de la plaque reste
@@ -539,6 +545,8 @@ export class AsciiIntro {
   private t0 = -1;
   private ended = false;
   private loc = new Map<string, WebGLUniformLocation | null>();
+  /** Où la poussière va à la fin : le logo de la barre du haut (pixels CSS, mis à jour par la page). */
+  dest = { x: 24, y: 21 };
 
   private constructor(
     private canvas: HTMLCanvasElement,
@@ -751,6 +759,9 @@ export class AsciiIntro {
     gl.uniform1f(this.u(p, "uFlash"), flash);
     gl.uniform1f(this.u(p, "uRewind"), TL.rewind);
     gl.uniform1f(this.u(p, "uDissolve"), TL.dissolve);
+    // Logo de la barre en unités du modèle, corrigé de la perspective (cible posée à z = -0,3)
+    const persp = 6 / 6.3;
+    gl.uniform2f(this.u(p, "uTarget"), ((this.dest.x - lay.cx) * this.dpr) / scale / persp, ((lay.cy - this.dest.y) * this.dpr) / scale / persp);
     gl.bindVertexArray(this.vao);
     gl.uniform1f(this.u(p, "uLine"), 0);
     gl.drawArraysInstanced(gl.POINTS, 0, 1, this.count);

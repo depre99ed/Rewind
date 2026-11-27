@@ -305,6 +305,17 @@ def decisions(edges, report):
     if not path.is_file():
         return
     data = json.loads(path.read_text(encoding="utf-8"))
+    # Éléments renommés (ex. README réécrit en français le 2026-11-26) : les liens gardés en cache par les
+    # anciennes notes visent encore l'ancien identifiant ; on les rebranche sur le nouveau.
+    renames = {k: v for k, v in data.get("renommes", {}).items() if not k.startswith("_") and v in NODES}
+    for e in edges:
+        for side in ("source", "target"):
+            if e[side] in renames and e[side] not in NODES:
+                e[side] = renames[e[side]]
+                n_ren = report.get("renommes_rebranches", 0) + 1
+                report["renommes_rebranches"] = n_ren
+    for d in data.get("liens", []):
+        d["source"], d["target"] = renames.get(d["source"], d["source"]), renames.get(d["target"], d["target"])
     rules = {(d["source"], d["target"]): d for d in data.get("liens", []) if d["action"] != "ajouter"}
     kept, n = [], defaultdict(int)
     for d in data.get("liens", []):

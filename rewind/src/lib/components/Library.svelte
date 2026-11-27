@@ -27,6 +27,7 @@
   let collectionMenu = $state(false);
   let renaming = $state(false);
   let renameTo = $state("");
+  const filters = [["all", "Tout"], ["fav", "Favoris"], ["auto", "Automatiques"], ["manual", "Manuels"], ["edit", "Montages"], ["screenshot", "Captures"]] as const; // traduits à l'affichage
 
   const base = $derived(
     app.ownClips.filter((c) => {
@@ -85,6 +86,16 @@
     for (const g of out) g.sub = `${t(g.clips.length > 1 ? "{n} clips" : "{n} clip", { n: g.clips.length })} · ${formatDuration(g.clips.reduce((a, c) => a + c.duration, 0))}`;
     return out;
   });
+
+  // Lecteur : « suivant / précédent » parcourt les clips affichés ici, dans l'ordre de l'écran
+  // (filtre, collection, jeu, recherche, tri et regroupement compris), pas toute la bibliothèque.
+  const shown = $derived(groups.flatMap((g) => g.clips));
+  const shownLabel = $derived(
+    [collection, filter !== "all" ? t(filters.find(([id]) => id === filter)?.[1] ?? "") : "", game, query.trim() ? `« ${query.trim()} »` : ""]
+      .filter(Boolean)
+      .join(" · "),
+  );
+  function open(c: Clip) { app.play(c, shown, shownLabel); }
 
   $effect(() => {
     if (heroVideo && hero) {
@@ -151,7 +162,6 @@
     } catch (e) { app.toast("err", t("Suppression impossible"), String(e)); }
   }
   const sizeList: ["s" | "m" | "l", number][] = [["s", 10], ["m", 13], ["l", 16]];
-  const filters = [["all", "Tout"], ["fav", "Favoris"], ["auto", "Automatiques"], ["manual", "Manuels"], ["edit", "Montages"], ["screenshot", "Captures"]] as const; // traduits à l'affichage
   const totalSize = $derived(app.ownClips.reduce((a, c) => a + c.size, 0));
 </script>
 
@@ -180,7 +190,7 @@
     {:else}
       {#if showHero && hero}
         <div class="hero appear" style="--c:{gameTone(hero.game)}">
-          <button class="hmedia" onclick={() => (app.openClip = hero)} aria-label={t("Lire")}>
+          <button class="hmedia" onclick={() => open(hero)} aria-label={t("Lire")}>
             {#key hero.id}
               {#if hero.thumb}<img use:fit src={fileUrl(hero.thumb)} alt="" />{/if}
               <!-- svelte-ignore a11y_media_has_caption -->
@@ -188,6 +198,7 @@
             {/key}
             <span class="hplay"><Play size={22} fill="currentColor" /></span>
           </button>
+          {#key hero.id}
           <div class="hinfo">
             <span class="kicker"><i></i>{t("À la une")} · {gameLabel(hero.game)}</span>
             <h1>{hero.title}</h1>
@@ -196,7 +207,7 @@
               {#each badges(hero) as b}<span class="tag" class:hot={b.hot}>{b.label}</span>{/each}
             </div>
             <div class="hactions">
-              <button class="btn primary" onclick={() => (app.openClip = hero)}><Play size={15} fill="currentColor" />{t("Lire")}</button>
+              <button class="btn primary" onclick={() => open(hero)}><Play size={15} fill="currentColor" />{t("Lire")}</button>
               <button class="btn" onclick={() => app.copyForDiscord(hero)} disabled={app.discordBusy === hero.id}>
                 {#if app.discordBusy === hero.id}<Loader2 size={15} class="spin" />{t("Compression…")}{:else}<Send size={15} />{t("Copier pour Discord")}{/if}
               </button>
@@ -204,6 +215,7 @@
               <button class="btn icon" onclick={() => fav(hero)} title={t("Favori")}><Star size={15} fill={hero.favorite ? "currentColor" : "none"} /></button>
             </div>
           </div>
+          {/key}
           {#if featured.length > 1}
             <div class="hdots">
               {#each featured as f, i}<button class:on={i === heroIndex} onclick={() => (heroIndex = i)} aria-label={f.title}></button>{/each}
@@ -276,7 +288,7 @@
             <div class="ghead"><h3>{#if g.color}<i></i>{/if}{g.title}</h3><span class="faint">{g.sub}</span></div>
             <div class="grid size-{size}">
               {#each g.clips as clip (clip.id)}
-                <ClipCard {clip} selected={selected.includes(clip.id)} selecting={selected.length > 0} onopen={() => (app.openClip = clip)} onselect={() => toggle(clip.id)} onfav={() => fav(clip)} />
+                <ClipCard {clip} selected={selected.includes(clip.id)} selecting={selected.length > 0} onopen={() => open(clip)} onselect={() => toggle(clip.id)} onfav={() => fav(clip)} />
               {/each}
             </div>
           </div>
@@ -313,7 +325,9 @@
   .hmedia img, .hmedia video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .hplay { position: absolute; left: 50%; top: 50%; translate: -50% -50%; width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; background: rgba(255, 255, 255, 0.12); color: #fff; backdrop-filter: blur(14px) saturate(1.6); box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.35), 0 8px 24px rgba(0, 0, 0, 0.5); opacity: 0; scale: 0.92; transition: opacity var(--dur) var(--ease), scale 260ms var(--spring); }
   .hmedia:hover .hplay { opacity: 1; scale: 1; }
-  .hinfo { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .hinfo { display: flex; flex-direction: column; gap: 10px; min-width: 0; animation: rise 260ms var(--ease-out) both; }
+  /* À la une : le clip suivant du carrousel arrive en fondu (image et texte ensemble, sans cascade) */
+  .hmedia img, .hmedia video { animation: fade-in 360ms var(--ease) both; }
   .kicker { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
   .kicker i { display: none; }
   .hinfo h1 { margin: 0; font-weight: 600; font-size: clamp(22px, 2.2vw, 28px); line-height: 1.12; letter-spacing: -0.028em; text-wrap: balance; }

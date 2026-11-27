@@ -57,12 +57,12 @@
   let fly = $state(0);
   let wordEl: HTMLElement | undefined = $state();
   // Logo et mot de la barre du haut (là où l'intro se range à la fin)
-  let barLogo = $state({ x: 24, y: 21 });
+  let barLogo = $state({ x: 24, y: 21, w: 20 });
   let barWord = $state({ x: 62, y: 21, w: 50 });
   function measureBar() {
     const logo = document.querySelector("header .brand svg")?.getBoundingClientRect();
     const word = document.querySelector("header .brand .word")?.getBoundingClientRect();
-    if (logo && logo.width) barLogo = { x: logo.left + logo.width / 2, y: logo.top + logo.height / 2 };
+    if (logo && logo.width) barLogo = { x: logo.left + logo.width / 2, y: logo.top + logo.height / 2, w: logo.width };
     if (word && word.width) barWord = { x: word.left + word.width / 2, y: word.top + word.height / 2, w: word.width };
     if (engine) engine.dest = barLogo;
   }
@@ -72,7 +72,9 @@
     const sc = 1 + (barWord.w / Math.max(1, wordBase.w) - 1) * fly;
     return `translate(${(barWord.x - wordBase.cx) * fly}px, ${(barWord.y - wordBase.cy) * fly}px) scale(${sc})`;
   });
-  const flyOpacity = $derived(1 - Math.max(0, (fly - 0.65) / 0.35));
+  // Le mot reste net jusqu'à se poser, puis passe le relais au mot de la barre (fondu croisé de 140 ms)
+  let wordFade = $state(1);
+  let landed = false;
   let leaving = $state(false);
   let sound = true;
   let ticked = 0;
@@ -90,7 +92,18 @@
     engine = null;
     audio?.close().catch(() => {});
     audio = null;
+    // Passée avant la fin (clic, souci) : le logo réapparaît et la barre latérale s'anime quand même
+    if (!landed) app.navArrive++;
+    app.introPhase = "";
     ondone();
+  }
+
+  /** Le petit W est reformé et le mot posé : le vrai logo et le vrai mot prennent le relais. */
+  function land() {
+    if (landed) return;
+    landed = true;
+    app.introPhase = "landed";
+    app.navArrive++;
   }
 
   /** Passer : fondu rapide de toute la couche, l'appli est déjà prête dessous. */
@@ -128,8 +141,10 @@
       const r = wordEl.getBoundingClientRect();
       wordBase = { cx: r.left + r.width / 2 - shake, cy: r.top + r.height / 2, w: r.width };
     }
-    const f = clamp((t - TL.dissolve - 0.05) / 0.75, 0, 1);
+    const f = clamp((t - TL.dissolve - 0.1) / (TL.land - TL.dissolve - 0.1), 0, 1);
     fly = f * f * (3 - 2 * f);
+    wordFade = 1 - clamp((t - TL.land) / 0.09, 0, 1);
+    if (t >= TL.land) land();
     const typingEnd = TYPE_TIMES[TYPE_TIMES.length - 1];
     const blinkOn = Math.floor((t - typingEnd) / 0.42) % 2 === 1;
     cursor = t >= TL.typeStart - 0.3 && t < TL.dissolve && (t < typingEnd + 0.1 ? true : g > 0 ? rnd(k * 5.3) < 0.5 : blinkOn);
@@ -168,6 +183,8 @@
 
   onMount(() => {
     let alive = true;
+    // Le logo et le mot de la barre du haut attendent l'arrivée de la poussière et du mot tapé
+    app.introPhase = "flying";
     const freeze = mock && new URLSearchParams(location.search).has("introfreeze");
     (async () => {
       try {
@@ -229,7 +246,7 @@
   <div class="black" style:opacity={backdrop}></div>
   <canvas bind:this={canvas}></canvas>
   <div class="line" style:top="{lay.wordY}px" style:font-size="{lay.wordSize}px">
-    <span class="word" bind:this={wordEl} style:transform={flyStyle} style:opacity={flyOpacity}>
+    <span class="word" bind:this={wordEl} style:transform={flyStyle} style:opacity={wordFade} style:--glow={1 - fly}>
       {#each letters as l, i}<span class="l" class:on={i < typed} class:lime={l.lime}>{l.ch}</span>{/each}
       <i class="cursor" class:on={cursor} style:left="calc({typed} * (1ch + 0.32em))"></i>
     </span>
@@ -243,7 +260,7 @@
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   /* « rewind » tapé comme dans un terminal : Geist Mono, blanc cassé de la marque, curseur vert */
   .line { position: absolute; left: 0; right: 0; display: flex; justify-content: center; transform: translateY(-50%); pointer-events: none; }
-  .word { position: relative; font-family: var(--mono); font-weight: 500; letter-spacing: 0.32em; margin-right: -0.32em; color: #eef0f4; text-shadow: 0 0 14px rgba(238, 240, 244, 0.45); white-space: pre; line-height: 1; }
+  .word { position: relative; font-family: var(--mono); font-weight: 500; letter-spacing: 0.32em; margin-right: -0.32em; color: #eef0f4; text-shadow: 0 0 14px rgba(238, 240, 244, calc(0.45 * var(--glow, 1))); white-space: pre; line-height: 1; }
   .l { visibility: hidden; }
   .l.on { visibility: visible; }
   .l.lime { color: #c8f031; text-shadow: 0 0 12px rgba(200, 240, 49, 0.6); }

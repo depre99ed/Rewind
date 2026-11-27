@@ -47,7 +47,7 @@
         marked: { state: "marked", title: en ? "Marker added" : "Repère ajouté", subtitle: en ? "It will show on the clip timeline" : "Il apparaîtra sur la frise du clip", game: "", thumb: "", badges: [], seconds: 0, lang },
         welcome: {
           state: "welcome", title: "Counter-Strike 2", subtitle: en ? "Rewind is recording · your hotkeys" : "Rewind enregistre · tes raccourcis", game: "Counter-Strike 2", thumb: "", badges: [], seconds: 0, lang,
-          keys: [["Alt+F10", en ? "Clip 30 s" : "Clip 30 s"], ["Alt+Shift+F10", en ? "Clip 2 min" : "Clip 2 min"], ["Alt+F11", en ? "Custom clip" : "Clip sur mesure"], ["Alt+F7", en ? "Full session" : "Session complète"]],
+          keys: [["F8", en ? "Clip 30 s" : "Clip 30 s"], ["Alt+Shift+F10", en ? "Clip 2 min" : "Clip 2 min"], ["Alt+F11", en ? "Custom clip" : "Clip sur mesure"], ["Alt+F7", en ? "Full session" : "Session complète"]],
         },
       };
       // flow : enregistrement puis « Clip enregistré », comme dans le jeu

@@ -27,7 +27,7 @@
 </script>
 
 <header data-tauri-drag-region>
-  <div class="brand" data-tauri-drag-region>
+  <div class="brand" class:waiting={app.introPhase === "flying"} class:land={app.introPhase === "landed"} data-tauri-drag-region>
     <Logo size={20} />
     <span class="word">rewind</span>
   </div>
@@ -59,6 +59,16 @@
   header { height: 42px; flex: none; display: flex; align-items: center; justify-content: space-between; padding-left: 14px; background: var(--bg); }
   .brand { display: flex; align-items: center; gap: 9px; width: 220px; }
   .word { font-weight: 600; font-size: 14px; letter-spacing: -0.02em; }
+  /* Fin de l'intro : le logo et le mot attendent la poussière et le mot tapé, puis prennent le relais
+     (le W se pose avec un bref éclat vert, le mot apparaît pile sous celui qui arrive) */
+  .brand.waiting :global(svg), .brand.waiting .word { opacity: 0; }
+  .brand.land :global(svg) { animation: logo-land 460ms var(--ease-out) both; }
+  .brand.land .word { animation: fade-in 90ms linear both; }
+  @keyframes logo-land {
+    0% { opacity: 0; transform: scale(1.3); filter: drop-shadow(0 0 7px rgba(200, 240, 49, 0.95)); }
+    30% { opacity: 1; }
+    100% { opacity: 1; transform: none; filter: drop-shadow(0 0 0 rgba(200, 240, 49, 0)); }
+  }
   .center { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; height: 100%; }
   .rec { display: inline-flex; align-items: center; gap: 8px; height: 24px; padding: 0 11px; border-radius: 99px; font-family: var(--mono); font-size: 11.5px; font-weight: 500; letter-spacing: 0.02em; color: var(--text-2); font-variant-numeric: tabular-nums; transition: color var(--dur) var(--ease); }
   .rec i { position: relative; z-index: 2; width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); }

@@ -22,9 +22,17 @@ class AppState {
   showWelcome = $state(false);
   /** Animation d'ouverture affichée (première ouverture après le lancement, ou « Revoir » dans Apparence) */
   showIntro = $state(false);
+  /** Fin de l'intro : « flying » = le logo et le mot de la barre du haut sont cachés (la poussière et le mot
+   *  tapé arrivent) ; « landed » = ils viennent de se poser (bref éclat). "" = normal. */
+  introPhase = $state<"" | "flying" | "landed">("");
+  /** Incrémenté pour jouer l'arrivée de la barre latérale (lentille qui descend + reflet), ≈ 1 s. */
+  navArrive = $state(0);
   /** Jeux lancés en administrateur (relu toutes les 5 s par la barre de gauche) */
   adminInput = $state<import("./api").AdminInput | null>(null);
   openClip = $state<Clip | null>(null);
+  /** Liste parcourue par « Clip suivant / précédent » : les clips affichés (filtre, collection, jeu, tri)
+   *  au moment où le clip a été ouvert depuis la bibliothèque. null = tous les clips. */
+  playlist = $state<{ ids: string[]; label: string } | null>(null);
   progress = $state<{ op: string; value: number } | null>(null);
   cs2Feed = $state<{ at: number; text: string; kind: string }[]>([]);
   cs2Map = $state<{ map: string; mode: string } | null>(null);
@@ -214,6 +222,12 @@ class AppState {
     this.view = "studio";
     const { openInStudio } = await import("./studio/store.svelte");
     await openInStudio(clips);
+  }
+
+  /** Ouvre un clip dans le lecteur ; « suivant / précédent » restera dans cette liste (dans cet ordre). */
+  play(clip: Clip, list?: Clip[], label = "") {
+    this.playlist = list && list.some((c) => c.id === clip.id) ? { ids: list.map((c) => c.id), label } : null;
+    this.openClip = clip;
   }
 
   updateClip(c: Clip) {

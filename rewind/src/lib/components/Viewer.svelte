@@ -108,6 +108,7 @@
       app.toast("err", t("Raccourcissement impossible"), String(e));
     } finally {
       trimSaving = false;
+      dir = 0;
       reload++;
     }
   }
@@ -118,7 +119,18 @@
   const webhooks = $derived(app.settings?.webhooks.filter((w) => w.url) ?? []);
   const color = $derived(gameTone(clip.game));
   const received = $derived(clip.kind === "received");
-  const list = $derived(received ? app.clips.filter((c) => c.kind === "received") : app.ownClips);
+  // Ouvert depuis la bibliothèque : on reste dans les clips affichés (catégorie, collection, jeu, tri).
+  // Sinon (bandeau, dernier clip, Amis) : tous les clips, comme avant.
+  const byId = $derived(new Map(app.clips.map((c) => [c.id, c])));
+  const pl = $derived(app.playlist?.ids.includes(clip.id) ? app.playlist : null);
+  const list = $derived(
+    pl ? pl.ids.map((id) => byId.get(id)).filter((c): c is Clip => !!c)
+    : received ? app.clips.filter((c) => c.kind === "received") : app.ownClips,
+  );
+  // On oublie la liste en fermant le lecteur
+  $effect(() => () => { app.playlist = null; });
+  // Sens du dernier passage (suivant / précédent) : la vidéo arrive de ce côté
+  let dir = $state(0);
   // Clip reçu : l'ami qui l'a envoyé (historique du partage) et sa photo
   const origin = $derived(received ? (friends.view?.received.find((r) => r.clip_id === clip.id) ?? null) : null);
   const originAvatar = $derived(origin ? (friends.view?.friends.find((f) => f.id === origin.from_id)?.avatar ?? 0) : 0);
@@ -175,7 +187,7 @@
   function move(e: PointerEvent) { if (track) hoverT = at(e); if (dragging) seek(at(e)); }
   function go(delta: number) {
     const next = list[index + delta];
-    if (next) app.openClip = next;
+    if (next) { dir = delta; app.openClip = next; }
   }
   function key(e: KeyboardEvent) {
     const tag = (e.target as HTMLElement)?.tagName;
@@ -223,10 +235,11 @@
     if (!confirm(t("Envoyer ce clip à la Corbeille ?"))) return;
     try {
       const next = list[index + 1] ?? list[index - 1] ?? null;
+      const nextDir = next === list[index + 1] ? 1 : -1;
       await api.deleteClips([clip.id]);
       app.removeClips([clip.id]);
       app.toast("info", t("Clip dans la Corbeille"), t("Récupérable depuis la Corbeille de Windows."));
-      if (next) app.openClip = next;
+      if (next) { dir = nextDir; app.openClip = next; }
     } catch (e) { app.toast("err", t("Suppression impossible"), String(e)); }
   }
   const pct = (t: number) => (total > 0 ? (t / total) * 100 : 0);
@@ -242,15 +255,16 @@
       <button class="btn ghost small" onclick={() => (app.openClip = null)}><ArrowLeft size={16} />{received ? t("Amis") : t("Clips")}</button>
       <span class="crumb"><i></i>{gameLabel(clip.game)}<span class="faint">· {relativeDate(clip.created)}</span></span>
       <div class="nav">
+        {#if pl?.label}<span class="plabel faint" title={t("Suivant et précédent restent dans : {x}", { x: pl.label })}>{pl.label}</span>{/if}
         <span class="faint mono">{index + 1} / {list.length}</span>
         <button class="btn icon small ghost" onclick={() => go(-1)} disabled={index <= 0} title={t("Clip précédent (Page préc.)")}><ChevronLeft size={17} /></button>
         <button class="btn icon small ghost" onclick={() => go(1)} disabled={index >= list.length - 1} title={t("Clip suivant (Page suiv.)")}><ChevronRight size={17} /></button>
       </div>
     </div>
 
-    <div class="stage" bind:this={stage}>
+    <div class="stage" bind:this={stage} style="--dx:{dir * 28}px;--s:{dir ? 1 : 0.985}">
       {#if isShot}
-        <img src={fileUrl(clip.path)} alt={clip.title} />
+        {#key clip.id}<img src={fileUrl(clip.path)} alt={clip.title} />{/key}
       {:else}
         {#key `${clip.id}|${clip.size}|${reload}`}
           <!-- svelte-ignore a11y_media_has_caption -->
@@ -443,7 +457,10 @@
   .controls :global(.btn.on) { color: var(--hi); }
   .stage { position: relative; flex: 1; min-height: 0; border-radius: 18px; overflow: hidden; background: #000; display: grid; place-items: center; box-shadow: 0 0 0 1px var(--line), 0 30px 80px -40px rgba(0, 0, 0, 0.9); }
   /* En absolu : dans une grille, la ligne « auto » prenait la hauteur réelle d'une vidéo verticale (1920 px) et la scène n'en montrait qu'une bande */
-  .stage video, .stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .stage video, .stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; animation: stage-in 240ms var(--ease-out) both; }
+  /* Ouverture : la vidéo se pose (léger zoom) ; suivant / précédent : elle arrive du côté où l'on va */
+  @keyframes stage-in { from { opacity: 0; transform: translateX(var(--dx, 0)) scale(var(--s, 1)); } to { opacity: 1; transform: none; } }
+  .plabel { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 6px; }
   .stage:fullscreen { border-radius: 0; }
   .bigplay { position: absolute; width: 74px; height: 74px; border-radius: 50%; display: grid; place-items: center; background: rgba(0,0,0,.5); color: #fff; backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,.15); transition: transform var(--dur) var(--ease); }
   .bigplay:hover { transform: scale(1.06); }

@@ -24,6 +24,22 @@
   const compact = $derived(app.view === "studio" && !app.openClip);
   const tip = (label: string) => (compact ? label : undefined);
 
+  // Arrivée (≈ 1 s, juste après l'intro, ou seule quand la fenêtre se rouvre) : la lentille de verre part
+  // de Réglages (en bas) et monte jusqu'à l'onglet actif, avec un petit rebond en arrivant (choix du 2026-11-27,
+  // sans reflet). La classe part à la fin réelle de l'animation (pas avec un minuteur : fenêtre ralentie ou
+  // mise en pause, elle finirait coupée), sinon la lentille resterait figée au lieu de glisser.
+  let arriving = $state(false);
+  let asideEl: HTMLElement | undefined = $state();
+  $effect(() => {
+    if (app.navArrive) arriving = true;
+  });
+  const ARRIVE = /lens-rise/;
+  function arriveEnd(e: AnimationEvent) {
+    if (!arriving || !ARRIVE.test(e.animationName)) return;
+    const busy = asideEl?.getAnimations({ subtree: true }).some((a) => ARRIVE.test((a as CSSAnimation).animationName ?? "") && (a.playState === "running" || a.playState === "paused"));
+    if (!busy) arriving = false;
+  }
+
   async function clip(long = false) {
     if (!s) return;
     menu = false;
@@ -107,7 +123,7 @@
 
 <svelte:window onkeydown={onKey} onmousedown={onDown} />
 
-<aside class:compact>
+<aside bind:this={asideEl} class:compact class:arrive={arriving} class:waiting={app.introPhase === "flying"} onanimationend={arriveEnd}>
   <nav style="--i:{navIndex}">
     <button class:on={app.view === "library"} onclick={() => { app.openClip = null; app.view = "library"; }} title={tip(t("Clips"))}>
       <Clapperboard size={17} strokeWidth={1.75} /> <span>{t("Clips")}</span> <em>{counts.all}</em>
@@ -260,6 +276,18 @@
   nav button em.new { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; background: var(--hi); color: var(--hi-ink); font-weight: 600; }
   /* Lentille : au-dessus des onglets, ne capte pas les clics, glisse avec un léger ressort */
   .pill { position: absolute; z-index: 2; left: 0; right: 0; top: 0; height: 36px; border-radius: 10px; pointer-events: none; transform: translateY(calc(var(--i) * 38px)); transition: transform 520ms var(--spring); }
+  /* Arrivée (≈ 0,9 s) : la lentille apparaît sur Réglages (5e onglet, 4 × 38 px), monte jusqu'à l'onglet actif
+     en courbant les icônes au passage, le dépasse un peu et revient : un petit rebond. Coupé avec les
+     animations (styles.css). */
+  .waiting .pill { opacity: 0; } /* pendant la fin de l'intro : la lentille attend son arrivée */
+  .arrive .pill { animation: lens-rise 900ms both; }
+  @keyframes lens-rise {
+    0% { opacity: 0; transform: translateY(152px); animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1); }
+    10% { opacity: 1; }
+    62% { transform: translateY(calc(var(--i) * 38px - 7px)) scale(1.01, 0.97); animation-timing-function: cubic-bezier(0.4, 0, 0.4, 1); }
+    82% { transform: translateY(calc(var(--i) * 38px + 2px)); animation-timing-function: cubic-bezier(0.4, 0, 0.4, 1); }
+    100% { opacity: 1; transform: translateY(calc(var(--i) * 38px)); }
+  }
   /* Thème clair : la lentille est au-dessus du texte, elle doit rester presque transparente */
   :global(:root[data-theme="light"]) .pill { background: linear-gradient(180deg, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0.1)); }
   .live { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }

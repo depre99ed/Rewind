@@ -61,7 +61,7 @@ pub struct Hotkeys {
 impl Default for Hotkeys {
     fn default() -> Self {
         Self {
-            clip: "Alt+F10".into(),
+            clip: "F8".into(),
             clip_long: "Alt+Shift+F10".into(),
             clip_custom: "Alt+F11".into(),
             session: "Alt+F7".into(),

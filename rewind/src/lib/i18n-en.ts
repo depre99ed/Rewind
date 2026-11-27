@@ -380,6 +380,7 @@ export const EN: Record<string, string> = {
   "Bibliothèque": "Library",
   "Clip précédent (Page préc.)": "Previous clip (Page Up)",
   "Clip suivant (Page suiv.)": "Next clip (Page Down)",
+  "Suivant et précédent restent dans : {x}": "Next and previous stay within: {x}",
   "Lecture": "Play",
   "Pause": "Pause",
   "Afficher les touches clavier / souris": "Show keyboard / mouse keys",

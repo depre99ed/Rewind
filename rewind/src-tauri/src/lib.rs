@@ -896,7 +896,7 @@ pub fn toast_demo(state: String) -> i32 {
                 let toast = match state.as_str() {
                     "welcome" => toast::Toast {
                         state: "welcome".into(), title: "Counter-Strike 2".into(), subtitle: "Rewind enregistre · tes raccourcis".into(),
-                        keys: vec![("Alt+F10".into(), "Clip 30 s".into()), ("Alt+F11".into(), "Clip sur mesure".into())],
+                        keys: vec![("F8".into(), "Clip 30 s".into()), ("Alt+F11".into(), "Clip sur mesure".into())],
                         ..Default::default()
                     },
                     "failed" => toast::Toast { state: "failed".into(), title: "Clip impossible".into(), subtitle: "Le disque est plein".into(), ..Default::default() },

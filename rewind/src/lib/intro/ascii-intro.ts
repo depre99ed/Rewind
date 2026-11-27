@@ -31,6 +31,7 @@ export const TL = {
   dissolve: 6.55, // départ en poussière
   reveal: 6.8, // l'interface commence à apparaître
   revealDur: 0.8,
+  land: 7.5, // la poussière a reformé le petit W et le mot est posé : le vrai logo prend le relais
   end: 8.0,
 };
 
@@ -274,6 +275,8 @@ uniform float uFlash;
 uniform float uRewind;
 uniform float uDissolve;
 uniform vec2 uTarget;     // logo de la barre du haut, en unités du modèle (repère caméra)
+uniform float uTs;        // taille du petit logo / taille du W de l'icône (la poussière y reforme le W)
+uniform float uLand;      // instant où le vrai logo prend le relais
 
 out vec4 vCol;
 
@@ -293,18 +296,19 @@ vec3 posAt(float t, vec3 hw, out float tau, out float sd) {
   vec3 dir = normalize(vec3(hw.xy * 1.15, hw.z * 0.4) + r * vec3(1.1, 0.8, 1.3) + vec3(0.0, 0.0, 0.0001));
   float far = mix(0.7, 2.9, pow(aSeed.z, 0.7)) * (aMat > 4.5 ? 1.3 : 1.0);
   vec3 p = hw + rotZ(dir * far * e, (aSeed.w - 0.5) * 2.4 * e);
-  // Fin : l'icône se défait et sa poussière file en courbe vers le petit logo de la barre du haut
-  // (aspirée de plus en plus vite), en commençant par le côté le plus proche du logo
-  vec3 tgt = vec3(uTarget + (aSeed.zw - 0.5) * 0.06, -0.3);
+  // Fin : l'icône se défait et sa poussière file en un flux serré vers le petit logo de la barre du haut,
+  // en commençant par le côté le plus proche ; chaque grain vise SA place dans le petit W (le nuage garde
+  // la forme du W en rétrécissant et le reforme à la place exacte du logo). Arrivée de tous avant uLand.
+  vec3 tgt = vec3(uTarget + (aHome.xy - vec2(0.0, -0.02)) * uTs, -0.3);
   float dist = length(tgt.xy - hw.xy);
-  float td = uDissolve + clamp(dist / 4.0, 0.0, 1.0) * 0.25 + aSeed.x * 0.12;
+  float td = uDissolve + clamp(dist / 4.0, 0.0, 1.0) * 0.2 + aSeed.x * 0.1;
   sd = t - td;
   if (sd > 0.0) {
-    float k = clamp(sd / mix(0.45, 0.65, aSeed.y), 0.0, 1.0);
+    float k = clamp(sd / mix(0.45, 0.6, aSeed.y), 0.0, 1.0);
     float e2 = k * k * (3.0 - 2.0 * k);
     vec3 d = tgt - p;
-    vec2 perp = normalize(vec2(-d.y, d.x) + 0.0001) * (aSeed.w - 0.5) * 0.8;
-    vec3 mid = mix(p, tgt, 0.45) + vec3(perp, (aSeed.z - 0.5) * 0.4);
+    vec2 perp = normalize(vec2(-d.y, d.x) + 0.0001) * (aSeed.w - 0.5) * 0.35;
+    vec3 mid = mix(p, tgt, 0.45) + vec3(perp, (aSeed.z - 0.5) * 0.2);
     vec3 a1 = mix(p, mid, e2), a2 = mix(mid, tgt, e2);
     p = mix(a1, a2, e2);
   }
@@ -346,13 +350,20 @@ void main() {
   if (aMat > 4.5) b *= smoothstep(0.0, 0.3, tau);      // la poussière décorative se fond dans l'icône
   float kind = (moving > 0.6 && b < 0.5) ? 0.33 : 1.0; // 1 = caractère selon la lumière, 0,33 = poussière
   if (sd > 0.0) {
-    // La surface se défait : un grain sur trois file jusqu'au logo (et s'y éteint en arrivant), les
-    // autres s'éteignent vite après un petit éclat
-    bool traveler = sparse > 0.5 || fract(aSeed.z * 5.31 + aSeed.x * 2.17) < 0.25;
-    float k = clamp(sd / mix(0.45, 0.65, aSeed.y), 0.0, 1.0);
+    // La surface se défait : les grains du W filent jusqu'au logo et y restent allumés (le petit W reformé)
+    // jusqu'à ce que le vrai logo prenne le relais ; quelques grains gris accompagnent le flux puis
+    // s'éteignent en route ; le reste s'éteint vite après un petit éclat
+    bool shape = aMat < 1.5;
+    bool haze = !shape && sparse > 0.5 && fract(aSeed.z * 5.31 + aSeed.x * 2.17) < 0.5;
+    float k = clamp(sd / mix(0.45, 0.6, aSeed.y), 0.0, 1.0);
     b *= 1.0 + 0.9 * exp(-sd * 14.0);
-    b *= traveler ? (1.0 - smoothstep(0.9, 1.0, k)) : (1.0 - smoothstep(0.0, mix(0.15, 0.3, aSeed.z), sd));
+    if (shape) b *= 1.0 - smoothstep(uLand - 0.04, uLand + 0.08, uT);
+    else if (haze) b *= 1.0 - smoothstep(0.35, 0.8, k);
+    else b *= 1.0 - smoothstep(0.0, mix(0.15, 0.3, aSeed.z), sd);
     if (sd > 0.05 && b < 0.55) kind = 0.33;
+    // Presque arrivés, les grains du W deviennent de la poussière scintillante (sinon l'amas de 2-3 cases
+    // se lit comme des lettres) ; le vrai logo prend le relais juste après
+    if (shape && k > 0.8) kind = 0.33;
   }
   // Faces tournées vers l'arrière : masquées quand l'icône est formée. La face noire de la plaque reste
   // dessinée (en noir) tant que l'icône est posée : elle cache ce qui est derrière, comme un vrai objet.
@@ -546,7 +557,7 @@ export class AsciiIntro {
   private ended = false;
   private loc = new Map<string, WebGLUniformLocation | null>();
   /** Où la poussière va à la fin : le logo de la barre du haut (pixels CSS, mis à jour par la page). */
-  dest = { x: 24, y: 21 };
+  dest = { x: 24, y: 21, w: 20 };
 
   private constructor(
     private canvas: HTMLCanvasElement,
@@ -762,6 +773,10 @@ export class AsciiIntro {
     // Logo de la barre en unités du modèle, corrigé de la perspective (cible posée à z = -0,3)
     const persp = 6 / 6.3;
     gl.uniform2f(this.u(p, "uTarget"), ((this.dest.x - lay.cx) * this.dpr) / scale / persp, ((lay.cy - this.dest.y) * this.dpr) / scale / persp);
+    // Le W de l'icône fait 1,44 unité de large (tracé posé à 0,882 dans la plaque de 1,938) ; le petit logo
+    // fait dest.w pixels de large : chaque grain vise sa place dans ce petit W.
+    gl.uniform1f(this.u(p, "uTs"), (this.dest.w * this.dpr) / scale / persp / 1.44);
+    gl.uniform1f(this.u(p, "uLand"), TL.land);
     gl.bindVertexArray(this.vao);
     gl.uniform1f(this.u(p, "uLine"), 0);
     gl.drawArraysInstanced(gl.POINTS, 0, 1, this.count);

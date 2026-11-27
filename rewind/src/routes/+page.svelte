@@ -24,6 +24,12 @@
     api.discordContext(context).catch(() => {});
   });
 
+  // Animation d'ouverture (au lancement ou « Revoir » dans les réglages) : on arrive toujours sur la page
+  // Clips. Posée dès le début, pour que la page qui apparaît derrière la fin de l'animation soit déjà la bonne.
+  $effect(() => {
+    if (app.showIntro) app.view = "library";
+  });
+
   onMount(async () => {
     await app.init();
     // Partage entre amis : pastille de la barre latérale et messages « X t'a envoyé un clip »
@@ -45,6 +51,11 @@
       app.showIntro = await api.introClaim().catch(() => false);
     }
     ready = true;
+    // Fenêtre rouverte sans intro : la barre latérale joue seule son arrivée (avec l'intro, c'est l'intro qui
+    // la lance quand le logo se pose). Rien si les animations sont coupées.
+    if (!app.showIntro && s?.animations && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      requestAnimationFrame(() => app.navArrive++);
+    }
     // Premier démarrage : la fenêtre d'accueil (import Medal, dossier, raccourcis, qualité, options)
     if (app.settings && !app.settings.welcome_done) app.showWelcome = true;
   });
@@ -87,7 +98,7 @@
     <Welcome onclose={() => (app.showWelcome = false)} />
   {/if}
   {#if app.showIntro}
-    <Intro ondone={() => (app.showIntro = false)} />
+    <Intro ondone={() => { app.showIntro = false; app.view = "library"; }} />
   {/if}
   <Toasts />
 </div>

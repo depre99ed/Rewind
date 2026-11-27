@@ -63,7 +63,7 @@ if (import.meta.env.DEV && typeof window !== "undefined" && !inTauri) {
     voice_command: true,
     auto_update: true,
     language: new URLSearchParams(location.search).get("lang") ?? "auto",
-    hotkeys: { clip: "Alt+F10", clip_long: "Alt+Shift+F10", clip_custom: "Alt+F11", session: "Alt+F7", screenshot: "Alt+F12", toggle_recording: "Alt+F9", bookmark: "Alt+F8" },
+    hotkeys: { clip: "F8", clip_long: "Alt+Shift+F10", clip_custom: "Alt+F11", session: "Alt+F7", screenshot: "Alt+F12", toggle_recording: "Alt+F9", bookmark: "Alt+F8" },
     sound_on_clip: true, sound_volume: 60, toast_on_clip: true, notify_overlay: true, notify_position: "left-middle", welcome_banner: true,
     cs2: {
       enabled: true, port: 12762, timing: "round", merge_gap: 6, onetap_ignore_snipers: true, streak_count: 3, streak_window: 10, min_round_kills: 3, min_sequence_kills: 3, max_sequence: 45, special_always: false,

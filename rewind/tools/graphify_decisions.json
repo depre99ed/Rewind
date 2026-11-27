@@ -127,18 +127,54 @@
       "confidence_score": 0.85,
       "note": "La note 0.4.3 dit explicitement « même style » : touches affichées séparément (keys.ts).",
       "decide_le": "2026-11-24"
+    },
+    {
+      "source": "src_routes_page",
+      "target": "src_lib_components_intro",
+      "action": "ajouter",
+      "relation": "rationale_for",
+      "source_file": "src/routes/+page.svelte",
+      "note": "Après l'animation d'ouverture (lancement ou « Revoir »), la page affichée est toujours Clips (0.4.18).",
+      "decide_le": "2026-11-27"
+    },
+    {
+      "source": "src_lib_components_library",
+      "target": "src_lib_components_viewer",
+      "action": "ajouter",
+      "relation": "shares_data_with",
+      "source_file": "src/lib/components/Library.svelte",
+      "note": "app.playlist : la bibliothèque passe au lecteur la liste affichée (filtre, collection, jeu, tri) ; suivant / précédent restent dedans (0.4.18).",
+      "decide_le": "2026-11-27"
     }
   ],
   "noeuds": [
     {
-      "id": "src_tauri_studio",
-      "note": "Fichier VIDE (0 octet) et inutilisé : reste du 2026-11-15. Le vrai module est src-tauri/src/studio.rs (mod studio dans lib.rs). Peut être supprimé.",
-      "decide_le": "2026-11-24"
-    },
-    {
       "id": "tools_capture_ecran",
       "note": "Outil lancé à la main (capture d'écran de diagnostic) : aucun autre fichier ne l'appelle, d'où l'absence de liens.",
       "decide_le": "2026-11-24"
+    },
+    {
+      "id": "tools_intro_frames",
+      "note": "Outil lancé à la main : filme l'animation d'ouverture image par image (Chrome en mode CDP) pour les vidéos de contrôle de design/intro ; aucun autre fichier ne l'appelle.",
+      "decide_le": "2026-11-27"
     }
-  ]
+  ],
+  "renommes": {
+    "_lisez_moi": "Ancien identifiant -> nouveau (README réécrit en français). Appliqué par graphify_affiner.py. Décidé le 2026-11-27.",
+    "readme_sharing": "readme_webhook_discord",
+    "readme_interface": "readme_interface_svelte_5",
+    "readme_async_tauri_commands_rule": "readme_commandes_tauri_async",
+    "readme_no_getwindowtextw_rule": "readme_internalgetwindowtext",
+    "readme_watchdog": "readme_veille_watchdog",
+    "readme_freeze_memory_dump": "readme_image_memoire_gel_dmp",
+    "readme_recording_buffer": "readme_tampon_d_enregistrement",
+    "readme_updates": "readme_mises_a_jour_signees",
+    "readme_liquid_glass": "readme_verre_liquide",
+    "readme_counter_strike_2_integration": "readme_game_state_integration",
+    "readme_legit_and_hvh_rules": "readme_regles_legit_et_hvh",
+    "readme_editing": "readme_montage",
+    "readme_keys_test": "readme_mode_keys",
+    "readme_voice_test": "readme_commande_vocale",
+    "readme_library": "readme_bibliotheque"
+  }
 }
